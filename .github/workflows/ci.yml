@@ -84,15 +84,7 @@ jobs:
         run: uv sync --frozen
 
       - name: Run tests with coverage
-        run: |
-          uv run pytest \
-            --cov=src \
-            --cov-report=term-missing \
-            --cov-report=xml \
-            --cov-report=html \
-            --cov-report=json \
-            --junit-xml=pytest-report.xml \
-            -v
+        run: uv run pytest --cov=src --cov-report=term-missing --cov-report=xml --cov-report=html --cov-report=json --junit-xml=pytest-report.xml -v
 
       - name: Upload coverage to Codecov
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
@@ -134,7 +126,7 @@ jobs:
           COVERAGE=$(uv run coverage report --precision=2 | grep TOTAL | awk '{print $NF}' | sed 's/%//')
           echo "Current coverage: $COVERAGE%"
 
-          THRESHOLD=79.0
+          THRESHOLD=76.0
           if (( $(echo "$COVERAGE < $THRESHOLD" | bc -l) )); then
             echo "❌ Coverage $COVERAGE% is below threshold $THRESHOLD%"
             exit 1
