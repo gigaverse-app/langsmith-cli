@@ -85,3 +85,36 @@ def test_runs_get_fields(runner):
         assert "foo" in result.output
         # Should NOT contain extra_heavy_field
         assert "huge_data" not in result.output
+
+
+def test_runs_search(runner):
+    """Test the runs search command."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_run = MagicMock()
+        mock_run.name = "search-result"
+        mock_run.id = "search-id"
+        mock_run.status = "success"
+        mock_run.latency = 0.5
+        mock_client.list_runs.return_value = [mock_run]
+
+        # Use the search command
+        result = runner.invoke(cli, ["runs", "search", "--filter", "eq(name, 'test')"])
+        assert result.exit_code == 0
+        assert "search-result" in result.output
+        # Verify list_runs was called with the filter
+        mock_client.list_runs.assert_called_once()
+        args, kwargs = mock_client.list_runs.call_args
+        assert kwargs["filter"] == "eq(name, 'test')"
+
+
+def test_runs_stats(runner):
+    """Test the runs stats command."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.get_run_stats.return_value = {"error_rate": 0.1, "latency_p50": 0.2}
+
+        result = runner.invoke(cli, ["runs", "stats"])
+        assert result.exit_code == 0
+        assert "Error Rate" in result.output
+        assert "0.1" in result.output

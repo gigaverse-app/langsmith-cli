@@ -13,19 +13,22 @@ def projects():
 
 
 @projects.command("list")
-@click.option("--limit", default=20, help="Limit number of projects.")
+@click.option("--limit", default=100, help="Limit number of projects (default 100).")
 @click.pass_context
 def list_projects(ctx, limit):
     """List all projects."""
     client = langsmith.Client()
-    projects = client.list_projects(limit=limit)
+    # list_projects returns a generator
+    projects_gen = client.list_projects(limit=limit)
 
-    # Check if JSON mode involves just dumping Pydantic models or dicts
+    # Materialize the list to count and process
+    projects_list = list(projects_gen)
+
     if ctx.obj.get("json"):
         import json
 
         # Handle generator return from list_projects
-        data = [p.dict() if hasattr(p, "dict") else dict(p) for p in projects]
+        data = [p.dict() if hasattr(p, "dict") else dict(p) for p in projects_list]
         click.echo(json.dumps(data, default=str))  # default=str for datetimes
         return
 
@@ -33,21 +36,22 @@ def list_projects(ctx, limit):
     table.add_column("Name", style="cyan")
     table.add_column("ID", style="dim")
     table.add_column("Runs", justify="right")
-    table.add_column("Active", justify="center")
+    table.add_column("Type", justify="center")
 
-    count = 0
-    for p in projects:
-        count += 1
+    for p in projects_list:
         # Access attributes safely
         name = getattr(p, "name", "Unknown")
         pid = str(getattr(p, "id", ""))
-        runs = str(getattr(p, "run_count", 0))
-        # active might not be on all models, check if relevant
-        active = "[green]Yes[/green]"
 
-        table.add_row(name, pid, runs, active)
+        # Correctly handle None or missing run_count
+        runs_val = getattr(p, "run_count", 0)
+        runs = str(runs_val) if runs_val is not None else "0"
 
-    if count == 0:
+        p_type = getattr(p, "project_type", "tracer")
+
+        table.add_row(name, pid, runs, p_type)
+
+    if not projects_list:
         console.print("[yellow]No projects found.[/yellow]")
     else:
         console.print(table)
