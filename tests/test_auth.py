@@ -4,8 +4,7 @@ from langsmith_cli.main import cli
 
 
 def test_login_command_success(runner, tmp_path):
-    """Test successful login writes to .env file."""
-    # Use a temporary directory as the CWD to avoid messing with actual .env
+    """Test successful login writes to config directory by default."""
     with runner.isolated_filesystem(), patch("webbrowser.open") as mock_open:
         # Input the key when prompted
         result = runner.invoke(cli, ["auth", "login"], input="lsv2_test_key\n")
@@ -13,6 +12,21 @@ def test_login_command_success(runner, tmp_path):
         assert mock_open.called
         assert result.exit_code == 0
         assert "Successfully logged in" in result.output
+        # Should mention config path, not .env
+        assert ".env" not in result.output or "langsmith-cli" in result.output
+
+
+def test_login_command_local_flag(runner):
+    """Test login with --local flag writes to .env file."""
+    with runner.isolated_filesystem(), patch("webbrowser.open") as mock_open:
+        # Input the key when prompted, use --local flag
+        result = runner.invoke(
+            cli, ["auth", "login", "--local"], input="lsv2_test_key\n"
+        )
+
+        assert mock_open.called
+        assert result.exit_code == 0
+        assert "API key saved" in result.output
 
         # Verify .env was created
         assert os.path.exists(".env")
@@ -22,14 +36,16 @@ def test_login_command_success(runner, tmp_path):
 
 
 def test_login_command_overwrite(runner):
-    """Test login prompts for overwrite if .env exists."""
+    """Test login with --local prompts for overwrite if .env exists."""
     with runner.isolated_filesystem(), patch("webbrowser.open"):
         # Create existing .env
         with open(".env", "w") as f:
             f.write("LANGSMITH_API_KEY=old_key")
 
-        # Run login, verify prompt (y to overwrite)
-        result = runner.invoke(cli, ["auth", "login"], input="lsv2_new_key\ny\n")
+        # Run login with --local, verify prompt (y to overwrite)
+        result = runner.invoke(
+            cli, ["auth", "login", "--local"], input="lsv2_new_key\ny\n"
+        )
 
         assert result.exit_code == 0
         with open(".env", "r") as f:
@@ -38,14 +54,16 @@ def test_login_command_overwrite(runner):
 
 
 def test_login_command_cancel_overwrite(runner):
-    """Test login cancel overwrite."""
+    """Test login with --local cancel overwrite."""
     with runner.isolated_filesystem(), patch("webbrowser.open"):
         # Create existing .env
         with open(".env", "w") as f:
             f.write("LANGSMITH_API_KEY=old_key")
 
-        # Run login, verify prompt (n to cancel)
-        result = runner.invoke(cli, ["auth", "login"], input="lsv2_new_key\nn\n")
+        # Run login with --local, verify prompt (n to cancel)
+        result = runner.invoke(
+            cli, ["auth", "login", "--local"], input="lsv2_new_key\nn\n"
+        )
 
         assert result.exit_code == 0
         assert "Aborted" in result.output

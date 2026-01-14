@@ -1,5 +1,6 @@
 import sys
 import json as json_lib
+import os
 import click
 from rich.console import Console
 from dotenv import load_dotenv
@@ -9,9 +10,22 @@ from langsmith_cli.commands.runs import runs
 from langsmith_cli.commands.datasets import datasets
 from langsmith_cli.commands.examples import examples
 from langsmith_cli.commands.prompts import prompts
+from langsmith_cli.config import get_credentials_file
 
-# Load .env file from current directory
-load_dotenv()
+# Load credentials with priority order:
+# 1. Environment variable LANGSMITH_API_KEY (already loaded if set)
+# 2. User config directory (~/.config/langsmith-cli/credentials or platform equivalent)
+# 3. Current working directory .env file (backward compatibility)
+
+if "LANGSMITH_API_KEY" not in os.environ:
+    # Try loading from user config directory first
+    config_file = get_credentials_file()
+    if config_file.exists():
+        load_dotenv(config_file)
+
+# Try loading from CWD .env as fallback (backward compatibility)
+if "LANGSMITH_API_KEY" not in os.environ:
+    load_dotenv()
 
 console = Console()
 
