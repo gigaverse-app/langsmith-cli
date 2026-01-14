@@ -1,7 +1,7 @@
 import click
 from rich.console import Console
 from rich.table import Table
-from langsmith import Client
+import langsmith
 
 console = Console()
 
@@ -14,12 +14,11 @@ def projects():
 
 @projects.command("list")
 @click.option("--limit", default=20, help="Limit number of projects.")
-@click.option("--offset", default=0, help="Offset for pagination.")
 @click.pass_context
-def list_projects(ctx, limit, offset):
+def list_projects(ctx, limit):
     """List all projects."""
-    client = Client()
-    projects = client.list_projects(limit=limit, offset=offset)
+    client = langsmith.Client()
+    projects = client.list_projects(limit=limit)
 
     # Check if JSON mode involves just dumping Pydantic models or dicts
     if ctx.obj.get("json"):
@@ -60,7 +59,7 @@ def list_projects(ctx, limit, offset):
 @click.pass_context
 def create_project(ctx, name, description):
     """Create a new project."""
-    client = Client()
+    client = langsmith.Client()
     try:
         project = client.create_project(project_name=name, description=description)
         if ctx.obj.get("json"):

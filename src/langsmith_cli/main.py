@@ -2,6 +2,7 @@ import click
 from rich.console import Console
 from langsmith_cli.commands.auth import login
 from langsmith_cli.commands.projects import projects
+from langsmith_cli.commands.runs import runs
 
 console = Console()
 
@@ -27,6 +28,7 @@ def auth():
 auth.add_command(login)
 cli.add_command(auth)
 cli.add_command(projects)
+cli.add_command(runs)
 
 
 if __name__ == "__main__":
