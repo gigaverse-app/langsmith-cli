@@ -37,6 +37,8 @@
 
 ---
 
+![context is all you need](https://media.licdn.com/dms/image/v2/D4D22AQFkt4EsgXsQVw/feedshare-shrink_800/B4DZu.8A41KQAg-/0/1768434962262?e=1770249600&v=beta&t=WhjBTpbVG-guRZWem5Qie3vMD6g1PqmhXB7SC4TRkMM)
+
 ## 🎯 Why LangSmith CLI?
 
 Traditional tools are slow, verbose, and waste tokens. **LangSmith CLI** is different:
