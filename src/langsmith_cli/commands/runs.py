@@ -62,6 +62,9 @@ def parse_relative_time(time_str):
 @click.option("--tag", multiple=True, help="Filter by tag (can specify multiple times for AND logic).")
 @click.option("--name-pattern", help="Filter by name with wildcards (e.g. '*auth*').")
 @click.option("--name-regex", help="Filter by name with regex (e.g. '^test-.*-v[0-9]+$').")
+@click.option("--model", help="Filter by model name (e.g. 'gpt-4', 'claude-3').")
+@click.option("--failed", is_flag=True, help="Show only failed/error runs (equivalent to --status error).")
+@click.option("--succeeded", is_flag=True, help="Show only successful runs (equivalent to --status success).")
 @click.option("--slow", is_flag=True, help="Filter to slow runs (latency > 5s).")
 @click.option("--recent", is_flag=True, help="Filter to recent runs (last hour).")
 @click.option("--today", is_flag=True, help="Filter to today's runs.")
@@ -69,17 +72,19 @@ def parse_relative_time(time_str):
 @click.option("--max-latency", help="Maximum latency (e.g., '10s', '2000ms').")
 @click.option("--since", help="Show runs since time (ISO format or relative like '1 hour ago').")
 @click.option("--last", help="Show runs from last duration (e.g., '24h', '7d', '30m').")
+@click.option("--sort-by", help="Sort by field (name, status, latency, start_time). Prefix with - for descending.")
 @click.pass_context
-def list_runs(ctx, project, limit, status, filter_, trace_id, run_type, is_root, trace_filter, tree_filter, order_by, reference_example_id, tag, name_pattern, name_regex, slow, recent, today, min_latency, max_latency, since, last):
+def list_runs(ctx, project, limit, status, filter_, trace_id, run_type, is_root, trace_filter, tree_filter, order_by, reference_example_id, tag, name_pattern, name_regex, model, failed, succeeded, slow, recent, today, min_latency, max_latency, since, last, sort_by):
     """Fetch recent runs."""
     import datetime
 
     client = langsmith.Client()
 
+    # Handle status filtering with multiple options
     error_filter = None
-    if status == "error":
+    if status == "error" or failed:
         error_filter = True
-    elif status == "success":
+    elif status == "success" or succeeded:
         error_filter = False
 
     # Build FQL filter from smart flags
@@ -101,6 +106,11 @@ def list_runs(ctx, project, limit, status, filter_, trace_id, run_type, is_root,
         search_term = name_pattern.replace("*", "")
         if search_term:
             fql_filters.append(f'search("{search_term}")')
+
+    # Model filtering (search in model-related fields)
+    if model:
+        # Search for model name in the run data (works across different LLM providers)
+        fql_filters.append(f'search("{model}")')
 
     # Smart filters (deprecated - use flexible filters below)
     if slow:
@@ -180,6 +190,27 @@ def list_runs(ctx, project, limit, status, filter_, trace_id, run_type, is_root,
     else:
         # Convert generator to list if no regex filtering
         runs = list(runs)
+
+    # Client-side sorting for table output
+    if sort_by and not ctx.obj.get("json"):
+        reverse = sort_by.startswith("-")
+        sort_field = sort_by.lstrip("-")
+
+        # Map sort field to run attribute
+        sort_key_map = {
+            "name": lambda r: (r.name or "").lower(),
+            "status": lambda r: r.status or "",
+            "latency": lambda r: r.latency if r.latency is not None else 0,
+            "start_time": lambda r: r.start_time if hasattr(r, "start_time") else datetime.datetime.min,
+        }
+
+        if sort_field in sort_key_map:
+            try:
+                runs = sorted(runs, key=sort_key_map[sort_field], reverse=reverse)
+            except Exception as e:
+                console.print(f"[yellow]Warning: Could not sort by {sort_field}: {e}[/yellow]")
+        else:
+            console.print(f"[yellow]Warning: Unknown sort field '{sort_field}'. Using default order.[/yellow]")
 
     if ctx.obj.get("json"):
         import json

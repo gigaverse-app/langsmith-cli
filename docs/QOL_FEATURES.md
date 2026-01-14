@@ -18,6 +18,39 @@ langsmith-cli runs list --tag production --tag experimental
 
 **How it works**: Converts to FQL `has(tags, "value")` under the hood.
 
+### Model Filtering
+
+Filter runs by the model used:
+
+```bash
+# Find runs using GPT-4
+langsmith-cli runs list --model gpt-4
+
+# Find runs using Claude
+langsmith-cli runs list --model claude
+
+# Find specific model versions
+langsmith-cli runs list --model gpt-4-turbo
+```
+
+**How it works**: Uses FQL `search()` to find the model name across all run fields.
+
+### Status Filtering (Enhanced)
+
+Multiple ways to filter by success/error status:
+
+```bash
+# Using --status flag
+langsmith-cli runs list --status error
+langsmith-cli runs list --status success
+
+# Using convenience flags
+langsmith-cli runs list --failed      # Equivalent to --status error
+langsmith-cli runs list --succeeded   # Equivalent to --status success
+```
+
+**How it works**: Passes `error=True/False` to the LangSmith API.
+
 ### Name Pattern Matching
 
 Search runs by name with wildcard or regex support:
@@ -136,9 +169,45 @@ langsmith-cli runs list \
 
 **How it works**: Multiple filters are combined with FQL `and()` operator.
 
+## Table Sorting
+
+Sort runs and projects by different fields:
+
+### Runs Sorting
+
+```bash
+# Sort by name (ascending)
+langsmith-cli runs list --sort-by name
+
+# Sort by latency (descending)
+langsmith-cli runs list --sort-by -latency
+
+# Sort by status
+langsmith-cli runs list --sort-by status
+
+# Sort by start time
+langsmith-cli runs list --sort-by -start_time
+```
+
+**Available sort fields**: `name`, `status`, `latency`, `start_time`
+
+### Projects Sorting
+
+```bash
+# Sort by name (ascending)
+langsmith-cli projects list --sort-by name
+
+# Sort by run count (descending)
+langsmith-cli projects list --sort-by -run_count
+```
+
+**Available sort fields**: `name`, `run_count`
+
+**How it works**: Client-side sorting using Python's `sorted()` function. Prefix with `-` for descending order.
+
 ## Projects Support
 
-Projects also support pattern and regex filtering:
+Projects support pattern, regex filtering, activity filtering, and sorting:
 
 ```bash
 # Wildcard matching - Find projects with "prod" in the name
@@ -149,9 +218,15 @@ langsmith-cli projects list --name-regex "^prod-.*-v[0-9]+$"
 
 # Find projects starting with "staging"
 langsmith-cli projects list --name-regex "^staging"
+
+# Show only active projects (with runs)
+langsmith-cli projects list --has-runs
+
+# Sort by activity level
+langsmith-cli projects list --has-runs --sort-by -run_count
 ```
 
-**How it works**: Both wildcards and regex use client-side filtering after fetching from API.
+**How it works**: Wildcards, regex, and activity filtering use client-side filtering after fetching from API.
 
 ## Implementation Details
 
@@ -163,6 +238,9 @@ All user-friendly flags are translated to LangSmith Filter Query Language (FQL):
 |------|----------------|
 | `--tag foo` | `has(tags, "foo")` |
 | `--name-pattern "*auth*"` | `search("auth")` |
+| `--model gpt-4` | `search("gpt-4")` |
+| `--failed` | `error=True` |
+| `--succeeded` | `error=False` |
 | `--slow` | `gt(latency, "5s")` |
 | `--recent` | `gt(start_time, "<1-hour-ago>")` |
 | `--today` | `gt(start_time, "<midnight>")` |
@@ -170,6 +248,8 @@ All user-friendly flags are translated to LangSmith Filter Query Language (FQL):
 | `--max-latency 10s` | `lt(latency, "10s")` |
 | `--last 24h` | `gt(start_time, "<24-hours-ago>")` |
 | `--since "2024-01-14T10:00:00Z"` | `gt(start_time, "2024-01-14T10:00:00...")` |
+| `--name-regex "^test.*"` | Client-side regex filtering |
+| `--sort-by name` | Client-side sorting |
 
 ### Multiple Filters
 
@@ -209,10 +289,13 @@ uv run pytest tests/test_runs.py -v
 
 ```bash
 # Find recent errors in production
-langsmith-cli runs list --tag production --status error --recent
+langsmith-cli runs list --tag production --failed --recent
 
-# Find slow production runs
-langsmith-cli runs list --tag production --slow --limit 50
+# Find slow production runs, sorted by latency
+langsmith-cli runs list --tag production --slow --sort-by -latency --limit 50
+
+# Find failed GPT-4 runs in production
+langsmith-cli runs list --tag production --model gpt-4 --failed
 ```
 
 ### Performance Analysis
@@ -246,16 +329,43 @@ langsmith-cli runs list --since "2024-01-14T15:30:00Z" --status error
 
 ```bash
 # Find authentication-related runs with errors (wildcard)
-langsmith-cli runs list --name-pattern "*auth*" --status error
+langsmith-cli runs list --name-pattern "*auth*" --failed
 
 # Search for checkout flows with specific latency (wildcard)
 langsmith-cli runs list --name-pattern "*checkout*" --min-latency 3s
 
 # Find versioned test runs with errors (regex)
-langsmith-cli runs list --name-regex "^test-.*-v[0-9]+$" --status error
+langsmith-cli runs list --name-regex "^test-.*-v[0-9]+$" --failed
 
 # Find specific service endpoints (regex)
 langsmith-cli runs list --name-regex "^(api|web)-service" --recent
+```
+
+### Model-Specific Analysis
+
+```bash
+# Compare GPT-4 vs Claude performance
+langsmith-cli runs list --model gpt-4 --sort-by -latency --limit 10
+langsmith-cli runs list --model claude --sort-by -latency --limit 10
+
+# Find slow Claude runs
+langsmith-cli runs list --model claude --min-latency 3s
+
+# Find failed runs for specific model version
+langsmith-cli runs list --model gpt-4-turbo --failed --last 24h
+```
+
+### Project Management
+
+```bash
+# Find active projects sorted by activity
+langsmith-cli projects list --has-runs --sort-by -run_count
+
+# Find production projects with runs
+langsmith-cli projects list --name-pattern "*prod*" --has-runs
+
+# List projects alphabetically
+langsmith-cli projects list --sort-by name
 ```
 
 ## Future Enhancements

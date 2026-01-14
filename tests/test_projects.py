@@ -117,3 +117,91 @@ def test_projects_list_with_name_regex(runner):
         assert "prod-api-v1" in result.output
         assert "prod-api-v2" in result.output
         assert "staging-api" not in result.output
+
+
+def test_projects_list_with_has_runs(runner):
+    """Test projects list with --has-runs filter."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        p1 = MagicMock()
+        p1.name = "active-project"
+        p1.id = "1"
+        p1.run_count = 100
+
+        p2 = MagicMock()
+        p2.name = "empty-project"
+        p2.id = "2"
+        p2.run_count = 0
+
+        p3 = MagicMock()
+        p3.name = "another-active"
+        p3.id = "3"
+        p3.run_count = 50
+
+        mock_client.list_projects.return_value = iter([p1, p2, p3])
+
+        # Filter with --has-runs
+        result = runner.invoke(cli, ["projects", "list", "--has-runs"])
+
+        assert result.exit_code == 0
+        # Should match p1 and p3, but not p2
+        assert "active-project" in result.output
+        assert "another-active" in result.output
+        assert "empty-project" not in result.output
+
+
+def test_projects_list_with_sort_by_name(runner):
+    """Test projects list with --sort-by name."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        p1 = MagicMock()
+        p1.name = "zebra-project"
+        p1.id = "1"
+
+        p2 = MagicMock()
+        p2.name = "alpha-project"
+        p2.id = "2"
+
+        p3 = MagicMock()
+        p3.name = "beta-project"
+        p3.id = "3"
+
+        mock_client.list_projects.return_value = iter([p1, p2, p3])
+
+        # Sort by name ascending
+        result = runner.invoke(cli, ["projects", "list", "--sort-by", "name"])
+
+        assert result.exit_code == 0
+        # Check order in output (alpha should appear before zebra)
+        alpha_pos = result.output.find("alpha-project")
+        zebra_pos = result.output.find("zebra-project")
+        assert alpha_pos < zebra_pos
+
+
+def test_projects_list_with_sort_by_run_count_desc(runner):
+    """Test projects list with --sort-by run_count descending."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        p1 = MagicMock()
+        p1.name = "low-activity"
+        p1.id = "1"
+        p1.run_count = 10
+
+        p2 = MagicMock()
+        p2.name = "high-activity"
+        p2.id = "2"
+        p2.run_count = 1000
+
+        mock_client.list_projects.return_value = iter([p1, p2])
+
+        # Sort by run_count descending
+        result = runner.invoke(cli, ["projects", "list", "--sort-by", "-run_count"])
+
+        assert result.exit_code == 0
+        # High activity should appear before low activity
+        high_pos = result.output.find("high-activity")
+        low_pos = result.output.find("low-activity")
+        assert high_pos < low_pos

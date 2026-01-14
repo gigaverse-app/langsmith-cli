@@ -342,3 +342,109 @@ def test_runs_list_with_name_regex_anchors(runner):
         # Should only match run1
         assert "auth-service" in result.output
         assert "test-auth" not in result.output
+
+
+def test_runs_list_with_model_filter(runner):
+    """Test runs list with --model filter."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_runs.return_value = []
+
+        runner.invoke(cli, ["runs", "list", "--model", "gpt-4"])
+
+        # Verify FQL filter was constructed with model search
+        mock_client.list_runs.assert_called_once()
+        args, kwargs = mock_client.list_runs.call_args
+        assert 'search("gpt-4")' in kwargs["filter"]
+
+
+def test_runs_list_with_failed_flag(runner):
+    """Test runs list with --failed flag."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_runs.return_value = []
+
+        runner.invoke(cli, ["runs", "list", "--failed"])
+
+        # Verify error=True was passed
+        mock_client.list_runs.assert_called_once()
+        args, kwargs = mock_client.list_runs.call_args
+        assert kwargs["error"] is True
+
+
+def test_runs_list_with_succeeded_flag(runner):
+    """Test runs list with --succeeded flag."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_runs.return_value = []
+
+        runner.invoke(cli, ["runs", "list", "--succeeded"])
+
+        # Verify error=False was passed
+        mock_client.list_runs.assert_called_once()
+        args, kwargs = mock_client.list_runs.call_args
+        assert kwargs["error"] is False
+
+
+def test_runs_list_with_sort_by(runner):
+    """Test runs list with --sort-by flag."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        run1 = MagicMock()
+        run1.name = "zebra"
+        run1.id = "1"
+        run1.status = "success"
+        run1.latency = 2.0
+
+        run2 = MagicMock()
+        run2.name = "alpha"
+        run2.id = "2"
+        run2.status = "error"
+        run2.latency = 1.0
+
+        run3 = MagicMock()
+        run3.name = "beta"
+        run3.id = "3"
+        run3.status = "success"
+        run3.latency = 3.0
+
+        mock_client.list_runs.return_value = iter([run1, run2, run3])
+
+        # Sort by name ascending
+        result = runner.invoke(cli, ["runs", "list", "--sort-by", "name"])
+
+        assert result.exit_code == 0
+        # Check order in output (alpha should appear before zebra)
+        alpha_pos = result.output.find("alpha")
+        zebra_pos = result.output.find("zebra")
+        assert alpha_pos < zebra_pos
+
+
+def test_runs_list_with_sort_by_latency_desc(runner):
+    """Test runs list with --sort-by descending."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        run1 = MagicMock()
+        run1.name = "fast"
+        run1.id = "1"
+        run1.status = "success"
+        run1.latency = 1.0
+
+        run2 = MagicMock()
+        run2.name = "slow"
+        run2.id = "2"
+        run2.status = "success"
+        run2.latency = 5.0
+
+        mock_client.list_runs.return_value = iter([run1, run2])
+
+        # Sort by latency descending
+        result = runner.invoke(cli, ["runs", "list", "--sort-by", "-latency"])
+
+        assert result.exit_code == 0
+        # Slow (5.0s) should appear before fast (1.0s)
+        slow_pos = result.output.find("slow")
+        fast_pos = result.output.find("fast")
+        assert slow_pos < fast_pos
