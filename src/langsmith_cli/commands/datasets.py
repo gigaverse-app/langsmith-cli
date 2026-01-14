@@ -1,13 +1,13 @@
 import click
 from rich.console import Console
 from rich.table import Table
-import langsmith
-import json
 import os
 from langsmith_cli.utils import (
-    print_empty_result_message,
     parse_json_string,
     parse_comma_separated_list,
+    get_or_create_client,
+    render_output,
+    safe_model_dump,
 )
 
 console = Console()
@@ -31,7 +31,7 @@ def list_datasets(
     ctx, dataset_ids, limit, data_type, dataset_name, name_contains, metadata
 ):
     """List all available datasets."""
-    client = langsmith.Client()
+    client = get_or_create_client(ctx)
 
     # Parse comma-separated dataset IDs
     dataset_ids_list = parse_comma_separated_list(dataset_ids)
@@ -53,46 +53,36 @@ def list_datasets(
     datasets_gen = client.list_datasets(**list_kwargs)
     datasets_list = list(datasets_gen)
 
-    if ctx.obj.get("json"):
-        # Use SDK's Pydantic models with focused field selection for context efficiency
-        data = [
-            d.model_dump(
-                include={
-                    "id",
-                    "name",
-                    "inputs_schema",
-                    "outputs_schema",
-                    "description",
-                    "data_type",
-                    "example_count",
-                    "session_count",
-                    "created_at",
-                    "modified_at",
-                    "last_session_start_time",
-                },
-                mode="json",
-            )
-            for d in datasets_list
-        ]
-        click.echo(json.dumps(data, default=str))
-        return
+    # Define table builder function
+    def build_datasets_table(datasets):
+        table = Table(title="Datasets")
+        table.add_column("Name", style="cyan")
+        table.add_column("ID", style="dim")
+        table.add_column("Type")
+        for d in datasets:
+            table.add_row(d.name, str(d.id), d.data_type)
+        return table
 
-    table = Table(title="Datasets")
-    table.add_column("Name", style="cyan")
-    table.add_column("ID", style="dim")
-    table.add_column("Type")
-
-    for d in datasets_list:
-        table.add_row(
-            d.name,
-            str(d.id),
-            d.data_type,
-        )
-
-    if not datasets_list:
-        print_empty_result_message(console, "datasets")
-    else:
-        console.print(table)
+    # Unified output rendering
+    render_output(
+        datasets_list,
+        build_datasets_table,
+        ctx,
+        include_fields={
+            "id",
+            "name",
+            "inputs_schema",
+            "outputs_schema",
+            "description",
+            "data_type",
+            "example_count",
+            "session_count",
+            "created_at",
+            "modified_at",
+            "last_session_start_time",
+        },
+        empty_message="No datasets found",
+    )
 
 
 @datasets.command("get")
@@ -100,18 +90,19 @@ def list_datasets(
 @click.pass_context
 def get_dataset(ctx, dataset_id):
     """Fetch details of a single dataset."""
-    client = langsmith.Client()
+    import json
+
+    client = get_or_create_client(ctx)
     dataset = client.read_dataset(dataset_id=dataset_id)
 
-    data = dataset.dict() if hasattr(dataset, "dict") else dict(dataset)
-
     if ctx.obj.get("json"):
+        data = safe_model_dump(dataset)
         click.echo(json.dumps(data, default=str))
         return
 
-    console.print(f"[bold]Name:[/bold] {data.get('name')}")
-    console.print(f"[bold]ID:[/bold] {data.get('id')}")
-    console.print(f"[bold]Description:[/bold] {data.get('description')}")
+    console.print(f"[bold]Name:[/bold] {dataset.name}")
+    console.print(f"[bold]ID:[/bold] {dataset.id}")
+    console.print(f"[bold]Description:[/bold] {dataset.description}")
 
 
 @datasets.command("create")
@@ -127,9 +118,10 @@ def get_dataset(ctx, dataset_id):
 @click.pass_context
 def create_dataset(ctx, name, description, dataset_type):
     """Create a new dataset."""
+    import json
     from langsmith.schemas import DataType
 
-    client = langsmith.Client()
+    client = get_or_create_client(ctx)
 
     # Convert string to DataType enum
     data_type_enum = DataType(dataset_type)
@@ -139,7 +131,7 @@ def create_dataset(ctx, name, description, dataset_type):
     )
 
     if ctx.obj.get("json"):
-        data = dataset.dict() if hasattr(dataset, "dict") else dict(dataset)
+        data = safe_model_dump(dataset)
         click.echo(json.dumps(data, default=str))
         return
 
@@ -152,7 +144,9 @@ def create_dataset(ctx, name, description, dataset_type):
 @click.pass_context
 def push_dataset(ctx, file_path, dataset):
     """Upload examples from a JSONL file to a dataset."""
-    client = langsmith.Client()
+    import json
+
+    client = get_or_create_client(ctx)
 
     if not dataset:
         dataset = os.path.basename(file_path).split(".")[0]

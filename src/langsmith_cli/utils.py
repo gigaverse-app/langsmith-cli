@@ -2,8 +2,28 @@
 
 from typing import Any, Callable, Protocol, TypeVar
 import click
+import json
 
 T = TypeVar("T")
+
+
+def get_or_create_client(ctx: Any) -> Any:
+    """Get LangSmith client from context, or create if not exists.
+
+    This maintains lazy loading - langsmith is only imported when first command runs.
+
+    Args:
+        ctx: Click context object
+
+    Returns:
+        LangSmith Client instance
+    """
+    if "client" not in ctx.obj:
+        # Lazy import - only load SDK when actually needed
+        import langsmith
+
+        ctx.obj["client"] = langsmith.Client()
+    return ctx.obj["client"]
 
 
 class ConsoleProtocol(Protocol):
@@ -227,8 +247,6 @@ def parse_json_string(
     if not json_str:
         return None
 
-    import json
-
     try:
         return json.loads(json_str)
     except json.JSONDecodeError as e:
@@ -278,3 +296,148 @@ def apply_client_side_limit(
     if has_client_filters and limit:
         return items[:limit]
     return items
+
+
+def extract_wildcard_search_term(pattern: str | None) -> tuple[str | None, bool]:
+    """Extract search term from wildcard pattern for API optimization.
+
+    Args:
+        pattern: Wildcard pattern (e.g., "*moments*", "*moments", "moments*")
+
+    Returns:
+        Tuple of (search_term, is_unanchored)
+        - ("moments", True) for "*moments*" (can use API optimization)
+        - ("moments", False) for "*moments" or "moments*" (needs client-side filtering)
+        - (None, False) if pattern is None or empty
+    """
+    if not pattern:
+        return None, False
+
+    is_unanchored = pattern.startswith("*") and pattern.endswith("*")
+    search_term = pattern.replace("*", "").replace("?", "")
+    return search_term if search_term else None, is_unanchored
+
+
+def extract_regex_search_term(regex: str | None, min_length: int = 2) -> str | None:
+    """Extract literal substring from regex for API optimization.
+
+    Args:
+        regex: Regular expression pattern
+        min_length: Minimum length for extracted term to be useful
+
+    Returns:
+        Literal substring suitable for API filtering, or None
+    """
+    if not regex:
+        return None
+
+    import re
+
+    # Remove common regex metacharacters to find literal substring
+    search_term = re.sub(r"[.*+?^${}()\[\]\\|]", "", regex)
+    return search_term if search_term and len(search_term) >= min_length else None
+
+
+def safe_model_dump(
+    obj: Any, include: set[str] | None = None, mode: str = "json"
+) -> dict[str, Any]:
+    """Safely serialize Pydantic models to dict (handles v1 and v2).
+
+    Args:
+        obj: Pydantic model instance or dict
+        include: Optional set of fields to include
+        mode: Serialization mode ("json" for JSON-compatible output)
+
+    Returns:
+        Dictionary representation suitable for JSON serialization
+    """
+    # Pydantic v2
+    if hasattr(obj, "model_dump"):
+        return obj.model_dump(include=include, mode=mode)
+    # Pydantic v1
+    elif hasattr(obj, "dict"):
+        result = obj.dict()
+        if include:
+            return {k: v for k, v in result.items() if k in include}
+        return result
+    # Already a dict
+    elif isinstance(obj, dict):
+        if include:
+            return {k: v for k, v in obj.items() if k in include}
+        return obj
+    # Fallback
+    return dict(obj)
+
+
+def render_output(
+    data: list[Any] | Any,
+    table_builder: Callable[[list[Any]], Any] | None,
+    ctx: Any,
+    *,
+    include_fields: set[str] | None = None,
+    empty_message: str = "No results found",
+    output_format: str | None = None,
+) -> None:
+    """Unified output renderer for all output formats (JSON, CSV, YAML, Table).
+
+    This function standardizes output across all commands, eliminating
+    the repetitive "if json else table" pattern.
+
+    Args:
+        data: List of items or single item to render
+        table_builder: Function that takes data and returns a Rich Table
+                      (None if data is already a table or for JSON-only)
+        ctx: Click context (contains json flag)
+        include_fields: Optional set of fields to include in output
+        empty_message: Message to show when data is empty
+        output_format: Explicit format override ("json", "csv", "yaml", "table")
+
+    Example:
+        def build_table(projects):
+            table = Table(title="Projects")
+            table.add_column("Name")
+            for p in projects:
+                table.add_row(p.name)
+            return table
+
+        render_output(projects_list, build_table, ctx,
+                     include_fields={"name", "id"},
+                     empty_message="No projects found")
+    """
+    # Normalize to list
+    items = data if isinstance(data, list) else [data] if data else []
+
+    # Determine output format
+    format_type = determine_output_format(output_format, ctx.obj.get("json"))
+
+    # Handle non-table formats (JSON, CSV, YAML)
+    if format_type != "table":
+        serialized = [safe_model_dump(item, include=include_fields) for item in items]
+        output_formatted_data(
+            serialized,
+            format_type,
+            fields=list(include_fields) if include_fields else None,
+        )
+        return
+
+    # Table output mode
+    if not items:
+        from rich.console import Console
+
+        console = Console()
+        console.print(f"[yellow]{empty_message}[/yellow]")
+        return
+
+    # Build and print table
+    if table_builder:
+        table = table_builder(items)
+        from rich.console import Console
+
+        console = Console()
+        console.print(table)
+    else:
+        # Data is already a table or printable object
+        from rich.console import Console
+
+        console = Console()
+        console.print(data)

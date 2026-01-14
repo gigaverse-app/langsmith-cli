@@ -1,11 +1,10 @@
 import click
 from rich.console import Console
 from rich.table import Table
-import langsmith
-import json
 from langsmith_cli.utils import (
-    print_empty_result_message,
     parse_comma_separated_list,
+    get_or_create_client,
+    render_output,
 )
 
 console = Console()
@@ -25,48 +24,42 @@ def prompts():
 @click.pass_context
 def list_prompts(ctx, limit, is_public):
     """List available prompt repositories."""
-    client = langsmith.Client()
+    client = get_or_create_client(ctx)
     # list_prompts returns ListPromptsResponse with .repos attribute
     result = client.list_prompts(limit=limit, is_public=is_public)
     prompts_list = result.repos
 
-    if ctx.obj.get("json"):
-        # Use SDK's Pydantic models with focused field selection for context efficiency
-        data = [
-            p.model_dump(
-                include={
-                    "repo_handle",
-                    "description",
-                    "id",
-                    "is_public",
-                    "tags",
-                    "owner",
-                    "full_name",
-                    "num_likes",
-                    "num_downloads",
-                    "num_views",
-                    "created_at",
-                    "updated_at",
-                },
-                mode="json",
-            )
-            for p in prompts_list
-        ]
-        click.echo(json.dumps(data, default=str))
-        return
+    # Define table builder function
+    def build_prompts_table(prompts):
+        table = Table(title="Prompts")
+        table.add_column("Repo", style="cyan")
+        table.add_column("Description")
+        table.add_column("Owner", style="dim")
+        for p in prompts:
+            table.add_row(p.full_name, p.description or "", p.owner)
+        return table
 
-    table = Table(title="Prompts")
-    table.add_column("Repo", style="cyan")
-    table.add_column("Description")
-    table.add_column("Owner", style="dim")
-
-    for p in prompts_list:
-        table.add_row(p.full_name, p.description or "", p.owner)
-
-    if not prompts_list:
-        print_empty_result_message(console, "prompts")
-    else:
-        console.print(table)
+    # Unified output rendering
+    render_output(
+        prompts_list,
+        build_prompts_table,
+        ctx,
+        include_fields={
+            "repo_handle",
+            "description",
+            "id",
+            "is_public",
+            "tags",
+            "owner",
+            "full_name",
+            "num_likes",
+            "num_downloads",
+            "num_views",
+            "created_at",
+            "updated_at",
+        },
+        empty_message="No prompts found",
+    )
 
 
 @prompts.command("get")
@@ -75,7 +68,9 @@ def list_prompts(ctx, limit, is_public):
 @click.pass_context
 def get_prompt(ctx, name, commit):
     """Fetch a prompt template."""
-    client = langsmith.Client()
+    import json
+
+    client = get_or_create_client(ctx)
     # pull_prompt returns the prompt object (might be LangChain PromptTemplate)
     prompt_obj = client.pull_prompt(name + (f":{commit}" if commit else ""))
 
@@ -105,7 +100,7 @@ def get_prompt(ctx, name, commit):
 @click.pass_context
 def push_prompt(ctx, name, file_path, description, tags, is_public):
     """Push a local prompt file to LangSmith."""
-    client = langsmith.Client()
+    client = get_or_create_client(ctx)
 
     with open(file_path, "r") as f:
         content = f.read()

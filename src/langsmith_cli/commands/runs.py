@@ -1,13 +1,13 @@
 import click
 from rich.console import Console
 from rich.table import Table
-import langsmith
 from langsmith_cli.utils import (
     output_formatted_data,
     sort_items,
     apply_regex_filter,
     determine_output_format,
     apply_client_side_limit,
+    get_or_create_client,
 )
 
 console = Console()
@@ -147,7 +147,7 @@ def list_runs(
     """Fetch recent runs."""
     import datetime
 
-    client = langsmith.Client()
+    client = get_or_create_client(ctx)
 
     # Handle status filtering with multiple options
     error_filter = None
@@ -332,7 +332,7 @@ def list_runs(
 @click.pass_context
 def get_run(ctx, run_id, fields):
     """Fetch details of a single run."""
-    client = langsmith.Client()
+    client = get_or_create_client(ctx)
     run = client.read_run(run_id)
 
     # Convert to dict
@@ -375,7 +375,7 @@ def get_run(ctx, run_id, fields):
 @click.pass_context
 def run_stats(ctx, project):
     """Fetch aggregated metrics for a project."""
-    client = langsmith.Client()
+    client = get_or_create_client(ctx)
     # Resolve project name to ID
     try:
         p = client.read_project(project_name=project)
@@ -427,7 +427,7 @@ def watch_runs(ctx, project, interval):
     from rich.live import Live
     import time
 
-    client = langsmith.Client()
+    client = get_or_create_client(ctx)
 
     def generate_table():
         runs = client.list_runs(project_name=project, limit=10)

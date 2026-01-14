@@ -1,15 +1,15 @@
 import click
 from rich.console import Console
 from rich.table import Table
-import langsmith
-import json
 from langsmith_cli.utils import (
-    output_formatted_data,
     sort_items,
     apply_regex_filter,
     apply_wildcard_filter,
-    determine_output_format,
     apply_client_side_limit,
+    extract_wildcard_search_term,
+    extract_regex_search_term,
+    render_output,
+    get_or_create_client,
 )
 
 console = Console()
@@ -61,32 +61,27 @@ def list_projects(
 ):
     """List all projects."""
 
-    client = langsmith.Client()
+    client = get_or_create_client(ctx)
 
     # Determine if client-side filtering is needed
     needs_client_filtering = False
     api_name_filter = name_
 
     if name_pattern and not name_:
-        # Only optimize if pattern is unanchored (*term*) - anchored patterns (*term or term*)
-        # need client-side filtering for correct results
-        if name_pattern.startswith("*") and name_pattern.endswith("*"):
-            # Extract search term from wildcard pattern for API filtering
-            search_term = name_pattern.replace("*", "")
-            if search_term:
-                api_name_filter = search_term
+        # Extract search term and check if pattern is unanchored
+        search_term, is_unanchored = extract_wildcard_search_term(name_pattern)
+        if is_unanchored and search_term:
+            # Unanchored pattern - can use API optimization
+            api_name_filter = search_term
         else:
             # Anchored pattern - needs client-side filtering
             needs_client_filtering = True
     elif name_regex and not name_ and not name_pattern:
         # Regex always needs client-side filtering
         needs_client_filtering = True
-        # Extract search term from regex pattern for API filtering
-        import re
-
-        # Remove common regex metacharacters to find literal substring
-        search_term = re.sub(r"[.*+?^${}()\[\]\\|]", "", name_regex)
-        if search_term and len(search_term) >= 2:  # Only use if reasonably long
+        # Try to extract search term for API optimization
+        search_term = extract_regex_search_term(name_regex)
+        if search_term:
             api_name_filter = search_term
 
     # If has_runs filter is used, we need client-side filtering
@@ -138,34 +133,24 @@ def list_projects(
         projects_list, limit, needs_client_filtering
     )
 
-    # Determine output format
-    format_type = determine_output_format(output_format, ctx.obj.get("json"))
+    # Define table builder function
+    def build_projects_table(projects):
+        table = Table(title="Projects")
+        table.add_column("Name", style="cyan")
+        table.add_column("ID", style="dim")
+        for p in projects:
+            table.add_row(p.name, str(p.id))
+        return table
 
-    # Handle non-table formats
-    if format_type != "table":
-        # Use SDK's Pydantic models with focused field selection for context efficiency
-        data = [
-            p.model_dump(
-                include={"name", "id"},
-                mode="json",
-            )
-            for p in projects_list
-        ]
-        output_formatted_data(data, format_type)
-        return
-
-    table = Table(title="Projects")
-    table.add_column("Name", style="cyan")
-    table.add_column("ID", style="dim")
-
-    for p in projects_list:
-        # Access attributes directly (type-safe)
-        table.add_row(p.name, str(p.id))
-
-    if not projects_list:
-        console.print("[yellow]No projects found.[/yellow]")
-    else:
-        console.print(table)
+    # Unified output rendering
+    render_output(
+        projects_list,
+        build_projects_table,
+        ctx,
+        include_fields={"name", "id"},
+        empty_message="No projects found",
+        output_format=output_format,
+    )
 
 
 @projects.command("create")
@@ -174,9 +159,10 @@ def list_projects(
 @click.pass_context
 def create_project(ctx, name, description):
     """Create a new project."""
+    import json
     from langsmith.utils import LangSmithConflictError
 
-    client = langsmith.Client()
+    client = get_or_create_client(ctx)
     try:
         project = client.create_project(project_name=name, description=description)
         if ctx.obj.get("json"):
