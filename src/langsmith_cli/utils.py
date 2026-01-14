@@ -440,3 +440,56 @@ def render_output(
 
         console = Console()
         console.print(data)
+
+
+def get_matching_projects(
+    client: Any,
+    *,
+    project: str | None = None,
+    name_pattern: str | None = None,
+    name_regex: str | None = None,
+) -> list[str]:
+    """Get list of project names matching the given filters.
+
+    Universal helper for project pattern matching across all commands.
+
+    Args:
+        client: LangSmith Client instance
+        project: Single project name (if specified, returns [project])
+        name_pattern: Wildcard pattern (e.g., "dev/*", "*production*")
+        name_regex: Regular expression pattern
+
+    Returns:
+        List of matching project names
+
+    Examples:
+        # Single project
+        get_matching_projects(client, project="my-project")
+        # -> ["my-project"]
+
+        # Wildcard pattern
+        get_matching_projects(client, name_pattern="dev/*")
+        # -> ["dev/api", "dev/web", "dev/worker"]
+
+        # Regex pattern
+        get_matching_projects(client, name_regex="^prod-.*-v[0-9]+$")
+        # -> ["prod-api-v1", "prod-web-v2"]
+    """
+    # If a specific project is given and no patterns, return just that project
+    if project and not name_pattern and not name_regex:
+        return [project]
+
+    # Otherwise, list all projects and filter
+    all_projects = list(client.list_projects())
+
+    # Apply wildcard pattern filter
+    if name_pattern:
+        all_projects = apply_wildcard_filter(
+            all_projects, name_pattern, lambda p: p.name
+        )
+
+    # Apply regex filter
+    if name_regex:
+        all_projects = apply_regex_filter(all_projects, name_regex, lambda p: p.name)
+
+    return [p.name for p in all_projects]

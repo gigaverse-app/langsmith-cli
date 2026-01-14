@@ -735,6 +735,7 @@ def test_runs_watch_keyboard_interrupt(runner):
         mock_run.latency = 1.0
         mock_run.session_name = "test"
         mock_run.total_tokens = 100
+        mock_run.start_time = "2024-01-01T00:00:00Z"
 
         # Make list_runs raise KeyboardInterrupt after first call
         mock_client.list_runs.side_effect = [

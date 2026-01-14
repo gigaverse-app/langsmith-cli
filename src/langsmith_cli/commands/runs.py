@@ -420,29 +420,73 @@ def open_run(ctx, run_id):
 
 @runs.command("watch")
 @click.option("--project", default="default", help="Project name.")
+@click.option(
+    "--name-pattern",
+    help="Wildcard pattern for project names (e.g., 'dev/*'). Overrides --project.",
+)
 @click.option("--interval", default=2.0, help="Refresh interval in seconds.")
 @click.pass_context
-def watch_runs(ctx, project, interval):
-    """Live dashboard of runs (root traces only)."""
+def watch_runs(ctx, project, name_pattern, interval):
+    """Live dashboard of runs (root traces only).
+
+    Watch a single project or multiple projects matching a pattern.
+
+    Examples:
+        langsmith-cli runs watch --project my-project
+        langsmith-cli runs watch --name-pattern "dev/*"
+        langsmith-cli runs watch --name-pattern "*production*"
+    """
     from rich.live import Live
     import time
 
     client = get_or_create_client(ctx)
 
     def generate_table():
-        # Only get root runs (is_root=True) to show top-level traces
-        runs = client.list_runs(project_name=project, limit=10, is_root=True)
-        table = Table(title=f"Watching: {project} (Interval: {interval}s)")
+        # Get projects to watch using universal helper
+        from langsmith_cli.utils import get_matching_projects
+
+        projects_to_watch = get_matching_projects(
+            client, project=project, name_pattern=name_pattern
+        )
+        title = (
+            f"Watching: {name_pattern} ({len(projects_to_watch)} projects)"
+            if name_pattern
+            else f"Watching: {project}"
+        )
+        title += f" (Interval: {interval}s)"
+
+        table = Table(title=title)
         table.add_column("Name", style="cyan")
         table.add_column("Project", style="dim")
         table.add_column("Status", justify="center")
         table.add_column("Tokens", justify="right")
         table.add_column("Latency", justify="right")
 
-        for r in runs:
+        # Collect runs from all matching projects
+        all_runs = []
+        for proj_name in projects_to_watch:
+            try:
+                # Get a few runs from each project
+                runs = list(
+                    client.list_runs(
+                        project_name=proj_name,
+                        limit=5 if name_pattern else 10,
+                        is_root=True,
+                    )
+                )
+                all_runs.extend(runs)
+            except Exception:
+                # Skip projects that fail to fetch
+                pass
+
+        # Sort by start time (most recent first) and limit to 10
+        all_runs.sort(key=lambda r: r.start_time or "", reverse=True)
+        all_runs = all_runs[:10]
+
+        for r in all_runs:
             # Access SDK model fields directly (type-safe)
             r_name = r.name or "Unknown"
-            r_project = r.session_name or project
+            r_project = r.session_name or "Unknown"
             r_status = r.status
             status_style = (
                 "green"
