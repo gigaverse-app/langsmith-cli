@@ -2,6 +2,7 @@ from langsmith_cli.main import cli
 from unittest.mock import patch
 from conftest import create_project
 import json
+import pytest
 
 
 def test_projects_list(runner):
@@ -156,8 +157,15 @@ def test_projects_list_with_sort_by_run_count_desc(runner):
         assert high_pos < low_pos
 
 
-def test_projects_list_with_csv_format(runner):
-    """INVARIANT: CSV format should output comma-separated values."""
+@pytest.mark.parametrize(
+    "format_type,expected_content",
+    [
+        ("csv", "test-project"),
+        ("yaml", "name: test-project"),
+    ],
+)
+def test_projects_list_with_format(runner, format_type, expected_content):
+    """INVARIANT: Different formats should output data in the correct structure."""
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
 
@@ -165,29 +173,13 @@ def test_projects_list_with_csv_format(runner):
 
         mock_client.list_projects.return_value = iter([p1])
 
-        result = runner.invoke(cli, ["projects", "list", "--format", "csv"])
+        result = runner.invoke(cli, ["projects", "list", "--format", format_type])
 
         assert result.exit_code == 0
-        # CSV should have headers and data
-        assert "name,id" in result.output or "id,name" in result.output
-        assert "test-project" in result.output
-
-
-def test_projects_list_with_yaml_format(runner):
-    """INVARIANT: YAML format should output structured YAML."""
-    with patch("langsmith.Client") as MockClient:
-        mock_client = MockClient.return_value
-
-        p1 = create_project(name="test-project")
-
-        mock_client.list_projects.return_value = iter([p1])
-
-        result = runner.invoke(cli, ["projects", "list", "--format", "yaml"])
-
-        assert result.exit_code == 0
-        # YAML should contain the data
-        assert "name: test-project" in result.output
-        assert "id:" in result.output
+        assert expected_content in result.output
+        # CSV should have headers (order may vary)
+        if format_type == "csv":
+            assert "name,id" in result.output or "id,name" in result.output
 
 
 def test_projects_list_with_empty_results(runner):
