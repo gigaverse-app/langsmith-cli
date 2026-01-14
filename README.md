@@ -19,11 +19,18 @@
 > [!TIP]
 > **Install as Claude Code Plugin**
 >
+> **Step 1:** Install the CLI tool
+> ```bash
+> uv tool install langsmith-cli
+> # or: pip install langsmith-cli
+> ```
+>
+> **Step 2:** Add the skill to Claude Code
 > ```bash
 > /plugin marketplace add gigaverse-app/langsmith-cli
 > ```
 >
-> This integrates LangSmith CLI directly into your Claude Code environment, giving you instant access to all commands via skills.
+> This gives Claude Code instant access to all LangSmith commands via skills.
 
 ---
 
@@ -103,6 +110,12 @@ uv tool install langsmith-cli
 ### Using `pip`
 ```bash
 pip install langsmith-cli
+```
+
+### For Claude Code Users
+After installing the CLI above, add the skill:
+```bash
+/plugin marketplace add gigaverse-app/langsmith-cli
 ```
 
 ### From Source
@@ -245,7 +258,7 @@ langsmith-cli projects list --format yaml > projects.yml
 ### As a Claude Code Skill
 
 > [!NOTE]
-> **Quick Install:** `/plugin marketplace add gigaverse-app/langsmith-cli`
+> **Prerequisites:** Install CLI first (`uv tool install langsmith-cli`), then add skill (`/plugin marketplace add gigaverse-app/langsmith-cli`)
 
 The CLI is optimized for Claude Code agents:
 
