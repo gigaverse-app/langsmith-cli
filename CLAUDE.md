@@ -271,31 +271,7 @@ def test_runs_list(runner):
 
 ## Feature Parity with LangSmith MCP
 
-The CLI provides 100% feature parity with the official LangSmith MCP server:
-
-| MCP Tool | CLI Command | Status |
-|----------|-------------|--------|
-| list_projects | `projects list` | ✅ |
-| fetch_runs | `runs list` | ✅ |
-| read_run | `runs get` | ✅ |
-| get_run_stats | `runs stats` | ✅ |
-| list_datasets | `datasets list` | ✅ |
-| read_dataset | `datasets get` | ✅ |
-| create_dataset | `datasets create` | ✅ |
-| list_examples | `examples list` | ✅ |
-| read_example | `examples get` | ✅ |
-| create_example | `examples create` | ✅ |
-| list_prompts | `prompts list` | ✅ |
-| get_prompt | `prompts get` | ✅ |
-| push_prompt | `prompts push` | ✅ |
-
-### Superiority Features (Beyond MCP)
-
-1. **Field Pruning**: `runs get <id> --fields inputs,outputs,error` (96% context savings)
-2. **Watch Mode**: `runs watch` - Live dashboard of incoming runs
-3. **Open Command**: `runs open <id>` - Opens trace in browser
-4. **Dataset Push**: `datasets push <file.jsonl>` - Bulk upload from JSONL
-5. **Human UX**: Rich tables with color-coded status (green=success, red=error)
+The CLI provides 100% feature parity with the official LangSmith MCP server. See [MCP_PARITY.md](MCP_PARITY.md) for detailed command mappings and parameter coverage.
 
 ## Claude Code Plugin Integration
 
