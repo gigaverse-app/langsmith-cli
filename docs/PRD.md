@@ -35,7 +35,8 @@ langsmith-cli/
 │   └── langsmith/          # The Claude Skill Definition
 │       ├── SKILL.md
 │       └── bridge.py       # Thin wrapper calling the installed CLI
-├── claude-plugin.json      # Plugin Manifest
+├── .claude-plugin/
+│   └── plugin.json         # Plugin Manifest
 ├── pyproject.toml          # Python Package Metadata
 ├── README.md
 └── LICENSE
@@ -46,7 +47,7 @@ langsmith-cli/
 
 ### 3. Core Metadata Files
 
-#### A. `claude-plugin.json` (The Manifest)
+#### A. `.claude-plugin/plugin.json` (The Manifest)
 
 This file defines the package for Claude Code.
 
@@ -253,7 +254,8 @@ langsmith datasets push <file.jsonl>         # Upload data
 
 ```text
 langsmith-plugin/
-├── claude-plugin.json          # Manifest v1.0
+├── .claude-plugin/
+│   └── plugin.json             # Manifest v1.0
 ├── requirements.txt            # minimal deps (langsmith, maybe rich/click)
 └── skills/
     └── langsmith-tool/

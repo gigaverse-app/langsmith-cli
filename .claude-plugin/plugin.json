@@ -1,6 +1,6 @@
 {
     "name": "langsmith-cli",
-    "version": "0.1.0",
+    "version": "0.1.10",
     "description": "A context-efficient interface for LangSmith observability and evaluations.",
     "entryPoint": "langsmith-cli",
     "skills": [

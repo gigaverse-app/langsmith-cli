@@ -504,7 +504,7 @@ The plugin is defined in `skills/langsmith/SKILL.md` which teaches Claude how to
 3. Returns stdout/stderr to Claude
 
 ### Plugin Manifest
-`claude-plugin.json` registers the plugin with Claude Code.
+`.claude-plugin/plugin.json` registers the plugin with Claude Code.
 
 ## Pydantic Model Usage Pattern
 
