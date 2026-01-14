@@ -205,3 +205,43 @@ def test_projects_list_with_sort_by_run_count_desc(runner):
         high_pos = result.output.find("high-activity")
         low_pos = result.output.find("low-activity")
         assert high_pos < low_pos
+
+
+def test_projects_list_with_csv_format(runner):
+    """Test projects list with CSV export."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        p1 = MagicMock()
+        p1.name = "test-project"
+        p1.id = "123"
+        p1.model_dump.return_value = {"name": "test-project", "id": "123"}
+
+        mock_client.list_projects.return_value = iter([p1])
+
+        result = runner.invoke(cli, ["projects", "list", "--format", "csv"])
+
+        assert result.exit_code == 0
+        # CSV should have header and data
+        assert "name,id" in result.output
+        assert "test-project,123" in result.output
+
+
+def test_projects_list_with_yaml_format(runner):
+    """Test projects list with YAML export."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        p1 = MagicMock()
+        p1.name = "test-project"
+        p1.id = "123"
+        p1.model_dump.return_value = {"name": "test-project", "id": "123"}
+
+        mock_client.list_projects.return_value = iter([p1])
+
+        result = runner.invoke(cli, ["projects", "list", "--format", "yaml"])
+
+        assert result.exit_code == 0
+        # YAML should contain the data
+        assert "name: test-project" in result.output
+        assert "id:" in result.output

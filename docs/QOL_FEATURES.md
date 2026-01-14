@@ -2,7 +2,9 @@
 
 This document describes the implemented quality-of-life improvements for langsmith-cli.
 
-## Implemented Features (P0)
+## Implemented Features
+
+### P0 Features (Phase 1)
 
 ### Tag Filtering
 
@@ -228,6 +230,89 @@ langsmith-cli projects list --has-runs --sort-by -run_count
 
 **How it works**: Wildcards, regex, and activity filtering use client-side filtering after fetching from API.
 
+### P1 Features (Phase 2)
+
+#### Export Formats
+
+Export runs and projects in multiple formats for analysis, sharing, and integration:
+
+```bash
+# Export runs as CSV for spreadsheet analysis
+langsmith-cli runs list --format csv > runs.csv
+
+# Export as YAML for configuration/documentation
+langsmith-cli runs list --format yaml > runs.yaml
+
+# Export as JSON (default when using --json flag)
+langsmith-cli runs list --format json > runs.json
+langsmith-cli --json runs list > runs.json  # Alternative
+
+# Export projects in different formats
+langsmith-cli projects list --format csv > projects.csv
+langsmith-cli projects list --format yaml > projects.yaml
+
+# Combine with filters
+langsmith-cli runs list --failed --last 24h --format csv > errors.csv
+langsmith-cli projects list --has-runs --format yaml > active_projects.yaml
+```
+
+**Supported formats**: `table` (default), `json`, `csv`, `yaml`
+
+**Use Cases**:
+- Share run data with non-technical stakeholders (CSV for Excel)
+- Export for data analysis pipelines
+- Documentation and version control (YAML)
+- Integration with other tools (JSON)
+
+#### Enhanced Full-Text Search
+
+Natural language search across all run fields with targeted field filtering:
+
+```bash
+# Basic full-text search
+langsmith-cli runs search "authentication failed"
+
+# Search with field-specific filters
+langsmith-cli runs search "error" --input-contains "user_id"
+langsmith-cli runs search "timeout" --output-contains "retry"
+
+# Combine with other filters
+langsmith-cli runs search "gpt-4" --limit 20 --format csv
+
+# Search specific content areas
+langsmith-cli runs search "password reset" --in inputs
+langsmith-cli runs search "timeout" --in error
+```
+
+**How it works**: Uses FQL `search()` for server-side full-text search, combines multiple search terms with AND logic.
+
+**Benefits over `runs list --filter`**:
+- Simpler syntax (no FQL required)
+- Positional argument instead of flag
+- Field-specific search options
+- Natural language queries
+
+#### Field Value Search
+
+Search for specific content in inputs and outputs:
+
+```bash
+# Search for user IDs in inputs
+langsmith-cli runs search "process" --input-contains "user_123"
+
+# Find runs with specific error messages
+langsmith-cli runs search "failed" --output-contains "connection timeout"
+
+# Combine multiple field searches
+langsmith-cli runs search "api" --input-contains "endpoint" --output-contains "status"
+```
+
+**Use Cases**:
+- Find runs handling specific user IDs
+- Debug by searching error messages in outputs
+- Audit for sensitive data in inputs/outputs
+- Trace data flow through the system
+
 ## Implementation Details
 
 ### FQL Translation
@@ -366,6 +451,41 @@ langsmith-cli projects list --name-pattern "*prod*" --has-runs
 
 # List projects alphabetically
 langsmith-cli projects list --sort-by name
+
+# Export active projects for reporting
+langsmith-cli projects list --has-runs --format csv > active_projects.csv
+```
+
+### Data Export and Analysis
+
+```bash
+# Export failed runs for analysis
+langsmith-cli runs list --failed --last 7d --format csv > errors_last_week.csv
+
+# Export all runs with specific model
+langsmith-cli runs list --model gpt-4 --format yaml > gpt4_runs.yaml
+
+# Export search results
+langsmith-cli runs search "timeout" --format csv > timeout_issues.csv
+
+# Export projects for documentation
+langsmith-cli projects list --format yaml > projects_inventory.yaml
+```
+
+### Advanced Search Scenarios
+
+```bash
+# Find authentication errors
+langsmith-cli runs search "authentication" --output-contains "failed"
+
+# Search for specific user activity
+langsmith-cli runs search "user_id" --input-contains "12345"
+
+# Find API timeout issues
+langsmith-cli runs search "timeout" --output-contains "api" --last 24h
+
+# Search and export results
+langsmith-cli runs search "error" --input-contains "payment" --format csv > payment_errors.csv
 ```
 
 ## Future Enhancements

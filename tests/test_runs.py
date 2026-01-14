@@ -108,14 +108,14 @@ def test_runs_search(runner):
         mock_run.latency = 0.5
         mock_client.list_runs.return_value = [mock_run]
 
-        # Use the search command
-        result = runner.invoke(cli, ["runs", "search", "--filter", "eq(name, 'test')"])
+        # Use the search command with new positional argument
+        result = runner.invoke(cli, ["runs", "search", "test"])
         assert result.exit_code == 0
         assert "search-result" in result.output
-        # Verify list_runs was called with the filter
+        # Verify list_runs was called with the search filter
         mock_client.list_runs.assert_called_once()
         args, kwargs = mock_client.list_runs.call_args
-        assert kwargs["filter"] == "eq(name, 'test')"
+        assert 'search("test")' in kwargs["filter"]
 
 
 def test_runs_stats(runner):
@@ -448,3 +448,75 @@ def test_runs_list_with_sort_by_latency_desc(runner):
         slow_pos = result.output.find("slow")
         fast_pos = result.output.find("fast")
         assert slow_pos < fast_pos
+
+
+def test_runs_list_with_csv_format(runner):
+    """Test runs list with CSV export."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        run1 = MagicMock()
+        run1.dict.return_value = {"id": "1", "name": "test-run", "status": "success"}
+
+        mock_client.list_runs.return_value = iter([run1])
+
+        result = runner.invoke(cli, ["runs", "list", "--format", "csv"])
+
+        assert result.exit_code == 0
+        # CSV should have header and data rows
+        assert "id,name,status" in result.output
+        assert "1,test-run,success" in result.output
+
+
+def test_runs_list_with_yaml_format(runner):
+    """Test runs list with YAML export."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        run1 = MagicMock()
+        run1.dict.return_value = {"id": "1", "name": "test-run", "status": "success"}
+
+        mock_client.list_runs.return_value = iter([run1])
+
+        result = runner.invoke(cli, ["runs", "list", "--format", "yaml"])
+
+        assert result.exit_code == 0
+        # YAML should contain the data
+        assert "id:" in result.output
+        assert "name: test-run" in result.output
+
+
+def test_runs_search_with_input_contains(runner):
+    """Test runs search with --input-contains flag."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_runs.return_value = []
+
+        result = runner.invoke(
+            cli, ["runs", "search", "user_123", "--input-contains", "email"]
+        )
+
+        assert result.exit_code == 0
+        # Verify both search terms were included
+        mock_client.list_runs.assert_called_once()
+        args, kwargs = mock_client.list_runs.call_args
+        assert 'search("user_123")' in kwargs["filter"]
+        assert 'search("email")' in kwargs["filter"]
+
+
+def test_runs_search_with_output_contains(runner):
+    """Test runs search with --output-contains flag."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_runs.return_value = []
+
+        result = runner.invoke(
+            cli, ["runs", "search", "error", "--output-contains", "timeout"]
+        )
+
+        assert result.exit_code == 0
+        # Verify both search terms were included
+        mock_client.list_runs.assert_called_once()
+        args, kwargs = mock_client.list_runs.call_args
+        assert 'search("error")' in kwargs["filter"]
+        assert 'search("timeout")' in kwargs["filter"]

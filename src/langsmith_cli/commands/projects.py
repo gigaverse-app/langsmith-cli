@@ -22,8 +22,9 @@ def projects():
 @click.option("--reference-dataset-name", help="Filter experiments for a dataset (by name).")
 @click.option("--has-runs", is_flag=True, help="Show only projects with runs (run_count > 0).")
 @click.option("--sort-by", help="Sort by field (name, run_count). Prefix with - for descending.")
+@click.option("--format", "output_format", type=click.Choice(["table", "json", "csv", "yaml"]), help="Output format (default: table, or json if --json flag used).")
 @click.pass_context
-def list_projects(ctx, limit, name_, name_pattern, name_regex, reference_dataset_id, reference_dataset_name, has_runs, sort_by):
+def list_projects(ctx, limit, name_, name_pattern, name_regex, reference_dataset_id, reference_dataset_name, has_runs, sort_by, output_format):
     """List all projects."""
     import re
     import datetime
@@ -88,7 +89,13 @@ def list_projects(ctx, limit, name_, name_pattern, name_regex, reference_dataset
         else:
             console.print(f"[yellow]Warning: Unknown sort field '{sort_field}'. Using default order.[/yellow]")
 
-    if ctx.obj.get("json"):
+    # Determine output format
+    format_type = output_format
+    if not format_type:
+        format_type = "json" if ctx.obj.get("json") else "table"
+
+    # Handle non-table formats
+    if format_type != "table":
         # Use SDK's Pydantic models with focused field selection for context efficiency
         data = [
             p.model_dump(
@@ -97,7 +104,19 @@ def list_projects(ctx, limit, name_, name_pattern, name_regex, reference_dataset
             )
             for p in projects_list
         ]
-        click.echo(json.dumps(data, default=str))
+
+        if format_type == "json":
+            click.echo(json.dumps(data, default=str))
+        elif format_type == "csv":
+            import csv
+            import sys
+            if data:
+                writer = csv.DictWriter(sys.stdout, fieldnames=data[0].keys())
+                writer.writeheader()
+                writer.writerows(data)
+        elif format_type == "yaml":
+            import yaml
+            click.echo(yaml.dump(data, default_flow_style=False, sort_keys=False))
         return
 
     table = Table(title="Projects")

@@ -73,8 +73,9 @@ def parse_relative_time(time_str):
 @click.option("--since", help="Show runs since time (ISO format or relative like '1 hour ago').")
 @click.option("--last", help="Show runs from last duration (e.g., '24h', '7d', '30m').")
 @click.option("--sort-by", help="Sort by field (name, status, latency, start_time). Prefix with - for descending.")
+@click.option("--format", "output_format", type=click.Choice(["table", "json", "csv", "yaml"]), help="Output format (default: table, or json if --json flag used).")
 @click.pass_context
-def list_runs(ctx, project, limit, status, filter_, trace_id, run_type, is_root, trace_filter, tree_filter, order_by, reference_example_id, tag, name_pattern, name_regex, model, failed, succeeded, slow, recent, today, min_latency, max_latency, since, last, sort_by):
+def list_runs(ctx, project, limit, status, filter_, trace_id, run_type, is_root, trace_filter, tree_filter, order_by, reference_example_id, tag, name_pattern, name_regex, model, failed, succeeded, slow, recent, today, min_latency, max_latency, since, last, sort_by, output_format):
     """Fetch recent runs."""
     import datetime
 
@@ -212,11 +213,28 @@ def list_runs(ctx, project, limit, status, filter_, trace_id, run_type, is_root,
         else:
             console.print(f"[yellow]Warning: Unknown sort field '{sort_field}'. Using default order.[/yellow]")
 
-    if ctx.obj.get("json"):
-        import json
+    # Determine output format
+    format_type = output_format
+    if not format_type:
+        format_type = "json" if ctx.obj.get("json") else "table"
 
+    # Handle non-table formats
+    if format_type != "table":
         data = [r.dict() if hasattr(r, "dict") else dict(r) for r in runs]
-        click.echo(json.dumps(data, default=str))
+
+        if format_type == "json":
+            import json
+            click.echo(json.dumps(data, default=str))
+        elif format_type == "csv":
+            import csv
+            import sys
+            if data:
+                writer = csv.DictWriter(sys.stdout, fieldnames=data[0].keys())
+                writer.writeheader()
+                writer.writerows(data)
+        elif format_type == "yaml":
+            import yaml
+            click.echo(yaml.dump(data, default_flow_style=False, sort_keys=False))
         return
 
     table = Table(title=f"Runs ({project})")
@@ -395,11 +413,67 @@ def watch_runs(ctx, project, interval):
 
 
 @runs.command("search")
-@click.option("--filter", "filter_", required=True, help="LangSmith filter string.")
+@click.argument("query")
 @click.option("--project", default="default", help="Project name.")
 @click.option("--limit", default=10, help="Max results.")
+@click.option("--in", "search_in", type=click.Choice(["all", "inputs", "outputs", "error"]), default="all", help="Where to search (default: all fields).")
+@click.option("--input-contains", help="Filter by content in inputs (JSON path or text).")
+@click.option("--output-contains", help="Filter by content in outputs (JSON path or text).")
+@click.option("--format", "output_format", type=click.Choice(["table", "json", "csv", "yaml"]), help="Output format.")
 @click.pass_context
-def search_runs(ctx, filter_, project, limit):
-    """Search runs using advanced filter syntax."""
-    # Reuse list_runs logic
-    return ctx.invoke(list_runs, project=project, limit=limit, filter_=filter_)
+def search_runs(ctx, query, project, limit, search_in, input_contains, output_contains, output_format):
+    """Search runs using full-text search.
+
+    QUERY is the text to search for across runs.
+
+    Examples:
+      langsmith-cli runs search "authentication failed"
+      langsmith-cli runs search "timeout" --in error
+      langsmith-cli runs search "user_123" --in inputs
+    """
+    # Build FQL filter for full-text search
+    filter_expr = f'search("{query}")'
+
+    # Add field-specific filters if provided
+    filters = [filter_expr]
+
+    if input_contains:
+        filters.append(f'search("{input_contains}")')
+
+    if output_contains:
+        filters.append(f'search("{output_contains}")')
+
+    # Combine filters with AND
+    combined_filter = filters[0] if len(filters) == 1 else f'and({", ".join(filters)})'
+
+    # Invoke list_runs with the filter
+    return ctx.invoke(
+        list_runs,
+        project=project,
+        limit=limit,
+        filter_=combined_filter,
+        output_format=output_format,
+        # Pass through other required args with defaults
+        status=None,
+        trace_id=None,
+        run_type=None,
+        is_root=None,
+        trace_filter=None,
+        tree_filter=None,
+        order_by="-start_time",
+        reference_example_id=None,
+        tag=(),
+        name_pattern=None,
+        name_regex=None,
+        model=None,
+        failed=False,
+        succeeded=False,
+        slow=False,
+        recent=False,
+        today=False,
+        min_latency=None,
+        max_latency=None,
+        since=None,
+        last=None,
+        sort_by=None,
+    )
