@@ -446,6 +446,8 @@ def get_matching_projects(
     client: Any,
     *,
     project: str | None = None,
+    name: str | None = None,
+    name_exact: str | None = None,
     name_pattern: str | None = None,
     name_regex: str | None = None,
 ) -> list[str]:
@@ -453,9 +455,18 @@ def get_matching_projects(
 
     Universal helper for project pattern matching across all commands.
 
+    Filter precedence (most specific to least specific):
+    1. name_exact - Exact match (highest priority)
+    2. name_regex - Regular expression
+    3. name_pattern - Wildcard pattern (*, ?)
+    4. name - Substring/contains match
+    5. project - Single project (default/fallback)
+
     Args:
         client: LangSmith Client instance
-        project: Single project name (if specified, returns [project])
+        project: Single project name (default fallback)
+        name: Substring/contains match (convenience filter)
+        name_exact: Exact project name match
         name_pattern: Wildcard pattern (e.g., "dev/*", "*production*")
         name_regex: Regular expression pattern
 
@@ -463,9 +474,17 @@ def get_matching_projects(
         List of matching project names
 
     Examples:
-        # Single project
+        # Single project (default)
         get_matching_projects(client, project="my-project")
         # -> ["my-project"]
+
+        # Exact match
+        get_matching_projects(client, name_exact="production-api")
+        # -> ["production-api"] or []
+
+        # Substring contains
+        get_matching_projects(client, name="prod")
+        # -> ["production-api", "production-web", "dev-prod-test"]
 
         # Wildcard pattern
         get_matching_projects(client, name_pattern="dev/*")
@@ -475,12 +494,22 @@ def get_matching_projects(
         get_matching_projects(client, name_regex="^prod-.*-v[0-9]+$")
         # -> ["prod-api-v1", "prod-web-v2"]
     """
-    # If a specific project is given and no patterns, return just that project
-    if project and not name_pattern and not name_regex:
+    # Exact match has highest priority - return immediately if found
+    if name_exact:
+        all_projects = list(client.list_projects())
+        matching = [p for p in all_projects if p.name == name_exact]
+        return [p.name for p in matching]
+
+    # If a specific project is given and no other filters, return just that project
+    if project and not name and not name_pattern and not name_regex:
         return [project]
 
-    # Otherwise, list all projects and filter
+    # Otherwise, list all projects and apply filters in order
     all_projects = list(client.list_projects())
+
+    # Apply regex filter (higher priority than wildcard)
+    if name_regex:
+        all_projects = apply_regex_filter(all_projects, name_regex, lambda p: p.name)
 
     # Apply wildcard pattern filter
     if name_pattern:
@@ -488,8 +517,58 @@ def get_matching_projects(
             all_projects, name_pattern, lambda p: p.name
         )
 
-    # Apply regex filter
-    if name_regex:
-        all_projects = apply_regex_filter(all_projects, name_regex, lambda p: p.name)
+    # Apply substring/contains filter (lowest priority)
+    if name:
+        all_projects = [p for p in all_projects if name in p.name]
 
     return [p.name for p in all_projects]
+
+
+def add_project_filter_options(func: Callable[..., Any]) -> Callable[..., Any]:
+    """Decorator to add universal project filtering options to a command.
+
+    Adds the following Click options in consistent order:
+    - --project: Single project name (default/fallback)
+    - --name: Substring/contains match
+    - --name-exact: Exact match
+    - --name-pattern: Wildcard pattern (*, ?)
+    - --name-regex: Regular expression
+
+    Usage:
+        @runs.command("list")
+        @add_project_filter_options
+        @click.pass_context
+        def list_runs(ctx, project, name, name_exact, name_pattern, name_regex, ...):
+            client = get_or_create_client(ctx)
+            projects = get_matching_projects(
+                client,
+                project=project,
+                name=name,
+                name_exact=name_exact,
+                name_pattern=name_pattern,
+                name_regex=name_regex,
+            )
+            # Use projects list...
+    """
+    func = click.option(
+        "--name-regex",
+        help="Regular expression pattern for project names (e.g., '^prod-.*-v[0-9]+$').",
+    )(func)
+    func = click.option(
+        "--name-pattern",
+        help="Wildcard pattern for project names (e.g., 'dev/*', '*production*').",
+    )(func)
+    func = click.option(
+        "--name-exact",
+        help="Exact project name match.",
+    )(func)
+    func = click.option(
+        "--name",
+        help="Substring/contains match for project names (convenience filter).",
+    )(func)
+    func = click.option(
+        "--project",
+        default="default",
+        help="Project name (default fallback if no other filters specified).",
+    )(func)
+    return func

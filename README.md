@@ -16,6 +16,17 @@
 
 ---
 
+> [!TIP]
+> **Install as Claude Code Plugin**
+>
+> ```bash
+> /plugin marketplace add gigaverse-app/langsmith-cli
+> ```
+>
+> This integrates LangSmith CLI directly into your Claude Code environment, giving you instant access to all commands via skills.
+
+---
+
 ## 🎯 Why LangSmith CLI?
 
 Traditional tools are slow, verbose, and waste tokens. **LangSmith CLI** is different:
@@ -232,6 +243,9 @@ langsmith-cli projects list --format yaml > projects.yml
 ## 🤖 AI Agent Integration
 
 ### As a Claude Code Skill
+
+> [!NOTE]
+> **Quick Install:** `/plugin marketplace add gigaverse-app/langsmith-cli`
 
 The CLI is optimized for Claude Code agents:
 
