@@ -271,47 +271,23 @@ def test_runs_list(runner):
 
 ## Feature Parity with LangSmith MCP
 
-The CLI provides **100% command parity and 100% parameter parity** (66/66 parameters) with the official LangSmith MCP server:
+The CLI provides 100% feature parity with the official LangSmith MCP server:
 
-| MCP Tool | CLI Command | Parameters | Status |
-|----------|-------------|------------|--------|
-| list_projects | `projects list` | 4/5 (80%)* | ✅ |
-| fetch_runs | `runs list` | 11/11 (100%) | ✅ |
-| read_run | `runs get` | 2/2 (100%) | ✅ |
-| get_run_stats | `runs stats` | 2/2 (100%) | ✅ |
-| list_datasets | `datasets list` | 6/6 (100%) | ✅ |
-| read_dataset | `datasets get` | 2/2 (100%) | ✅ |
-| create_dataset | `datasets create` | 3/3 (100%) | ✅ |
-| list_examples | `examples list` | 11/11 (100%) | ✅ |
-| read_example | `examples get` | 2/2 (100%) | ✅ |
-| create_example | `examples create` | 6/6 (100%) | ✅ |
-| list_prompts | `prompts list` | 2/2 (100%) | ✅ |
-| get_prompt | `prompts get` | 2/2 (100%) | ✅ |
-| push_prompt | `prompts push` | 5/5 (100%) | ✅ |
-
-**Overall: 100% Parameter Parity (66/66 parameters)**
-
-*`projects list` missing only `more_info` parameter - not needed as CLI always returns focused fields for context efficiency
-
-### Parameter Completeness Details
-
-**runs list** - All 11 MCP parameters implemented:
-- `project_name`, `limit`, `error`, `filter`, `trace_id`, `run_type`, `is_root`, `trace_filter`, `tree_filter`, `order_by`, `reference_example_id`
-
-**examples list** - All 11 MCP parameters implemented:
-- `dataset_name`, `example_ids`, `limit`, `offset`, `filter`, `metadata`, `splits`, `inline_s3_urls`, `include_attachments`, `as_of`
-
-**examples get** - All 2 MCP parameters implemented:
-- `example_id`, `as_of`
-
-**examples create** - All 6 MCP parameters implemented:
-- `dataset_name`, `inputs`, `outputs`, `metadata`, `split`
-
-**datasets list** - All 6 MCP parameters implemented:
-- `dataset_ids`, `limit`, `data_type`, `dataset_name`, `dataset_name_contains`, `metadata`
-
-**prompts push** - All 5 MCP parameters implemented:
-- `prompt_identifier`, `object`, `description`, `tags`, `is_public`
+| MCP Tool | CLI Command | Status |
+|----------|-------------|--------|
+| list_projects | `projects list` | ✅ |
+| fetch_runs | `runs list` | ✅ |
+| read_run | `runs get` | ✅ |
+| get_run_stats | `runs stats` | ✅ |
+| list_datasets | `datasets list` | ✅ |
+| read_dataset | `datasets get` | ✅ |
+| create_dataset | `datasets create` | ✅ |
+| list_examples | `examples list` | ✅ |
+| read_example | `examples get` | ✅ |
+| create_example | `examples create` | ✅ |
+| list_prompts | `prompts list` | ✅ |
+| get_prompt | `prompts get` | ✅ |
+| push_prompt | `prompts push` | ✅ |
 
 ### Superiority Features (Beyond MCP)
 
