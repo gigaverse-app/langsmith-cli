@@ -3,6 +3,10 @@ from rich.console import Console
 from rich.table import Table
 import langsmith
 import json
+from langsmith_cli.utils import (
+    print_empty_result_message,
+    parse_comma_separated_list,
+)
 
 console = Console()
 
@@ -58,7 +62,7 @@ def list_prompts(ctx, limit, is_public):
         table.add_row(p.full_name, p.description or "", p.owner)
 
     if not prompts_list:
-        console.print("[yellow]No prompts found.[/yellow]")
+        print_empty_result_message(console, "prompts")
     else:
         console.print(table)
 
@@ -105,9 +109,7 @@ def push_prompt(ctx, name, file_path, description, tags, is_public):
         content = f.read()
 
     # Parse tags if provided
-    tags_list = None
-    if tags:
-        tags_list = [t.strip() for t in tags.split(",")]
+    tags_list = parse_comma_separated_list(tags)
 
     # Push prompt with metadata
     client.push_prompt(

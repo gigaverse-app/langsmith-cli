@@ -4,6 +4,11 @@ from rich.table import Table
 import langsmith
 import json
 import os
+from langsmith_cli.utils import (
+    print_empty_result_message,
+    parse_json_string,
+    parse_comma_separated_list,
+)
 
 console = Console()
 
@@ -27,14 +32,10 @@ def list_datasets(ctx, dataset_ids, limit, data_type, dataset_name, name_contain
     client = langsmith.Client()
 
     # Parse comma-separated dataset IDs
-    dataset_ids_list = None
-    if dataset_ids:
-        dataset_ids_list = [did.strip() for did in dataset_ids.split(",")]
+    dataset_ids_list = parse_comma_separated_list(dataset_ids)
 
     # Parse metadata JSON
-    metadata_dict = None
-    if metadata:
-        metadata_dict = json.loads(metadata)
+    metadata_dict = parse_json_string(metadata, "metadata")
 
     datasets_gen = client.list_datasets(
         dataset_ids=dataset_ids_list,
@@ -83,7 +84,7 @@ def list_datasets(ctx, dataset_ids, limit, data_type, dataset_name, name_contain
         )
 
     if not datasets_list:
-        console.print("[yellow]No datasets found.[/yellow]")
+        print_empty_result_message(console, "datasets")
     else:
         console.print(table)
 

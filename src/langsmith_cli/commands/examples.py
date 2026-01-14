@@ -3,6 +3,11 @@ from rich.console import Console
 from rich.table import Table
 import langsmith
 import json
+from langsmith_cli.utils import (
+    print_empty_result_message,
+    parse_json_string,
+    parse_comma_separated_list,
+)
 
 console = Console()
 
@@ -30,17 +35,9 @@ def list_examples(ctx, dataset, example_ids, limit, offset, filter_, metadata, s
     client = langsmith.Client()
 
     # Parse comma-separated values
-    example_ids_list = None
-    if example_ids:
-        example_ids_list = [eid.strip() for eid in example_ids.split(",")]
-
-    splits_list = None
-    if splits:
-        splits_list = [s.strip() for s in splits.split(",")]
-
-    metadata_dict = None
-    if metadata:
-        metadata_dict = json.loads(metadata)
+    example_ids_list = parse_comma_separated_list(example_ids)
+    splits_list = parse_comma_separated_list(splits)
+    metadata_dict = parse_json_string(metadata, "metadata")
 
     # list_examples takes dataset_name and limit
     examples_gen = client.list_examples(
@@ -94,7 +91,7 @@ def list_examples(ctx, dataset, example_ids, limit, offset, filter_, metadata, s
         table.add_row(str(e.id), inputs, outputs)
 
     if not examples_list:
-        console.print("[yellow]No examples found.[/yellow]")
+        print_empty_result_message(console, "examples")
     else:
         console.print(table)
 
@@ -134,9 +131,9 @@ def create_example(ctx, dataset, inputs, outputs, metadata, split):
     """Create a new example in a dataset."""
     client = langsmith.Client()
 
-    input_dict = json.loads(inputs)
-    output_dict = json.loads(outputs) if outputs else None
-    metadata_dict = json.loads(metadata) if metadata else None
+    input_dict = parse_json_string(inputs, "inputs")
+    output_dict = parse_json_string(outputs, "outputs")
+    metadata_dict = parse_json_string(metadata, "metadata")
 
     # Handle split - can be a single string or list
     split_value = None
