@@ -423,24 +423,26 @@ def open_run(ctx, run_id):
 @click.option("--interval", default=2.0, help="Refresh interval in seconds.")
 @click.pass_context
 def watch_runs(ctx, project, interval):
-    """Live dashboard of runs."""
+    """Live dashboard of runs (root traces only)."""
     from rich.live import Live
     import time
 
     client = get_or_create_client(ctx)
 
     def generate_table():
-        runs = client.list_runs(project_name=project, limit=10)
+        # Only get root runs (is_root=True) to show top-level traces
+        runs = client.list_runs(project_name=project, limit=10, is_root=True)
         table = Table(title=f"Watching: {project} (Interval: {interval}s)")
-        table.add_column("ID", style="dim", no_wrap=True)
-        table.add_column("Name")
+        table.add_column("Name", style="cyan")
+        table.add_column("Project", style="dim")
         table.add_column("Status", justify="center")
-        table.add_column("Latency")
+        table.add_column("Tokens", justify="right")
+        table.add_column("Latency", justify="right")
 
         for r in runs:
             # Access SDK model fields directly (type-safe)
-            r_id = str(r.id)
             r_name = r.name or "Unknown"
+            r_project = r.session_name or project
             r_status = r.status
             status_style = (
                 "green"
@@ -449,9 +451,19 @@ def watch_runs(ctx, project, interval):
                 if r_status == "error"
                 else "yellow"
             )
+
+            # Get token counts
+            total_tokens = r.total_tokens or 0
+            tokens_str = f"{total_tokens:,}" if total_tokens > 0 else "-"
+
             latency = f"{r.latency:.2f}s" if r.latency is not None else "-"
+
             table.add_row(
-                r_id, r_name, f"[{status_style}]{r_status}[/{status_style}]", latency
+                r_name,
+                r_project,
+                f"[{status_style}]{r_status}[/{status_style}]",
+                tokens_str,
+                latency,
             )
         return table
 
