@@ -208,7 +208,8 @@ class TestApplyRegexFilter:
             MockItem(name="test-auth-v2"),
             MockItem(name="prod-checkout"),
         ]
-        field_getter = lambda x: x.name
+        def field_getter(x):
+            return x.name
 
         result = apply_regex_filter(items, r"test-auth-v\d+", field_getter)
 
@@ -219,7 +220,8 @@ class TestApplyRegexFilter:
     def test_regex_filter_no_matches(self):
         """Test regex filtering with no matches."""
         items = [MockItem(name="test1"), MockItem(name="test2")]
-        field_getter = lambda x: x.name
+        def field_getter(x):
+            return x.name
 
         result = apply_regex_filter(items, "nomatch", field_getter)
 
@@ -228,7 +230,8 @@ class TestApplyRegexFilter:
     def test_regex_filter_none_pattern(self):
         """Test that None pattern returns all items."""
         items = [MockItem(name="test1"), MockItem(name="test2")]
-        field_getter = lambda x: x.name
+        def field_getter(x):
+            return x.name
 
         result = apply_regex_filter(items, None, field_getter)
 
@@ -237,7 +240,8 @@ class TestApplyRegexFilter:
     def test_regex_filter_empty_pattern(self):
         """Test that empty string pattern returns all items."""
         items = [MockItem(name="test1")]
-        field_getter = lambda x: x.name
+        def field_getter(x):
+            return x.name
 
         result = apply_regex_filter(items, "", field_getter)
 
@@ -246,7 +250,8 @@ class TestApplyRegexFilter:
     def test_regex_filter_invalid_pattern(self):
         """Test that invalid regex raises BadParameter."""
         items = [MockItem(name="test")]
-        field_getter = lambda x: x.name
+        def field_getter(x):
+            return x.name
 
         with pytest.raises(click.BadParameter, match="Invalid regex pattern"):
             apply_regex_filter(items, "[invalid(", field_getter)
@@ -257,7 +262,8 @@ class TestApplyRegexFilter:
             MockItem(name="auth-service"),
             MockItem(name="test-auth"),
         ]
-        field_getter = lambda x: x.name
+        def field_getter(x):
+            return x.name
 
         result = apply_regex_filter(items, "^auth", field_getter)
 
@@ -270,7 +276,8 @@ class TestApplyRegexFilter:
             MockItem(name="test"),
             MockItem(name=None),
         ]
-        field_getter = lambda x: x.name
+        def field_getter(x):
+            return x.name
 
         result = apply_regex_filter(items, "test", field_getter)
 
@@ -289,7 +296,8 @@ class TestApplyWildcardFilter:
             MockItem(name="prod-web-v1"),
             MockItem(name="staging-api"),
         ]
-        field_getter = lambda x: x.name
+        def field_getter(x):
+            return x.name
 
         result = apply_wildcard_filter(items, "*prod*", field_getter)
 
@@ -304,7 +312,8 @@ class TestApplyWildcardFilter:
             MockItem(name="test2"),
             MockItem(name="test10"),
         ]
-        field_getter = lambda x: x.name
+        def field_getter(x):
+            return x.name
 
         result = apply_wildcard_filter(items, "test?", field_getter)
 
@@ -315,7 +324,8 @@ class TestApplyWildcardFilter:
     def test_wildcard_none_pattern(self):
         """Test that None pattern returns all items."""
         items = [MockItem(name="test")]
-        field_getter = lambda x: x.name
+        def field_getter(x):
+            return x.name
 
         result = apply_wildcard_filter(items, None, field_getter)
 
@@ -324,7 +334,8 @@ class TestApplyWildcardFilter:
     def test_wildcard_empty_pattern(self):
         """Test that empty pattern returns all items."""
         items = [MockItem(name="test")]
-        field_getter = lambda x: x.name
+        def field_getter(x):
+            return x.name
 
         result = apply_wildcard_filter(items, "", field_getter)
 
@@ -333,7 +344,8 @@ class TestApplyWildcardFilter:
     def test_wildcard_no_matches(self):
         """Test wildcard with no matches."""
         items = [MockItem(name="test1"), MockItem(name="test2")]
-        field_getter = lambda x: x.name
+        def field_getter(x):
+            return x.name
 
         result = apply_wildcard_filter(items, "*nomatch*", field_getter)
 
@@ -345,7 +357,8 @@ class TestApplyWildcardFilter:
             MockItem(name="test"),
             MockItem(name=None),
         ]
-        field_getter = lambda x: x.name
+        def field_getter(x):
+            return x.name
 
         result = apply_wildcard_filter(items, "*test*", field_getter)
 
