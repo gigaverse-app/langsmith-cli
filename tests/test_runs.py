@@ -174,11 +174,6 @@ def test_runs_list_with_smart_filters(runner):
         args, kwargs = mock_client.list_runs.call_args
         assert 'gt(latency, "5s")' in kwargs["filter"]
 
-        # Test --expensive flag
-        runner.invoke(cli, ["runs", "list", "--expensive"])
-        args, kwargs = mock_client.list_runs.call_args
-        assert 'gt(total_cost, "0.01")' in kwargs["filter"]
-
         # Test --recent flag
         runner.invoke(cli, ["runs", "list", "--recent"])
         args, kwargs = mock_client.list_runs.call_args

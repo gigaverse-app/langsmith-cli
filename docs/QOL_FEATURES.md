@@ -40,9 +40,6 @@ Common debugging scenarios as single flags:
 # Find slow runs (latency > 5s)
 langsmith-cli runs list --slow
 
-# Find expensive runs (cost > $0.01)
-langsmith-cli runs list --expensive
-
 # Recent runs (last hour)
 langsmith-cli runs list --recent
 
@@ -67,7 +64,7 @@ langsmith-cli runs list --recent --name-pattern "*api*" --status error
 langsmith-cli runs list \
   --tag staging \
   --slow \
-  --expensive \
+  --recent \
   --name-pattern "*checkout*"
 ```
 
@@ -84,7 +81,6 @@ All user-friendly flags are translated to LangSmith Filter Query Language (FQL):
 | `--tag foo` | `has(tags, "foo")` |
 | `--name-pattern "*auth*"` | `search("auth")` |
 | `--slow` | `gt(latency, "5s")` |
-| `--expensive` | `gt(total_cost, "0.01")` |
 | `--recent` | `gt(start_time, "<timestamp>")` |
 | `--today` | `gt(start_time, "<midnight>")` |
 
@@ -132,15 +128,15 @@ langsmith-cli runs list --tag production --status error --recent
 langsmith-cli runs list --tag production --slow --limit 50
 ```
 
-### Cost Analysis
+### Performance Analysis
 
 ```bash
-# Find expensive LLM calls today
-langsmith-cli runs list --expensive --today --run-type llm
+# Find slow LLM calls today
+langsmith-cli runs list --slow --today --run-type llm
 
-# Export expensive runs to CSV for analysis
-langsmith-cli --json runs list --expensive \
-  | jq -r '.[] | [.id, .name, .total_cost] | @csv'
+# Export slow runs to JSON for analysis
+langsmith-cli --json runs list --slow \
+  | jq -r '.[] | [.id, .name, .latency] | @csv'
 ```
 
 ### Pattern-Based Debugging
