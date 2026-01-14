@@ -3,6 +3,7 @@ from rich.console import Console
 from rich.table import Table
 import langsmith
 import json
+import os
 
 console = Console()
 
@@ -78,3 +79,39 @@ def create_dataset(ctx, name, description, dataset_type):
         return
 
     console.print(f"[green]Created dataset {dataset.name}[/green] (ID: {dataset.id})")
+
+
+@datasets.command("push")
+@click.argument("file_path", type=click.Path(exists=True))
+@click.option("--dataset", help="Dataset name to push to. Created if not exists.")
+@click.pass_context
+def push_dataset(ctx, file_path, dataset):
+    """Upload examples from a JSONL file to a dataset."""
+    client = langsmith.Client()
+
+    if not dataset:
+        dataset = os.path.basename(file_path).split(".")[0]
+
+    # Create dataset if not exists (simple check)
+    try:
+        client.read_dataset(dataset_name=dataset)
+    except Exception:
+        console.print(f"[yellow]Dataset '{dataset}' not found. Creating it...[/yellow]")
+        client.create_dataset(dataset_name=dataset)
+
+    examples = []
+    with open(file_path, "r") as f:
+        for line in f:
+            if line.strip():
+                examples.append(json.loads(line))
+
+    # Expecting examples in [{"inputs": {...}, "outputs": {...}}, ...] format
+    client.create_examples(
+        inputs=[e.get("inputs", {}) for e in examples],
+        outputs=[e.get("outputs") for e in examples],
+        dataset_name=dataset,
+    )
+
+    console.print(
+        f"[green]Successfully pushed {len(examples)} examples to dataset '{dataset}'[/green]"
+    )
