@@ -22,7 +22,7 @@ from langsmith_cli.utils import (
 class MockItem:
     """Simple mock item for testing."""
 
-    name: str = None
+    name: str | None = None
     value: int = 0
 
 
@@ -457,6 +457,7 @@ class TestParseJsonString:
         """Test parsing JSON with nested objects."""
         json_str = '{"outer": {"inner": "value"}, "list": [1, 2, 3]}'
         result = parse_json_string(json_str)
+        assert result is not None
         assert result["outer"]["inner"] == "value"
         assert result["list"] == [1, 2, 3]
 

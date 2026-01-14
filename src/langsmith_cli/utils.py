@@ -58,7 +58,7 @@ def output_formatted_data(
 
 def sort_items(
     items: List[Any],
-    sort_by: str,
+    sort_by: str | None,
     sort_key_map: Dict[str, Callable[[Any], Any]],
     console: Any,
 ) -> List[Any]:
@@ -121,11 +121,12 @@ def apply_regex_filter(
     except re.error as e:
         raise click.BadParameter(f"Invalid regex pattern: {regex_pattern}. Error: {e}")
 
-    return [
-        item
-        for item in items
-        if field_getter(item) and compiled_pattern.search(field_getter(item))
-    ]
+    filtered = []
+    for item in items:
+        field_value = field_getter(item)
+        if field_value and compiled_pattern.search(field_value):
+            filtered.append(item)
+    return filtered
 
 
 def apply_wildcard_filter(
@@ -159,11 +160,12 @@ def apply_wildcard_filter(
 
     regex_pattern = re.compile(pattern)
 
-    return [
-        item
-        for item in items
-        if field_getter(item) and regex_pattern.search(field_getter(item))
-    ]
+    filtered = []
+    for item in items:
+        field_value = field_getter(item)
+        if field_value and regex_pattern.search(field_value):
+            filtered.append(item)
+    return filtered
 
 
 def determine_output_format(
@@ -220,7 +222,7 @@ def parse_json_string(
         raise click.BadParameter(f"Invalid JSON in {field_name}: {e}")
 
 
-def parse_comma_separated_list(input_str: Optional[str]) -> Optional[List[str]]:
+def parse_comma_separated_list(input_str: Optional[str]) -> Optional[list[str]]:
     """Parse a comma-separated string into a list.
 
     Args:

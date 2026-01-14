@@ -40,7 +40,9 @@ def list_datasets(
     metadata_dict = parse_json_string(metadata, "metadata")
 
     datasets_gen = client.list_datasets(
-        dataset_ids=dataset_ids_list,
+        dataset_ids=dataset_ids_list
+        if dataset_ids_list is None
+        else list(dataset_ids_list),  # type: ignore[arg-type]
         limit=limit,
         data_type=data_type,
         dataset_name=dataset_name,
@@ -121,7 +123,7 @@ def create_dataset(ctx, name, description, dataset_type):
     """Create a new dataset."""
     client = langsmith.Client()
     dataset = client.create_dataset(
-        dataset_name=name, description=description, dataset_type=dataset_type
+        dataset_name=name, description=description, data_type=dataset_type
     )
 
     if ctx.obj.get("json"):
