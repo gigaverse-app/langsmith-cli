@@ -2,7 +2,9 @@
 # Project specific ignores
 ######
 mcp.json
+.mcp.json
 .vscode/mcp.json
+.claude/
 
 ######
 # Standard python ignores
