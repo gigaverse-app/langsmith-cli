@@ -1,0 +1,87 @@
+from langsmith_cli.main import cli
+from unittest.mock import patch, MagicMock
+
+
+def test_runs_list(runner):
+    """Test the runs list command."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_run = MagicMock()
+        mock_run.id = "run-123"
+        mock_run.name = "My Run"
+        mock_run.status = "success"
+        mock_run.latency = 0.5
+        mock_run.error = None
+        mock_client.list_runs.return_value = [mock_run]
+
+        result = runner.invoke(cli, ["runs", "list"])
+        assert result.exit_code == 0
+        assert "run-123" in result.output
+        assert "My Run" in result.output
+        assert "success" in result.output
+
+
+def test_runs_list_filters(runner):
+    """Test runs list with filters."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_runs.return_value = []
+
+        runner.invoke(
+            cli,
+            ["runs", "list", "--project", "prod", "--limit", "5", "--status", "error"],
+        )
+
+        mock_client.list_runs.assert_called_with(
+            project_name="prod", limit=5, error=True, filter=None
+        )
+
+
+def test_runs_get(runner):
+    """Test the runs get command."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_run = MagicMock()
+        mock_run.id = "run-456"
+        mock_run.name = "Detailed Run"
+        mock_run.inputs = {"q": "hello"}
+        mock_run.outputs = {"a": "world"}
+        mock_run.dict.return_value = {
+            "id": "run-456",
+            "name": "Detailed Run",
+            "inputs": {"q": "hello"},
+            "outputs": {"a": "world"},
+        }
+        mock_client.read_run.return_value = mock_run
+
+        # Use --json to checking the raw output mostly, but default is table/text
+        result = runner.invoke(cli, ["--json", "runs", "get", "run-456"])
+        assert result.exit_code == 0, f"Exit code {result.exit_code}: {result.output}"
+        assert "run-456" in result.output
+        assert "hello" in result.output
+
+
+def test_runs_get_fields(runner):
+    """Test runs get with pruning fields."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_run = MagicMock()
+        # Full dict
+        full_data = {
+            "id": "run-789",
+            "inputs": "foo",
+            "outputs": "bar",
+            "extra_heavy_field": "huge_data",
+        }
+        mock_run.dict.return_value = full_data
+        mock_client.read_run.return_value = mock_run
+
+        result = runner.invoke(
+            cli, ["--json", "runs", "get", "run-789", "--fields", "inputs"]
+        )
+        assert result.exit_code == 0, f"Exit code {result.exit_code}: {result.output}"
+
+        # Should contain inputs
+        assert "foo" in result.output
+        # Should NOT contain extra_heavy_field
+        assert "huge_data" not in result.output

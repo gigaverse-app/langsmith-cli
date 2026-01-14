@@ -1,0 +1,125 @@
+import click
+from rich.console import Console
+from rich.table import Table
+import langsmith
+
+console = Console()
+
+
+@click.group()
+def runs():
+    """Inspect and filter application traces."""
+    pass
+
+
+@runs.command("list")
+@click.option("--project", default="default", help="Project name.")
+@click.option("--limit", default=20, help="Max runs to fetch.")
+@click.option(
+    "--status", type=click.Choice(["success", "error"]), help="Filter by status."
+)
+@click.option("--filter", "filter_", help="LangSmith filter string.")
+@click.pass_context
+def list_runs(ctx, project, limit, status, filter_):
+    """Fetch recent runs."""
+    client = langsmith.Client()
+
+    error_filter = None
+    if status == "error":
+        error_filter = True
+    elif status == "success":
+        error_filter = False
+
+    runs = client.list_runs(
+        project_name=project, limit=limit, error=error_filter, filter=filter_
+    )
+
+    if ctx.obj.get("json"):
+        import json
+
+        data = [r.dict() if hasattr(r, "dict") else dict(r) for r in runs]
+        click.echo(json.dumps(data, default=str))
+        return
+
+    table = Table(title=f"Runs ({project})")
+    table.add_column("ID", style="dim", no_wrap=True)
+    table.add_column("Name")
+    table.add_column("Status", justify="center")
+    table.add_column("Latency")
+
+    count = 0
+    for r in runs:
+        count += 1
+        r_id = str(getattr(r, "id", ""))
+        r_name = getattr(r, "name", "Unknown")
+        r_status = getattr(r, "status", "unknown")
+
+        # Colorize status
+        status_style = (
+            "green"
+            if r_status == "success"
+            else "red"
+            if r_status == "error"
+            else "yellow"
+        )
+
+        latency = (
+            f"{getattr(r, 'latency', 0):.2f}s"
+            if getattr(r, "latency") is not None
+            else "-"
+        )
+
+        table.add_row(
+            r_id, r_name, f"[{status_style}]{r_status}[/{status_style}]", latency
+        )
+
+    if count == 0:
+        console.print("[yellow]No runs found.[/yellow]")
+    else:
+        console.print(table)
+
+
+@runs.command("get")
+@click.argument("run_id")
+@click.option(
+    "--fields", help="Comma-separated list of fields to include (e.g. inputs,error)."
+)
+@click.pass_context
+def get_run(ctx, run_id, fields):
+    """Fetch details of a single run."""
+    client = langsmith.Client()
+    run = client.read_run(run_id)
+
+    # Convert to dict
+    data = run.dict() if hasattr(run, "dict") else dict(run)
+
+    # Apply context pruning if requested
+    if fields:
+        field_list = [f.strip() for f in fields.split(",")]
+        # Always include ID and name for context
+        field_list.extend(["id", "name"])
+        data = {k: v for k, v in data.items() if k in field_list}
+
+    if ctx.obj.get("json"):
+        import json
+
+        click.echo(json.dumps(data, default=str))
+        return
+
+    # Human readable output
+    from rich.syntax import Syntax
+    import json
+
+    console.print(f"[bold]Run ID:[/bold] {data.get('id')}")
+    console.print(f"[bold]Name:[/bold] {data.get('name')}")
+
+    # Print other fields
+    for k, v in data.items():
+        if k in ["id", "name"]:
+            continue
+        console.print(f"\n[bold]{k}:[/bold]")
+        if isinstance(v, (dict, list)):
+            formatted = json.dumps(v, indent=2, default=str)
+            console.print(Syntax(formatted, "json"))
+        else:
+            console.print(str(v))
