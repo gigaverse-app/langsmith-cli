@@ -32,7 +32,7 @@ Created two workflows:
 
 ### 3. Documentation
 
-Created **`docs/PUBLISHING.md`** with:
+Created **`docs/dev/PUBLISHING.md`** with:
 - Complete PyPI setup instructions
 - Trusted Publishing configuration steps
 - Publishing process (automated and manual)
@@ -108,7 +108,7 @@ Before creating a version tag:
 ├── ci.yml              # NEW: CI workflow
 └── publish.yml         # NEW: PyPI publish workflow
 
-docs/
+docs/dev/
 ├── PUBLISHING.md       # NEW: Complete publishing guide
 └── PYPI_SETUP_SUMMARY.md  # NEW: This file
 
@@ -117,7 +117,7 @@ pyproject.toml          # UPDATED: Added PyPI metadata and build config
 
 ## 🔗 Resources
 
-- **Publishing Guide**: [docs/PUBLISHING.md](PUBLISHING.md)
+- **Publishing Guide**: [docs/dev/PUBLISHING.md](PUBLISHING.md)
 - **PyPI Trusted Publishing**: https://docs.pypi.org/trusted-publishers/
 - **GitHub Actions**: https://docs.github.com/en/actions
 
@@ -130,7 +130,7 @@ pyproject.toml          # UPDATED: Added PyPI metadata and build config
 
 ## 🎯 Next Steps
 
-1. ✅ **Read** [docs/PUBLISHING.md](PUBLISHING.md) for complete details
+1. ✅ **Read** [docs/dev/PUBLISHING.md](PUBLISHING.md) for complete details
 2. ⚙️ **Configure** PyPI Trusted Publishing (one-time)
 3. 🧪 **Test** the workflow with a version tag
 4. 🚀 **Publish** your first release!

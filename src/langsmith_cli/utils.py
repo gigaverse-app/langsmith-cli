@@ -3,6 +3,7 @@
 from typing import Any, Callable, Protocol, TypeVar
 import click
 import json
+import langsmith
 
 T = TypeVar("T")
 
@@ -10,7 +11,8 @@ T = TypeVar("T")
 def get_or_create_client(ctx: Any) -> Any:
     """Get LangSmith client from context, or create if not exists.
 
-    This maintains lazy loading - langsmith is only imported when first command runs.
+    Note: langsmith module is imported at module level for testability,
+    but Client instantiation is still lazy (only created when first needed).
 
     Args:
         ctx: Click context object
@@ -19,9 +21,6 @@ def get_or_create_client(ctx: Any) -> Any:
         LangSmith Client instance
     """
     if "client" not in ctx.obj:
-        # Lazy import - only load SDK when actually needed
-        import langsmith
-
         ctx.obj["client"] = langsmith.Client()
     return ctx.obj["client"]
 

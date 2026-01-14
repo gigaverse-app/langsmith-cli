@@ -186,7 +186,11 @@ skills/langsmith/
 docs/
 ├── PRD.md               # Product requirements
 ├── COMMANDS_DESIGN.md   # Detailed command specifications
-└── SESSION_DIRECTIVES.md # User preferences and tooling choices
+└── dev/                 # Development documentation
+    ├── SESSION_DIRECTIVES.md  # User preferences and tooling choices
+    ├── TYPE_SAFETY_GUIDE.md   # Type safety guidelines
+    ├── TESTING_PERFORMANCE.md # Test performance optimization
+    └── MCP_PARITY.md          # MCP compatibility mapping
 ```
 
 ## Code Quality Principles
@@ -222,7 +226,7 @@ docs/
 
 ## Type Safety Guidelines
 
-**For comprehensive type safety guidelines, see [docs/TYPE_SAFETY_GUIDE.md](docs/TYPE_SAFETY_GUIDE.md)**
+**For comprehensive type safety guidelines, see [docs/dev/TYPE_SAFETY_GUIDE.md](docs/dev/TYPE_SAFETY_GUIDE.md)**
 
 ### Philosophy: Zero Tolerance for Weak Types
 
@@ -482,7 +486,7 @@ def create_dataset(name="test", example_count=10) -> Dataset:
 
 ## Feature Parity with LangSmith MCP
 
-The CLI provides 100% feature parity with the official LangSmith MCP server. See [MCP_PARITY.md](MCP_PARITY.md) for detailed command mappings and parameter coverage.
+The CLI provides 100% feature parity with the official LangSmith MCP server. See [docs/dev/MCP_PARITY.md](docs/dev/MCP_PARITY.md) for detailed command mappings and parameter coverage.
 
 ## Claude Code Plugin Integration
 
@@ -649,7 +653,7 @@ def test_mycommand_list(runner):
 
 ## Git Workflow
 
-Per docs/SESSION_DIRECTIVES.md:
+Per docs/dev/SESSION_DIRECTIVES.md:
 - Use `uv` for all dependency management
 - Commit often with clear messages
 - Use feature branches and PRs for larger features

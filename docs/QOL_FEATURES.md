@@ -509,6 +509,6 @@ See [QOL_IMPROVEMENTS.md](QOL_IMPROVEMENTS.md) for planned Phase 2 and Phase 3 f
 
 ## Related Documentation
 
-- [MCP_PARITY.md](../MCP_PARITY.md) - Feature parity with LangSmith MCP server
+- [MCP_PARITY.md](dev/MCP_PARITY.md) - Feature parity with LangSmith MCP server
 - [QOL_IMPROVEMENTS.md](QOL_IMPROVEMENTS.md) - Full analysis of QoL improvements
 - [COMMANDS_DESIGN.md](COMMANDS_DESIGN.md) - Command design principles

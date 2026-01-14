@@ -787,5 +787,5 @@ done
 
 - [SKILL.md](SKILL.md) - Quick reference and core commands
 - [REFERENCE.md](REFERENCE.md) - Complete parameter documentation
-- [MCP_PARITY.md](../../MCP_PARITY.md) - MCP compatibility mapping
+- [MCP_PARITY.md](../../docs/dev/MCP_PARITY.md) - MCP compatibility mapping
 - [LangSmith Documentation](https://docs.smith.langchain.com) - Official docs
