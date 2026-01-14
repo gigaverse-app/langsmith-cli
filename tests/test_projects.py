@@ -4,7 +4,7 @@ from unittest.mock import patch, MagicMock
 
 def test_projects_list(runner):
     """Test the projects list command."""
-    with patch("langsmith_cli.commands.projects.Client") as MockClient:
+    with patch("langsmith.Client") as MockClient:
         # Setup mock return value
         mock_client = MockClient.return_value
         mock_project = MagicMock()
@@ -22,7 +22,7 @@ def test_projects_list(runner):
 
 def test_projects_create(runner):
     """Test the projects create command."""
-    with patch("langsmith_cli.commands.projects.Client") as MockClient:
+    with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
         mock_project = MagicMock()
         mock_project.name = "new-project"
