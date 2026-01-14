@@ -43,3 +43,19 @@ Use this tool to debug AI chains, inspect past runs, or manage datasets and prom
 - `langsmith-cli --json prompts list`: List prompt repositories.
 - `langsmith-cli --json prompts get <name> [--commit <hash>]`: Fetch a prompt template.
 - `langsmith-cli --json prompts push <name> <file_path>`: Push a local file as a prompt.
+
+## Additional Resources
+
+For complete documentation, see:
+
+- **[Quick Reference](docs/reference.md)** - Fast command lookup
+- **[Real-World Examples](docs/examples.md)** - Complete workflows and use cases
+
+**Detailed API References:**
+- [Projects](references/projects.md) - Project management
+- [Runs](references/runs.md) - Trace inspection and debugging
+- [Datasets](references/datasets.md) - Dataset operations
+- [Examples](references/examples.md) - Example management
+- [Prompts](references/prompts.md) - Prompt templates
+- [FQL](references/fql.md) - Filter Query Language
+- [Troubleshooting](references/troubleshooting.md) - Error handling & configuration

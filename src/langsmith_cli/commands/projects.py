@@ -33,8 +33,6 @@ def projects():
 @click.pass_context
 def list_projects(ctx, limit, name_, name_pattern, name_regex, reference_dataset_id, reference_dataset_name, has_runs, sort_by, output_format):
     """List all projects."""
-    import re
-    import datetime
 
     client = langsmith.Client()
 

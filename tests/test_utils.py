@@ -1,8 +1,6 @@
 """Tests for utility functions in langsmith_cli.utils."""
 import pytest
 import json
-import io
-import sys
 from unittest.mock import MagicMock
 from dataclasses import dataclass
 import click
