@@ -33,7 +33,17 @@ def test_runs_list_filters(runner):
         )
 
         mock_client.list_runs.assert_called_with(
-            project_name="prod", limit=5, error=True, filter=None
+            project_name="prod",
+            limit=5,
+            error=True,
+            filter=None,
+            trace_id=None,
+            run_type=None,
+            is_root=None,
+            trace_filter=None,
+            tree_filter=None,
+            order_by="-start_time",
+            reference_example_id=None,
         )
 
 

@@ -1,0 +1,471 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project Overview
+
+**langsmith-cli** is a context-efficient CLI tool for LangSmith that serves as both a standalone developer tool and a Claude Code plugin. It replaces heavy MCP servers with lightweight, on-demand skills while providing 100% feature parity plus superior features.
+
+**Key Design Philosophy:**
+- **Lazy Loading**: Heavy imports (langsmith, rich) only load when commands execute
+- **Context Efficiency**: Field pruning (`--fields`) reduces token usage by ~90%
+- **Dual UX**: Rich tables for humans, strict JSON for agents
+- **Type Safety**: Strict SDK contracts, no stringly-typed logic (in progress)
+
+## Development Commands
+
+### Environment Setup
+```bash
+# Install dependencies
+uv sync
+
+# Install pre-commit hooks
+uv run pre-commit install
+```
+
+### Testing
+```bash
+# Run all tests
+uv run pytest
+
+# Run with coverage
+uv run pytest --cov=src --cov-report=term-missing
+
+# Run specific test file
+uv run pytest tests/test_runs.py -v
+
+# Run specific test
+uv run pytest tests/test_runs.py::test_runs_list -v
+
+# Run E2E tests (requires LANGSMITH_API_KEY)
+export LANGSMITH_API_KEY="lsv2_..."
+uv run pytest tests/test_e2e.py -v
+```
+
+### Code Quality
+```bash
+# Linting and formatting (auto-fix)
+uv run ruff check --fix
+uv run ruff format
+
+# Type checking
+uv run pyright
+
+# Run all pre-commit hooks manually
+uv run pre-commit run --all-files
+```
+
+### Running the CLI
+```bash
+# Run locally during development
+uv run langsmith-cli --help
+uv run langsmith-cli runs list --project default
+
+# Run with JSON output (agent mode)
+uv run langsmith-cli --json runs list --limit 5
+```
+
+### Authentication
+```bash
+# Set up API key (creates/updates .env file)
+uv run langsmith-cli auth login
+
+# Or manually create .env from template
+cp .env.example .env
+# Edit .env and add your LANGSMITH_API_KEY
+```
+
+## Architecture
+
+### Command Structure
+
+The CLI uses Click with a modular command group architecture:
+
+```
+main.py (entry point)
+├── @cli (root group with --json flag)
+├── auth (group)
+│   └── login
+├── projects (group)
+│   ├── list
+│   └── create
+├── runs (group)
+│   ├── list
+│   ├── get
+│   ├── stats
+│   ├── open
+│   ├── watch
+│   └── search
+├── datasets (group)
+│   ├── list
+│   ├── get
+│   ├── create
+│   └── push
+├── examples (group)
+│   ├── list
+│   ├── get
+│   └── create
+└── prompts (group)
+    ├── list
+    ├── get
+    └── push
+```
+
+### Key Design Patterns
+
+**1. Lazy Loading Performance Pattern**
+```python
+# ❌ BAD - Top-level import (loads SDK immediately)
+from langsmith import Client
+
+# ✅ GOOD - Import inside command function
+@runs.command("list")
+def list_runs(...):
+    import langsmith  # Only loads when command executes
+    client = langsmith.Client()
+```
+
+**2. Dual Output Pattern (JSON vs Rich Tables)**
+```python
+# All commands check ctx.obj.get("json") flag
+if ctx.obj.get("json"):
+    import json
+    click.echo(json.dumps(data, default=str))
+else:
+    from rich.table import Table
+    # ... render table
+```
+
+**3. Context Efficiency Pattern (Field Pruning)**
+```python
+# runs get command supports --fields to reduce token usage
+# Instead of returning full 20KB run object, return only requested fields
+@runs.command("get")
+@click.option("--fields", help="Comma-separated field names")
+def get_run(ctx, run_id, fields):
+    run = client.read_run(run_id)
+    if fields:
+        # Prune to only requested fields
+        field_list = fields.split(",")
+        data = {k: v for k, v in run_dict.items() if k in field_list}
+```
+
+### File Organization
+
+```
+src/langsmith_cli/
+├── __init__.py
+├── main.py              # Entry point, CLI group registration
+└── commands/            # Modular command implementations
+    ├── auth.py          # Authentication (login)
+    ├── projects.py      # Project management
+    ├── runs.py          # Runs/traces (largest module)
+    ├── datasets.py      # Dataset operations
+    ├── examples.py      # Dataset examples
+    └── prompts.py       # Prompt management
+
+tests/
+├── conftest.py          # Pytest fixtures (CliRunner)
+├── test_main.py         # Root CLI tests
+├── test_auth.py         # Auth command tests
+├── test_projects.py     # Projects command tests
+├── test_runs.py         # Runs command tests (largest)
+└── test_e2e.py          # End-to-end tests (requires API key)
+
+skills/langsmith/
+├── SKILL.md             # Claude Code skill definition
+└── bridge.py            # Subprocess wrapper for skill invocation
+
+docs/
+├── PRD.md               # Product requirements
+├── COMMANDS_DESIGN.md   # Detailed command specifications
+└── SESSION_DIRECTIVES.md # User preferences and tooling choices
+```
+
+## Code Quality Principles
+
+### Rule 1: Always Use SDK's Pydantic Models
+**Never create custom response models - always reuse the LangSmith SDK's Pydantic models.**
+
+- ✅ Use `langsmith.schemas.Dataset`, `Example`, `Run`, `Prompt`, `TracerSessionResult`
+- ✅ For JSON output, use `.model_dump(include={...}, mode="json")` to select fields
+- ✅ Access model fields directly: `project.name`, `dataset.id`
+- ❌ Don't use `getattr(obj, "field", default)` - the fields are guaranteed to exist
+- ❌ Don't create duplicate models in a separate `models.py` file
+
+**Why:** SDK models are type-safe, validated, and the source of truth. Creating duplicates causes maintenance burden and drift.
+
+### Rule 2: Always Use the LangSmith SDK
+**Use the LangSmith SDK for all functionality - only use REST API if SDK doesn't provide the capability.**
+
+- ✅ Use `langsmith.Client()` methods
+- ✅ Explore SDK first: `dir(client)`, inspect source code, read SDK docs
+- ❌ Don't make raw HTTP requests if SDK provides the method
+
+**Why:** SDK handles auth, retry logic, rate limiting, and provides type-safe interfaces.
+
+### Rule 3: Use Proper Exception Types
+**Never match errors by string - always use SDK's exception types from `langsmith.utils`.**
+
+- ✅ `from langsmith.utils import LangSmithConflictError, LangSmithNotFoundError`
+- ✅ `except LangSmithConflictError:` for handling conflicts
+- ❌ `if "already exists" in str(e):` - string matching is brittle
+
+**Why:** Exception types are semantic contracts that won't break with message changes.
+
+## Testing Patterns
+
+### Current Test Approach
+Tests use Click's `CliRunner` with unittest.mock patches:
+
+```python
+def test_runs_list(runner):
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_runs.return_value = [mock_run]
+        result = runner.invoke(cli, ["runs", "list"])
+        assert result.exit_code == 0
+```
+
+**Known Improvement Opportunity:** Tests currently use `patch()` with string paths. Per project standards (docs/AGENTS.md), should migrate to `patch.object()` for better refactor-safety.
+
+### Test Coverage Requirements
+- All new commands must have unit tests
+- Critical paths need integration tests
+- E2E tests validate full SDK interaction (require API key)
+- Aim for 100% coverage of new code
+
+## Engineering Standards (from docs/AGENTS.md)
+
+### 1. Type Safety (Zero Tolerance for Weak Types)
+- ❌ Prohibit: `getattr()`, `hasattr()`, stringly-typed logic
+- ✅ Require: Direct attribute access, strict SDK contracts, Enums for logic
+- ✅ Always use LangSmith SDK's Pydantic models directly (Dataset, Example, Run, Prompt, TracerSessionResult)
+- ✅ For context efficiency, use `.model_dump(include={...}, mode="json")` to select specific fields
+- ✅ Never create duplicate response models - reuse SDK models with field selection
+- **Current Status**: Fully implemented - all commands use SDK Pydantic models with type-safe attribute access
+
+### 2. Performance (100ms Rule)
+- ❌ NO top-level imports of heavy libraries (langsmith, rich, pandas)
+- ✅ Libraries imported inside command functions (lazy loading)
+- **Current Status**: Properly implemented
+
+### 3. Architecture (Pure Logic vs View)
+- Logic Layer: Returns Pydantic models/typed objects, never prints
+- View Layer: Handles Rich tables or JSON output
+- Context Safety: All commands support `--json` flag
+- **Current Status**: Mixed - some logic calls `console.print()` directly (opportunity for refactor)
+
+### 4. Error Handling
+- ❌ Discourage broad `Exception` catching
+- ❌ Forbidden: Matching errors by string
+- ✅ Use specific SDK exceptions: `LangSmithConflictError`, `LangSmithNotFoundError`, `LangSmithAuthError`, etc.
+- ✅ Import exceptions from `langsmith.utils`
+- **Current Status**: Fully implemented - all commands use proper exception types
+
+### 5. Context Efficiency (Plugin Standard)
+- Default JSON output should be "sparse"
+- No full trace blobs (20kb+) unless requested
+- Skill maintenance: Update SKILL.md when CLI arguments change
+- **Current Status**: Field pruning implemented; SKILL.md up-to-date
+
+## Feature Parity with LangSmith MCP
+
+The CLI provides 100% parity with the official LangSmith MCP server:
+
+| MCP Tool | CLI Command | Status |
+|----------|-------------|--------|
+| list_projects | `projects list` | ✅ |
+| fetch_runs | `runs list` | ✅ |
+| read_run | `runs get` | ✅ |
+| get_run_stats | `runs stats` | ✅ |
+| list_datasets | `datasets list` | ✅ |
+| read_dataset | `datasets get` | ✅ |
+| create_dataset | `datasets create` | ✅ |
+| list_examples | `examples list` | ✅ |
+| read_example | `examples get` | ✅ |
+| create_example | `examples create` | ✅ |
+| list_prompts | `prompts list` | ✅ |
+| get_prompt | `prompts get` | ✅ |
+| push_prompt | `prompts push` | ✅ |
+
+### Superiority Features (Beyond MCP)
+
+1. **Field Pruning**: `runs get <id> --fields inputs,outputs,error` (96% context savings)
+2. **Watch Mode**: `runs watch` - Live dashboard of incoming runs
+3. **Open Command**: `runs open <id>` - Opens trace in browser
+4. **Dataset Push**: `datasets push <file.jsonl>` - Bulk upload from JSONL
+5. **Human UX**: Rich tables with color-coded status (green=success, red=error)
+
+## Claude Code Plugin Integration
+
+### Skill Definition
+The plugin is defined in `skills/langsmith/SKILL.md` which teaches Claude how to use the CLI efficiently:
+- Always use `--json` as first argument for parseable output
+- Use `--fields` to reduce context size
+- Use `--status error` for quick debugging
+- Keep `--limit` small (default 10)
+
+### Bridge Script
+`skills/langsmith/bridge.py` is a thin subprocess wrapper that:
+1. Receives command arguments from Claude
+2. Executes `langsmith-cli` via subprocess
+3. Returns stdout/stderr to Claude
+
+### Plugin Manifest
+`claude-plugin.json` registers the plugin with Claude Code.
+
+## Pydantic Model Usage Pattern
+
+### Always Use SDK's Pydantic Models
+
+The LangSmith SDK provides Pydantic models for all entities:
+- `langsmith.schemas.TracerSessionResult` - Projects/Sessions
+- `langsmith.schemas.Dataset` - Datasets
+- `langsmith.schemas.Example` - Dataset examples
+- `langsmith.schemas.Run` - Runs/traces
+- `langsmith.schemas.Prompt` - Prompts
+
+**Pattern:**
+```python
+# ✅ GOOD - Use SDK models with focused field selection
+def list_items(ctx, limit):
+    client = langsmith.Client()
+    items_list = list(client.list_items(limit=limit))
+
+    if ctx.obj.get("json"):
+        # Select only needed fields for context efficiency
+        data = [
+            item.model_dump(
+                include={"id", "name", "created_at"},
+                mode="json",
+            )
+            for item in items_list
+        ]
+        click.echo(json.dumps(data, default=str))
+        return
+
+    # For table display, access fields directly
+    for item in items_list:
+        table.add_row(item.name, str(item.id))
+
+# ❌ BAD - Don't use getattr() or create custom models
+def list_items_bad(ctx, limit):
+    items = list(client.list_items(limit=limit))
+    data = [
+        {
+            "name": getattr(i, "name", "Unknown"),  # Don't do this
+            "id": str(getattr(i, "id", "")),  # Don't do this
+        }
+        for i in items
+    ]
+```
+
+**Benefits:**
+1. Type safety - IDE autocomplete and type checking work
+2. Context efficiency - Only return fields you need
+3. No duplicate models - SDK models are the source of truth
+4. Validation - Pydantic validates data automatically
+
+## Common Patterns for New Commands
+
+### Adding a New Command
+
+1. **Create command file** in `src/langsmith_cli/commands/`
+2. **Define Click group and commands**:
+```python
+import click
+from rich.console import Console
+
+console = Console()
+
+@click.group()
+def mycommand():
+    """Description of command group."""
+    pass
+
+@mycommand.command("list")
+@click.pass_context
+def list_items(ctx):
+    """List items."""
+    # Lazy import SDK
+    import langsmith
+    client = langsmith.Client()
+
+    items = client.list_items()
+
+    # Handle JSON vs Rich output
+    if ctx.obj.get("json"):
+        import json
+        click.echo(json.dumps([i.dict() for i in items], default=str))
+    else:
+        from rich.table import Table
+        table = Table(title="Items")
+        table.add_column("Name")
+        for item in items:
+            table.add_row(item.name)
+        console.print(table)
+```
+
+3. **Register in main.py**:
+```python
+from langsmith_cli.commands.mycommand import mycommand
+cli.add_command(mycommand)
+```
+
+4. **Write tests** in `tests/test_mycommand.py`:
+```python
+from langsmith_cli.main import cli
+from unittest.mock import patch
+
+def test_mycommand_list(runner):
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_items.return_value = []
+        result = runner.invoke(cli, ["mycommand", "list"])
+        assert result.exit_code == 0
+```
+
+5. **Update SKILL.md** with new command usage
+
+## Known Issues & Improvement Opportunities
+
+### Type Safety
+- ✅ **FIXED**: Removed all `getattr()` usage - now uses direct attribute access
+- ✅ **FIXED**: Removed string-based error matching - now uses proper SDK exception types
+- Pyright reports 4 type warnings (non-critical but fixable)
+
+### Architecture
+- Some logic mixed with view code (console.print() calls in command functions)
+- Could benefit from separating data fetching from rendering
+- Mock usage could be upgraded to `patch.object` instead of `patch`
+
+### Security
+- `.mcp.json` contains hardcoded API key (should use environment variable)
+
+## Dependencies
+
+**Runtime:**
+- click >=8.3.1 - CLI framework
+- langsmith >=0.6.2 - LangSmith SDK
+- pydantic >=2.12.5 - Data validation
+- python-dotenv >=1.2.1 - .env file support
+- rich >=14.2.0 - Terminal formatting
+
+**Development:**
+- pytest >=9.0.2 - Testing framework
+- ruff >=0.14.11 - Linting/formatting
+- pyright >=1.1.408 - Type checking
+- pre-commit >=4.5.1 - Git hooks
+
+**Python Version:** >=3.12
+
+## Git Workflow
+
+Per docs/SESSION_DIRECTIVES.md:
+- Use `uv` for all dependency management
+- Commit often with clear messages
+- Use feature branches and PRs for larger features
+- Ensure `git status` is clean before commits
+- Run pre-commit hooks before committing
+- Never use `git commit --amend` or force push (per user's global CLAUDE.md)

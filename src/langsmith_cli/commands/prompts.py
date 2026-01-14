@@ -14,28 +14,53 @@ def prompts():
 
 
 @prompts.command("list")
+@click.option("--limit", default=20, help="Limit number of prompts (default 20).")
+@click.option("--is-public", type=bool, default=None, help="Filter by public/private status.")
 @click.pass_context
-def list_prompts(ctx):
+def list_prompts(ctx, limit, is_public):
     """List available prompt repositories."""
     client = langsmith.Client()
-    # The SDK usually allows listing prominent prompts or repos
-    # Note: Hub listing might be different, but MCP has list_prompts
-    prompts = client.list_prompts()
+    # list_prompts returns ListPromptsResponse with .repos attribute
+    result = client.list_prompts(limit=limit, is_public=is_public)
+    prompts_list = result.repos
 
     if ctx.obj.get("json"):
-        data = [p.dict() if hasattr(p, "dict") else dict(p) for p in prompts]
+        # Use SDK's Pydantic models with focused field selection for context efficiency
+        data = [
+            p.model_dump(
+                include={
+                    "repo_handle",
+                    "description",
+                    "id",
+                    "is_public",
+                    "tags",
+                    "owner",
+                    "full_name",
+                    "num_likes",
+                    "num_downloads",
+                    "num_views",
+                    "created_at",
+                    "updated_at",
+                },
+                mode="json",
+            )
+            for p in prompts_list
+        ]
         click.echo(json.dumps(data, default=str))
         return
 
     table = Table(title="Prompts")
     table.add_column("Repo", style="cyan")
     table.add_column("Description")
+    table.add_column("Owner", style="dim")
 
-    for p in prompts:
-        table.add_row(
-            getattr(p, "repo_full_name", "Unknown"), getattr(p, "description", "")
-        )
-    console.print(table)
+    for p in prompts_list:
+        table.add_row(p.full_name, p.description or "", p.owner)
+
+    if not prompts_list:
+        console.print("[yellow]No prompts found.[/yellow]")
+    else:
+        console.print(table)
 
 
 @prompts.command("get")
@@ -68,17 +93,29 @@ def get_prompt(ctx, name, commit):
 @prompts.command("push")
 @click.argument("name")
 @click.argument("file_path", type=click.Path(exists=True))
+@click.option("--description", help="Prompt description.")
+@click.option("--tags", help="Comma-separated tags.")
+@click.option("--is-public", type=bool, default=False, help="Make prompt public.")
 @click.pass_context
-def push_prompt(ctx, name, file_path):
+def push_prompt(ctx, name, file_path, description, tags, is_public):
     """Push a local prompt file to LangSmith."""
     client = langsmith.Client()
 
     with open(file_path, "r") as f:
         content = f.read()
 
-    # Simple push of a string as a prompt version.
-    # LangSmith hub often expects LangChain objects, but can handle strings.
-    # We'll try to push it.
-    client.push_prompt(name, object=content)
+    # Parse tags if provided
+    tags_list = None
+    if tags:
+        tags_list = [t.strip() for t in tags.split(",")]
+
+    # Push prompt with metadata
+    client.push_prompt(
+        prompt_identifier=name,
+        object=content,
+        description=description,
+        tags=tags_list,
+        is_public=is_public,
+    )
 
     console.print(f"[green]Successfully pushed prompt to {name}[/green]")

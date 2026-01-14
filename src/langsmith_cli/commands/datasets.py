@@ -15,14 +15,43 @@ def datasets():
 
 
 @datasets.command("list")
+@click.option("--limit", default=20, help="Limit number of datasets (default 20).")
+@click.option("--data-type", help="Filter by dataset type (kv, chat, llm).")
+@click.option("--name", "dataset_name", help="Exact dataset name match.")
+@click.option("--name-contains", help="Dataset name substring search.")
 @click.pass_context
-def list_datasets(ctx):
+def list_datasets(ctx, limit, data_type, dataset_name, name_contains):
     """List all available datasets."""
     client = langsmith.Client()
-    datasets = client.list_datasets()
+    datasets_gen = client.list_datasets(
+        limit=limit,
+        data_type=data_type,
+        dataset_name=dataset_name,
+        dataset_name_contains=name_contains,
+    )
+    datasets_list = list(datasets_gen)
 
     if ctx.obj.get("json"):
-        data = [d.dict() if hasattr(d, "dict") else dict(d) for d in datasets]
+        # Use SDK's Pydantic models with focused field selection for context efficiency
+        data = [
+            d.model_dump(
+                include={
+                    "id",
+                    "name",
+                    "inputs_schema",
+                    "outputs_schema",
+                    "description",
+                    "data_type",
+                    "example_count",
+                    "session_count",
+                    "created_at",
+                    "modified_at",
+                    "last_session_start_time",
+                },
+                mode="json",
+            )
+            for d in datasets_list
+        ]
         click.echo(json.dumps(data, default=str))
         return
 
@@ -31,13 +60,17 @@ def list_datasets(ctx):
     table.add_column("ID", style="dim")
     table.add_column("Type")
 
-    for d in datasets:
+    for d in datasets_list:
         table.add_row(
-            getattr(d, "name", "Unknown"),
-            str(getattr(d, "id", "")),
-            getattr(d, "dataset_type", "kv"),
+            d.name,
+            str(d.id),
+            d.data_type,
         )
-    console.print(table)
+
+    if not datasets_list:
+        console.print("[yellow]No datasets found.[/yellow]")
+    else:
+        console.print(table)
 
 
 @datasets.command("get")

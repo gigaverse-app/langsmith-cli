@@ -35,7 +35,8 @@ def test_projects_list_json(runner):
         mock_client = MockClient.return_value
         p1 = MagicMock()
         p1.name = "proj-json"
-        p1.dict.return_value = {"name": "proj-json", "id": "id-json"}
+        p1.id = "id-json"
+        p1.model_dump.return_value = {"name": "proj-json", "id": "id-json"}
         mock_client.list_projects.return_value = iter([p1])
 
         result = runner.invoke(cli, ["--json", "projects", "list"])

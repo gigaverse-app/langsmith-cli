@@ -19,8 +19,15 @@ def runs():
     "--status", type=click.Choice(["success", "error"]), help="Filter by status."
 )
 @click.option("--filter", "filter_", help="LangSmith filter string.")
+@click.option("--trace-id", help="Get all runs in a specific trace.")
+@click.option("--run-type", help="Filter by run type (llm, chain, tool, retriever, etc).")
+@click.option("--is-root", type=bool, help="Filter root traces only (true/false).")
+@click.option("--trace-filter", help="Filter applied to root trace.")
+@click.option("--tree-filter", help="Filter if any run in trace tree matches.")
+@click.option("--order-by", default="-start_time", help="Sort field (prefix with - for desc).")
+@click.option("--reference-example-id", help="Filter runs for a specific example.")
 @click.pass_context
-def list_runs(ctx, project, limit, status, filter_):
+def list_runs(ctx, project, limit, status, filter_, trace_id, run_type, is_root, trace_filter, tree_filter, order_by, reference_example_id):
     """Fetch recent runs."""
     client = langsmith.Client()
 
@@ -31,7 +38,17 @@ def list_runs(ctx, project, limit, status, filter_):
         error_filter = False
 
     runs = client.list_runs(
-        project_name=project, limit=limit, error=error_filter, filter=filter_
+        project_name=project,
+        limit=limit,
+        error=error_filter,
+        filter=filter_,
+        trace_id=trace_id,
+        run_type=run_type,
+        is_root=is_root,
+        trace_filter=trace_filter,
+        tree_filter=tree_filter,
+        order_by=order_by,
+        reference_example_id=reference_example_id,
     )
 
     if ctx.obj.get("json"):
@@ -50,9 +67,10 @@ def list_runs(ctx, project, limit, status, filter_):
     count = 0
     for r in runs:
         count += 1
-        r_id = str(getattr(r, "id", ""))
-        r_name = getattr(r, "name", "Unknown")
-        r_status = getattr(r, "status", "unknown")
+        # Access SDK model fields directly (type-safe)
+        r_id = str(r.id)
+        r_name = r.name or "Unknown"
+        r_status = r.status
 
         # Colorize status
         status_style = (
@@ -63,11 +81,7 @@ def list_runs(ctx, project, limit, status, filter_):
             else "yellow"
         )
 
-        latency = (
-            f"{getattr(r, 'latency', 0):.2f}s"
-            if getattr(r, "latency") is not None
-            else "-"
-        )
+        latency = f"{r.latency:.2f}s" if r.latency is not None else "-"
 
         table.add_row(
             r_id, r_name, f"[{status_style}]{r_status}[/{status_style}]", latency
@@ -193,9 +207,10 @@ def watch_runs(ctx, project, interval):
         table.add_column("Latency")
 
         for r in runs:
-            r_id = str(getattr(r, "id", ""))
-            r_name = getattr(r, "name", "Unknown")
-            r_status = getattr(r, "status", "unknown")
+            # Access SDK model fields directly (type-safe)
+            r_id = str(r.id)
+            r_name = r.name or "Unknown"
+            r_status = r.status
             status_style = (
                 "green"
                 if r_status == "success"
@@ -203,11 +218,7 @@ def watch_runs(ctx, project, interval):
                 if r_status == "error"
                 else "yellow"
             )
-            latency = (
-                f"{getattr(r, 'latency', 0):.2f}s"
-                if getattr(r, "latency") is not None
-                else "-"
-            )
+            latency = f"{r.latency:.2f}s" if r.latency is not None else "-"
             table.add_row(
                 r_id, r_name, f"[{status_style}]{r_status}[/{status_style}]", latency
             )
