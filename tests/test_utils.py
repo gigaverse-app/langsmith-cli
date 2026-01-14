@@ -15,6 +15,12 @@ from langsmith_cli.utils import (
     print_empty_result_message,
     parse_json_string,
     parse_comma_separated_list,
+    get_or_create_client,
+    extract_wildcard_search_term,
+    extract_regex_search_term,
+    safe_model_dump,
+    apply_client_side_limit,
+    render_output,
 )
 
 
@@ -61,28 +67,20 @@ class TestOutputFormattedData:
         assert "name: test1" in captured.out
         assert "id:" in captured.out
 
-    def test_output_empty_data_json(self, capsys):
-        """Test JSON output with empty data."""
-        output_formatted_data([], "json")
+    @pytest.mark.parametrize(
+        "format_type,expected_check",
+        [
+            ("json", lambda out: json.loads(out) == []),
+            ("yaml", lambda out: out.strip() == "[]"),
+            ("csv", lambda out: out == ""),
+        ],
+    )
+    def test_output_empty_data(self, capsys, format_type, expected_check):
+        """Test output with empty data for different formats."""
+        output_formatted_data([], format_type)
 
         captured = capsys.readouterr()
-        result = json.loads(captured.out)
-        assert result == []
-
-    def test_output_empty_data_yaml(self, capsys):
-        """Test YAML output with empty data."""
-        output_formatted_data([], "yaml")
-
-        captured = capsys.readouterr()
-        assert captured.out.strip() == "[]"
-
-    def test_output_empty_data_csv(self, capsys):
-        """Test CSV output with empty data."""
-        output_formatted_data([], "csv")
-
-        captured = capsys.readouterr()
-        # CSV with no data should output nothing
-        assert captured.out == ""
+        assert expected_check(captured.out)
 
     def test_output_with_field_filtering(self, capsys):
         """Test field filtering in output."""
@@ -386,48 +384,42 @@ class TestApplyWildcardFilter:
 class TestDetermineOutputFormat:
     """Tests for determine_output_format function."""
 
-    def test_explicit_format_takes_precedence(self):
-        """Test that explicit format flag takes precedence."""
-        assert determine_output_format("csv", True) == "csv"
-        assert determine_output_format("yaml", True) == "yaml"
-        assert determine_output_format("table", False) == "table"
-
-    def test_json_flag_when_no_explicit_format(self):
-        """Test json flag determines format when no explicit format."""
-        assert determine_output_format(None, True) == "json"
-
-    def test_default_to_table(self):
-        """Test default is table when no flags."""
-        assert determine_output_format(None, False) == "table"
-
-    def test_explicit_json_format(self):
-        """Test explicit json format."""
-        assert determine_output_format("json", False) == "json"
+    @pytest.mark.parametrize(
+        "explicit_format,json_flag,expected",
+        [
+            ("csv", True, "csv"),
+            ("yaml", True, "yaml"),
+            ("table", False, "table"),
+            (None, True, "json"),
+            (None, False, "table"),
+            ("json", False, "json"),
+        ],
+    )
+    def test_determine_output_format(self, explicit_format, json_flag, expected):
+        """Test output format determination with various inputs."""
+        assert determine_output_format(explicit_format, json_flag) == expected
 
 
 class TestPrintEmptyResultMessage:
     """Tests for print_empty_result_message function."""
 
-    def test_print_empty_result_message(self, capsys):
-        """Test printing empty result message."""
+    @pytest.mark.parametrize(
+        "item_type,expected_message",
+        [
+            ("runs", "No runs found"),
+            ("projects", "No projects found"),
+            ("datasets", "No datasets found"),
+        ],
+    )
+    def test_print_empty_result_message(self, capsys, item_type, expected_message):
+        """Test printing empty result messages for different item types."""
         console = MagicMock()
-        print_empty_result_message(console, "runs")
+        print_empty_result_message(console, item_type)
 
         console.print.assert_called_once()
         call_args = str(console.print.call_args)
-        assert "No runs found" in call_args
+        assert expected_message in call_args
         assert "yellow" in call_args
-
-    def test_print_empty_result_message_different_types(self, capsys):
-        """Test printing empty result messages for different item types."""
-        console = MagicMock()
-
-        print_empty_result_message(console, "projects")
-        assert "No projects found" in str(console.print.call_args)
-
-        console.reset_mock()
-        print_empty_result_message(console, "datasets")
-        assert "No datasets found" in str(console.print.call_args)
 
 
 class TestParseJsonString:
@@ -471,37 +463,330 @@ class TestParseJsonString:
 class TestParseCommaSeparatedList:
     """Tests for parse_comma_separated_list function."""
 
-    def test_parse_simple_list(self):
-        """Test parsing simple comma-separated list."""
-        result = parse_comma_separated_list("item1,item2,item3")
-        assert result == ["item1", "item2", "item3"]
+    @pytest.mark.parametrize(
+        "input_str,expected",
+        [
+            ("item1,item2,item3", ["item1", "item2", "item3"]),
+            ("item1 , item2 ,  item3", ["item1", "item2", "item3"]),
+            ("single", ["single"]),
+            (None, None),
+            ("", None),
+            ("item1,,item2", ["item1", "", "item2"]),
+            ("item-1,item_2,item.3", ["item-1", "item_2", "item.3"]),
+        ],
+    )
+    def test_parse_comma_separated_list(self, input_str, expected):
+        """Test parsing comma-separated lists with various inputs."""
+        result = parse_comma_separated_list(input_str)
+        assert result == expected
 
-    def test_parse_list_with_spaces(self):
-        """Test parsing list with spaces around items."""
-        result = parse_comma_separated_list("item1 , item2 ,  item3")
-        assert result == ["item1", "item2", "item3"]
 
-    def test_parse_single_item(self):
-        """Test parsing single item (no commas)."""
-        result = parse_comma_separated_list("single")
-        assert result == ["single"]
+class TestGetOrCreateClient:
+    """Tests for get_or_create_client function."""
 
-    def test_parse_none_input(self):
-        """Test parsing None returns None."""
-        result = parse_comma_separated_list(None)
-        assert result is None
+    def test_creates_client_on_first_call(self):
+        """Test that client is created on first call."""
+        from unittest.mock import patch
 
-    def test_parse_empty_string(self):
-        """Test parsing empty string returns None."""
-        result = parse_comma_separated_list("")
-        assert result is None
+        ctx = MagicMock()
+        ctx.obj = {}
 
-    def test_parse_list_with_empty_items(self):
-        """Test parsing list with empty items."""
-        result = parse_comma_separated_list("item1,,item2")
-        assert result == ["item1", "", "item2"]
+        with patch("langsmith.Client") as MockClient:
+            mock_client = MagicMock()
+            MockClient.return_value = mock_client
 
-    def test_parse_list_with_special_characters(self):
-        """Test parsing list with special characters."""
-        result = parse_comma_separated_list("item-1,item_2,item.3")
-        assert result == ["item-1", "item_2", "item.3"]
+            result = get_or_create_client(ctx)
+
+            assert result == mock_client
+            MockClient.assert_called_once()
+            assert ctx.obj["client"] == mock_client
+
+    def test_reuses_existing_client(self):
+        """Test that existing client is reused."""
+        from unittest.mock import patch
+
+        mock_client = MagicMock()
+        ctx = MagicMock()
+        ctx.obj = {"client": mock_client}
+
+        with patch("langsmith.Client") as MockClient:
+            result = get_or_create_client(ctx)
+
+            assert result == mock_client
+            # Should not create new client
+            MockClient.assert_not_called()
+
+
+class TestExtractWildcardSearchTerm:
+    """Tests for extract_wildcard_search_term function."""
+
+    @pytest.mark.parametrize(
+        "pattern,expected_term,expected_unanchored",
+        [
+            ("*moments*", "moments", True),
+            ("moments*", "moments", False),
+            ("*moments", "moments", False),
+            ("moments", "moments", False),
+            (None, None, False),
+            ("", None, False),
+            ("*test?*", "test", True),
+            ("***", None, True),
+        ],
+    )
+    def test_extract_wildcard_search_term(
+        self, pattern, expected_term, expected_unanchored
+    ):
+        """Test wildcard pattern extraction with various patterns."""
+        search_term, is_unanchored = extract_wildcard_search_term(pattern)
+        assert search_term == expected_term
+        assert is_unanchored is expected_unanchored
+
+
+class TestExtractRegexSearchTerm:
+    """Tests for extract_regex_search_term function."""
+
+    @pytest.mark.parametrize(
+        "pattern,expected_term,min_length",
+        [
+            ("moments", "moments", 2),
+            (".*moments.*", "moments", 2),
+            ("^test-.*-v[0-9]+$", "test--v0-9", 2),
+            ("^a+$", None, 2),
+            (None, None, 2),
+            ("", None, 2),
+            (".*+?^$", None, 2),
+            ("^a$", "a", 1),
+            ("^a$", None, 3),
+        ],
+    )
+    def test_extract_regex_search_term(self, pattern, expected_term, min_length):
+        """Test regex pattern extraction with various patterns."""
+        search_term = extract_regex_search_term(pattern, min_length=min_length)
+        assert search_term == expected_term
+
+
+class TestSafeModelDump:
+    """Tests for safe_model_dump function."""
+
+    def test_pydantic_v2_model(self):
+        """Test with Pydantic v2 model (has model_dump)."""
+        mock_model = MagicMock()
+        mock_model.model_dump.return_value = {"name": "test", "id": "123"}
+
+        result = safe_model_dump(mock_model)
+
+        assert result == {"name": "test", "id": "123"}
+        mock_model.model_dump.assert_called_once_with(include=None, mode="json")
+
+    def test_pydantic_v2_model_with_include(self):
+        """Test with Pydantic v2 model with field selection."""
+        mock_model = MagicMock()
+        mock_model.model_dump.return_value = {"name": "test"}
+
+        safe_model_dump(mock_model, include={"name", "id"})
+
+        mock_model.model_dump.assert_called_once_with(
+            include={"name", "id"}, mode="json"
+        )
+
+    def test_pydantic_v1_model(self):
+        """Test with Pydantic v1 model (has dict method)."""
+        mock_model = MagicMock()
+        mock_model.dict.return_value = {"name": "test", "id": "123"}
+        del mock_model.model_dump  # Simulate v1 model
+
+        result = safe_model_dump(mock_model)
+
+        assert result == {"name": "test", "id": "123"}
+
+    def test_pydantic_v1_model_with_include(self):
+        """Test with Pydantic v1 model with field selection."""
+        mock_model = MagicMock()
+        mock_model.dict.return_value = {"name": "test", "id": "123", "extra": "field"}
+        del mock_model.model_dump  # Simulate v1 model
+
+        result = safe_model_dump(mock_model, include={"name", "id"})
+
+        assert result == {"name": "test", "id": "123"}
+        assert "extra" not in result
+
+    def test_plain_dict(self):
+        """Test with plain dictionary."""
+        data = {"name": "test", "id": "123"}
+
+        result = safe_model_dump(data)
+
+        assert result == {"name": "test", "id": "123"}
+
+    def test_plain_dict_with_include(self):
+        """Test with plain dictionary with field selection."""
+        data = {"name": "test", "id": "123", "extra": "field"}
+
+        result = safe_model_dump(data, include={"name", "id"})
+
+        assert result == {"name": "test", "id": "123"}
+        assert "extra" not in result
+
+
+class TestApplyClientSideLimit:
+    """Tests for apply_client_side_limit function."""
+
+    def test_no_limit_returns_all(self):
+        """Test that None limit returns all items."""
+        items = [MockItem(name=f"item{i}") for i in range(10)]
+
+        result = apply_client_side_limit(items, None, has_client_filters=True)
+
+        assert len(result) == 10
+
+    def test_limit_without_client_filters(self):
+        """Test that limit is not applied when no client-side filtering."""
+        items = [MockItem(name=f"item{i}") for i in range(10)]
+
+        result = apply_client_side_limit(items, 3, has_client_filters=False)
+
+        # Should return all items since no client filtering
+        assert len(result) == 10
+
+    def test_limit_with_client_filters(self):
+        """Test that limit is applied when client-side filtering is used."""
+        items = [MockItem(name=f"item{i}") for i in range(10)]
+
+        result = apply_client_side_limit(items, 3, has_client_filters=True)
+
+        assert len(result) == 3
+        assert result[0].name == "item0"
+        assert result[1].name == "item1"
+        assert result[2].name == "item2"
+
+    def test_limit_greater_than_items(self):
+        """Test limit greater than number of items."""
+        items = [MockItem(name=f"item{i}") for i in range(3)]
+
+        result = apply_client_side_limit(items, 10, has_client_filters=True)
+
+        assert len(result) == 3
+
+    def test_empty_items_list(self):
+        """Test with empty items list."""
+        result = apply_client_side_limit([], 5, has_client_filters=True)
+
+        assert result == []
+
+
+class TestRenderOutput:
+    """Tests for render_output function."""
+
+    def test_render_json_format(self, capsys):
+        """Test rendering JSON format."""
+        # Use dicts instead of dataclass items
+        items = [{"name": "test1", "value": 10}, {"name": "test2", "value": 20}]
+        ctx = MagicMock()
+        ctx.obj = {"json": True}
+
+        render_output(
+            items,
+            table_builder=None,
+            ctx=ctx,
+            include_fields={"name"},
+        )
+
+        captured = capsys.readouterr()
+        result = json.loads(captured.out)
+        assert len(result) == 2
+        assert result[0]["name"] == "test1"
+
+    def test_render_with_explicit_format(self, capsys):
+        """Test rendering with explicit format override."""
+        # Use dicts instead of dataclass items
+        items = [{"name": "test1", "value": 10}]
+        ctx = MagicMock()
+        ctx.obj = {"json": False}
+
+        render_output(
+            items,
+            table_builder=None,
+            ctx=ctx,
+            output_format="json",
+            include_fields={"name"},
+        )
+
+        captured = capsys.readouterr()
+        result = json.loads(captured.out)
+        assert len(result) == 1
+        assert result[0]["name"] == "test1"
+
+    def test_render_empty_results_table_format(self, capsys):
+        """Test rendering empty results in table format."""
+        ctx = MagicMock()
+        ctx.obj = {"json": False}
+
+        render_output(
+            [],
+            table_builder=None,
+            ctx=ctx,
+            empty_message="No items found",
+        )
+
+        captured = capsys.readouterr()
+        assert "No items found" in captured.out
+
+    def test_render_empty_results_json_format(self, capsys):
+        """Test rendering empty results in JSON format."""
+        ctx = MagicMock()
+        ctx.obj = {"json": True}
+
+        render_output(
+            [],
+            table_builder=None,
+            ctx=ctx,
+        )
+
+        captured = capsys.readouterr()
+        result = json.loads(captured.out)
+        assert result == []
+
+    def test_render_single_item(self, capsys):
+        """Test rendering single item (not a list)."""
+        # Use dict instead of dataclass
+        item = {"name": "single", "value": 1}
+        ctx = MagicMock()
+        ctx.obj = {"json": True}
+
+        render_output(
+            item,
+            table_builder=None,
+            ctx=ctx,
+            include_fields={"name"},
+        )
+
+        captured = capsys.readouterr()
+        result = json.loads(captured.out)
+        assert len(result) == 1
+        assert result[0]["name"] == "single"
+
+    def test_render_with_table_builder(self):
+        """Test rendering with table builder function."""
+        from unittest.mock import patch
+
+        # Use dicts instead of dataclass items
+        items = [{"name": "test1"}, {"name": "test2"}]
+        ctx = MagicMock()
+        ctx.obj = {"json": False}
+
+        mock_table = MagicMock()
+
+        def table_builder(data):
+            assert len(data) == 2
+            return mock_table
+
+        with patch("rich.console.Console") as MockConsole:
+            mock_console = MockConsole.return_value
+
+            render_output(
+                items,
+                table_builder=table_builder,
+                ctx=ctx,
+            )
+
+            mock_console.print.assert_called_once_with(mock_table)

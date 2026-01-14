@@ -84,7 +84,7 @@ jobs:
         run: uv sync --frozen
 
       - name: Run tests with coverage
-        run: uv run pytest --cov=src --cov-report=term-missing --cov-report=xml --cov-report=html --cov-report=json --junit-xml=pytest-report.xml -v
+        run: uv run pytest --cov=src --cov-report=term-missing --cov-report=xml --cov-report=html --cov-report=json --junit-xml=pytest-report.xml -v --durations=20 --durations-min=0.5
 
       - name: Upload coverage to Codecov
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
@@ -118,6 +118,72 @@ jobs:
         with:
           name: pytest-results-${{ matrix.os }}-${{ matrix.python-version }}
           path: pytest-report.xml
+          retention-days: 30
+
+      - name: Generate test timing summary
+        if: always() && matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        run: |
+          # Extract timing data from pytest output
+          echo "## Test Timing Summary" > test-timing.md
+          echo "" >> test-timing.md
+
+          # Parse JUnit XML for test counts and timing
+          if [ -f pytest-report.xml ]; then
+            uv run python -c "
+          import xml.etree.ElementTree as ET
+          tree = ET.parse('pytest-report.xml')
+          root = tree.getroot()
+
+          total_tests = int(root.attrib.get('tests', 0))
+          total_time = float(root.attrib.get('time', 0))
+          failures = int(root.attrib.get('failures', 0))
+          errors = int(root.attrib.get('errors', 0))
+          skipped = int(root.attrib.get('skipped', 0))
+
+          # Collect all test cases with timing
+          test_cases = []
+          for testcase in root.findall('.//testcase'):
+              name = testcase.attrib.get('name', 'unknown')
+              classname = testcase.attrib.get('classname', '')
+              time = float(testcase.attrib.get('time', 0))
+              test_cases.append((time, classname, name))
+
+          # Sort by time descending
+          test_cases.sort(reverse=True)
+
+          with open('test-timing.md', 'a') as f:
+              f.write(f'**Total Tests:** {total_tests} | ')
+              f.write(f'**Total Time:** {total_time:.2f}s | ')
+              f.write(f'**Failures:** {failures} | ')
+              f.write(f'**Errors:** {errors} | ')
+              f.write(f'**Skipped:** {skipped}\n\n')
+
+              f.write('### 🐌 Slowest Tests (>0.5s)\n\n')
+              f.write('| Test | Time |\n')
+              f.write('|------|------|\n')
+
+              slow_count = 0
+              for time, classname, name in test_cases:
+                  if time >= 0.5 and slow_count < 20:
+                      test_path = f'{classname}::{name}'
+                      f.write(f'| \`{test_path}\` | {time:.3f}s |\n')
+                      slow_count += 1
+
+              if slow_count == 0:
+                  f.write('| No slow tests found | - |\n')
+
+              f.write(f'\n_Average test time: {total_time/max(total_tests,1):.3f}s_\n')
+          " || echo "Failed to parse test timing data" >> test-timing.md
+          fi
+
+          cat test-timing.md
+
+      - name: Upload test timing summary
+        if: always() && matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-timing-summary
+          path: test-timing.md
           retention-days: 30
 
       - name: Check coverage threshold
@@ -202,6 +268,72 @@ jobs:
             const botComment = comments.find(comment =>
               comment.user.type === 'Bot' &&
               comment.body.includes('Coverage Report')
+            );
+
+            // Update or create comment
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: body
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: body
+              });
+            }
+
+  # Test timing report as PR comment
+  test-timing-comment:
+    name: Post Test Timing Comment
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download test timing summary
+        uses: actions/download-artifact@v4
+        with:
+          name: test-timing-summary
+
+      - name: Comment PR with test timing
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const timingReport = fs.readFileSync('test-timing.md', 'utf8');
+
+            const body = `## ⏱️ Test Performance Report
+
+            ${timingReport}
+
+            <details>
+            <summary>💡 Tips for Improving Slow Tests</summary>
+
+            - Consider using mocks instead of real API calls
+            - Use pytest fixtures to cache expensive setup
+            - Split large tests into smaller, focused tests
+            - Use pytest-xdist for parallel execution: \`pytest -n auto\`
+
+            </details>
+            `;
+
+            // Find existing comment
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const botComment = comments.find(comment =>
+              comment.user.type === 'Bot' &&
+              comment.body.includes('Test Performance Report')
             );
 
             // Update or create comment
