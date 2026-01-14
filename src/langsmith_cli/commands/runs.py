@@ -212,3 +212,14 @@ def watch_runs(ctx, project, interval):
                 live.update(generate_table())
         except KeyboardInterrupt:
             pass
+
+
+@runs.command("search")
+@click.option("--filter", "filter_", required=True, help="LangSmith filter string.")
+@click.option("--project", default="default", help="Project name.")
+@click.option("--limit", default=10, help="Max results.")
+@click.pass_context
+def search_runs(ctx, filter_, project, limit):
+    """Search runs using advanced filter syntax."""
+    # Reuse list_runs logic
+    return ctx.invoke(list_runs, project=project, limit=limit, filter_=filter_)
