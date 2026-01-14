@@ -15,19 +15,34 @@ def datasets():
 
 
 @datasets.command("list")
+@click.option("--dataset-ids", help="Specific dataset IDs (comma-separated).")
 @click.option("--limit", default=20, help="Limit number of datasets (default 20).")
 @click.option("--data-type", help="Filter by dataset type (kv, chat, llm).")
 @click.option("--name", "dataset_name", help="Exact dataset name match.")
 @click.option("--name-contains", help="Dataset name substring search.")
+@click.option("--metadata", help="Filter by metadata (JSON string).")
 @click.pass_context
-def list_datasets(ctx, limit, data_type, dataset_name, name_contains):
+def list_datasets(ctx, dataset_ids, limit, data_type, dataset_name, name_contains, metadata):
     """List all available datasets."""
     client = langsmith.Client()
+
+    # Parse comma-separated dataset IDs
+    dataset_ids_list = None
+    if dataset_ids:
+        dataset_ids_list = [did.strip() for did in dataset_ids.split(",")]
+
+    # Parse metadata JSON
+    metadata_dict = None
+    if metadata:
+        metadata_dict = json.loads(metadata)
+
     datasets_gen = client.list_datasets(
+        dataset_ids=dataset_ids_list,
         limit=limit,
         data_type=data_type,
         dataset_name=dataset_name,
         dataset_name_contains=name_contains,
+        metadata=metadata_dict,
     )
     datasets_list = list(datasets_gen)
 

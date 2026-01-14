@@ -14,28 +14,46 @@ def examples():
 
 
 @examples.command("list")
-@click.option("--dataset", required=True, help="Dataset ID or Name.")
+@click.option("--dataset", help="Dataset ID or Name.")
+@click.option("--example-ids", help="Specific example IDs (comma-separated).")
 @click.option("--limit", default=20, help="Limit number of examples (default 20).")
 @click.option("--offset", default=0, help="Number of examples to skip (pagination).")
 @click.option("--filter", "filter_", help="LangSmith query filter.")
+@click.option("--metadata", help="Filter by metadata (JSON string).")
 @click.option("--splits", help="Filter by dataset splits (comma-separated).")
+@click.option("--inline-s3-urls", type=bool, help="Include S3 URLs inline.")
+@click.option("--include-attachments", type=bool, help="Include attachments.")
+@click.option("--as-of", help="Dataset version tag or ISO timestamp.")
 @click.pass_context
-def list_examples(ctx, dataset, limit, offset, filter_, splits):
+def list_examples(ctx, dataset, example_ids, limit, offset, filter_, metadata, splits, inline_s3_urls, include_attachments, as_of):
     """List examples for a dataset."""
     client = langsmith.Client()
 
-    # Parse splits if provided
+    # Parse comma-separated values
+    example_ids_list = None
+    if example_ids:
+        example_ids_list = [eid.strip() for eid in example_ids.split(",")]
+
     splits_list = None
     if splits:
         splits_list = [s.strip() for s in splits.split(",")]
 
+    metadata_dict = None
+    if metadata:
+        metadata_dict = json.loads(metadata)
+
     # list_examples takes dataset_name and limit
     examples_gen = client.list_examples(
         dataset_name=dataset,
+        example_ids=example_ids_list,
         limit=limit,
         offset=offset,
         filter=filter_,
+        metadata=metadata_dict,
         splits=splits_list,
+        inline_s3_urls=inline_s3_urls,
+        include_attachments=include_attachments,
+        as_of=as_of,
     )
     examples_list = list(examples_gen)
 
@@ -83,11 +101,12 @@ def list_examples(ctx, dataset, limit, offset, filter_, splits):
 
 @examples.command("get")
 @click.argument("example_id")
+@click.option("--as-of", help="Dataset version tag or ISO timestamp.")
 @click.pass_context
-def get_example(ctx, example_id):
+def get_example(ctx, example_id, as_of):
     """Fetch details of a single example."""
     client = langsmith.Client()
-    example = client.read_example(example_id)
+    example = client.read_example(example_id, as_of=as_of)
 
     data = example.dict() if hasattr(example, "dict") else dict(example)
 
