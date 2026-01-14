@@ -35,21 +35,15 @@ def list_projects(ctx, limit):
     table = Table(title="Projects")
     table.add_column("Name", style="cyan")
     table.add_column("ID", style="dim")
-    table.add_column("Runs", justify="right")
     table.add_column("Type", justify="center")
 
     for p in projects_list:
         # Access attributes safely
         name = getattr(p, "name", "Unknown")
         pid = str(getattr(p, "id", ""))
-
-        # Correctly handle None or missing run_count
-        runs_val = getattr(p, "run_count", 0)
-        runs = str(runs_val) if runs_val is not None else "0"
-
         p_type = getattr(p, "project_type", "tracer")
 
-        table.add_row(name, pid, runs, p_type)
+        table.add_row(name, pid, p_type)
 
     if not projects_list:
         console.print("[yellow]No projects found.[/yellow]")

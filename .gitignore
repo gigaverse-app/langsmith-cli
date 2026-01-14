@@ -1,3 +1,13 @@
+######
+# Project specific ignores
+######
+mcp.json
+.vscode/mcp.json
+
+######
+# Standard python ignores
+######
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

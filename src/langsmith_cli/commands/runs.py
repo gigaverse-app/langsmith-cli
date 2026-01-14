@@ -131,7 +131,15 @@ def get_run(ctx, run_id, fields):
 def run_stats(ctx, project):
     """Fetch aggregated metrics for a project."""
     client = langsmith.Client()
-    stats = client.get_run_stats(project_name=project)
+    # Resolve project name to ID
+    try:
+        p = client.read_project(project_name=project)
+        project_id = p.id
+    except Exception:
+        # Fallback if name fails or user passed ID
+        project_id = project
+
+    stats = client.get_run_stats(project_ids=[project_id])
 
     if ctx.obj.get("json"):
         import json

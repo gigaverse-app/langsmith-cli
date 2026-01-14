@@ -27,7 +27,6 @@ def test_projects_list(runner):
         assert "proj-1" in result.output
         assert "proj-2" in result.output
         assert "id-1" in result.output
-        assert "0" in result.output  # for p2.run_count=None
 
 
 def test_projects_list_json(runner):
