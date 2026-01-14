@@ -17,3 +17,8 @@ This document compiles the specific directives and preferences provided by the u
 ## Functional Priorities
 - **Authentication**: Implementing `.env` / `.env.example` support and a `login` command is the immediate priority.
 - **Context Efficiency**: The tool must be lightweight and context-efficient for agentic use (as per PRD).
+
+## Key Learnings & Adjustments
+- **UX Robustness**: When automating actions (like opening a browser), always provide a manual fallback (print the URL) in case the automation fails.
+- **Git Discipline**: Ensure `git status` is clean and checks pass *before* attempting the commit/push sequence. Handle user cancellations as a signal to re-verify.
+- **Environment**: Standard library (`webbrowser`) can be more reliable than framework specifics (`click.launch`) for OS interactions.
