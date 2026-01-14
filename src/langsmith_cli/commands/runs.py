@@ -12,6 +12,39 @@ def runs():
     pass
 
 
+def parse_duration_to_seconds(duration_str):
+    """Parse duration string like '2s', '500ms', '1.5s' to FQL format."""
+    import re
+    # LangSmith FQL accepts durations like "2s", "500ms", "1.5s"
+    # Just validate format and return as-is
+    if not re.match(r'^\d+(\.\d+)?(s|ms|m|h|d)$', duration_str):
+        raise click.BadParameter(f"Invalid duration format: {duration_str}. Use format like '2s', '500ms', '1.5s', '5m', '2h', '7d'")
+    return duration_str
+
+
+def parse_relative_time(time_str):
+    """Parse relative time like '24h', '7d', '30m' to datetime."""
+    import re
+    import datetime
+
+    match = re.match(r'^(\d+)(m|h|d)$', time_str)
+    if not match:
+        raise click.BadParameter(f"Invalid time format: {time_str}. Use format like '30m', '24h', '7d'")
+
+    value, unit = int(match.group(1)), match.group(2)
+
+    if unit == 'm':
+        delta = datetime.timedelta(minutes=value)
+    elif unit == 'h':
+        delta = datetime.timedelta(hours=value)
+    elif unit == 'd':
+        delta = datetime.timedelta(days=value)
+    else:
+        raise click.BadParameter(f"Unsupported time unit: {unit}")
+
+    return datetime.datetime.now(datetime.timezone.utc) - delta
+
+
 @runs.command("list")
 @click.option("--project", default="default", help="Project name.")
 @click.option("--limit", default=20, help="Max runs to fetch.")
@@ -31,8 +64,12 @@ def runs():
 @click.option("--slow", is_flag=True, help="Filter to slow runs (latency > 5s).")
 @click.option("--recent", is_flag=True, help="Filter to recent runs (last hour).")
 @click.option("--today", is_flag=True, help="Filter to today's runs.")
+@click.option("--min-latency", help="Minimum latency (e.g., '2s', '500ms', '1.5s').")
+@click.option("--max-latency", help="Maximum latency (e.g., '10s', '2000ms').")
+@click.option("--since", help="Show runs since time (ISO format or relative like '1 hour ago').")
+@click.option("--last", help="Show runs from last duration (e.g., '24h', '7d', '30m').")
 @click.pass_context
-def list_runs(ctx, project, limit, status, filter_, trace_id, run_type, is_root, trace_filter, tree_filter, order_by, reference_example_id, tag, name_pattern, slow, recent, today):
+def list_runs(ctx, project, limit, status, filter_, trace_id, run_type, is_root, trace_filter, tree_filter, order_by, reference_example_id, tag, name_pattern, slow, recent, today, min_latency, max_latency, since, last):
     """Fetch recent runs."""
     import datetime
 
@@ -64,7 +101,7 @@ def list_runs(ctx, project, limit, status, filter_, trace_id, run_type, is_root,
         if search_term:
             fql_filters.append(f'search("{search_term}")')
 
-    # Smart filters
+    # Smart filters (deprecated - use flexible filters below)
     if slow:
         fql_filters.append('gt(latency, "5s")')
 
@@ -77,6 +114,33 @@ def list_runs(ctx, project, limit, status, filter_, trace_id, run_type, is_root,
         # Today's runs (midnight to now)
         today_start = datetime.datetime.now(datetime.timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
         fql_filters.append(f'gt(start_time, "{today_start.isoformat()}")')
+
+    # Flexible latency filters
+    if min_latency:
+        duration = parse_duration_to_seconds(min_latency)
+        fql_filters.append(f'gt(latency, "{duration}")')
+
+    if max_latency:
+        duration = parse_duration_to_seconds(max_latency)
+        fql_filters.append(f'lt(latency, "{duration}")')
+
+    # Flexible time filters
+    if since:
+        # Try parsing as ISO timestamp first, then as relative time
+        try:
+            # ISO format (Python 3.7+ fromisoformat)
+            timestamp = datetime.datetime.fromisoformat(since.replace('Z', '+00:00'))
+        except Exception:
+            # Try relative time parsing
+            try:
+                timestamp = parse_relative_time(since)
+            except Exception:
+                raise click.BadParameter(f"Invalid --since format: {since}. Use ISO format (2024-01-14T10:00:00Z) or relative time (24h, 7d)")
+        fql_filters.append(f'gt(start_time, "{timestamp.isoformat()}")')
+
+    if last:
+        timestamp = parse_relative_time(last)
+        fql_filters.append(f'gt(start_time, "{timestamp.isoformat()}")')
 
     # Combine all filters with AND logic
     combined_filter = None

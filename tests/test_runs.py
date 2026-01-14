@@ -202,3 +202,79 @@ def test_runs_list_combined_filters(runner):
         assert 'gt(latency, "5s")' in kwargs["filter"]
         assert 'search("api")' in kwargs["filter"]
         assert kwargs["filter"].startswith("and(")
+
+
+def test_runs_list_with_min_latency(runner):
+    """Test runs list with --min-latency filter."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_runs.return_value = []
+
+        runner.invoke(cli, ["runs", "list", "--min-latency", "2s"])
+
+        args, kwargs = mock_client.list_runs.call_args
+        assert 'gt(latency, "2s")' in kwargs["filter"]
+
+
+def test_runs_list_with_max_latency(runner):
+    """Test runs list with --max-latency filter."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_runs.return_value = []
+
+        runner.invoke(cli, ["runs", "list", "--max-latency", "10s"])
+
+        args, kwargs = mock_client.list_runs.call_args
+        assert 'lt(latency, "10s")' in kwargs["filter"]
+
+
+def test_runs_list_with_latency_range(runner):
+    """Test runs list with both --min-latency and --max-latency."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_runs.return_value = []
+
+        runner.invoke(cli, ["runs", "list", "--min-latency", "1s", "--max-latency", "5s"])
+
+        args, kwargs = mock_client.list_runs.call_args
+        assert 'gt(latency, "1s")' in kwargs["filter"]
+        assert 'lt(latency, "5s")' in kwargs["filter"]
+        assert kwargs["filter"].startswith("and(")
+
+
+def test_runs_list_with_last_filter(runner):
+    """Test runs list with --last filter."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_runs.return_value = []
+
+        runner.invoke(cli, ["runs", "list", "--last", "24h"])
+
+        args, kwargs = mock_client.list_runs.call_args
+        assert 'gt(start_time, "' in kwargs["filter"]
+        # Verify it's a valid ISO timestamp
+        assert 'T' in kwargs["filter"]
+
+
+def test_runs_list_with_since_relative(runner):
+    """Test runs list with --since using relative time."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_runs.return_value = []
+
+        runner.invoke(cli, ["runs", "list", "--since", "7d"])
+
+        args, kwargs = mock_client.list_runs.call_args
+        assert 'gt(start_time, "' in kwargs["filter"]
+
+
+def test_runs_list_with_since_iso(runner):
+    """Test runs list with --since using ISO timestamp."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_runs.return_value = []
+
+        runner.invoke(cli, ["runs", "list", "--since", "2024-01-14T10:00:00Z"])
+
+        args, kwargs = mock_client.list_runs.call_args
+        assert 'gt(start_time, "2024-01-14T10:00:00' in kwargs["filter"]

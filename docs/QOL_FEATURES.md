@@ -32,7 +32,7 @@ langsmith-cli runs list --name-pattern "test-*"
 
 **How it works**: Converts wildcards to FQL `search()` function for server-side filtering.
 
-### Smart Filters
+### Smart Filters (Quick Presets)
 
 Common debugging scenarios as single flags:
 
@@ -49,9 +49,56 @@ langsmith-cli runs list --today
 
 **How it works**: Each flag generates appropriate FQL filters (e.g., `gt(latency, "5s")`).
 
+### Flexible Duration Filters
+
+Custom latency/duration thresholds:
+
+```bash
+# Runs taking more than 2 seconds
+langsmith-cli runs list --min-latency 2s
+
+# Runs taking less than 10 seconds
+langsmith-cli runs list --max-latency 10s
+
+# Runs in a specific latency range (1-5 seconds)
+langsmith-cli runs list --min-latency 1s --max-latency 5s
+
+# Other duration formats
+langsmith-cli runs list --min-latency 500ms   # milliseconds
+langsmith-cli runs list --min-latency 1.5s    # decimal seconds
+langsmith-cli runs list --min-latency 5m      # minutes
+```
+
+**Supported units**: `ms` (milliseconds), `s` (seconds), `m` (minutes), `h` (hours), `d` (days)
+
+### Flexible Time Filters
+
+Custom time ranges:
+
+```bash
+# Last 24 hours
+langsmith-cli runs list --last 24h
+
+# Last 7 days
+langsmith-cli runs list --last 7d
+
+# Last 30 minutes
+langsmith-cli runs list --last 30m
+
+# Since a specific ISO timestamp
+langsmith-cli runs list --since "2024-01-14T10:00:00Z"
+
+# Since a relative time (same as --last)
+langsmith-cli runs list --since 48h
+```
+
+**Time formats**:
+- **Relative**: `30m`, `24h`, `7d` (minutes, hours, days)
+- **ISO**: `2024-01-14T10:00:00Z` or `2024-01-14T10:00:00+00:00`
+
 ### Combining Filters
 
-All new filters can be combined together:
+All filters can be combined together:
 
 ```bash
 # Production runs that are slow
@@ -60,12 +107,20 @@ langsmith-cli runs list --tag production --slow
 # Recent API-related runs with errors
 langsmith-cli runs list --recent --name-pattern "*api*" --status error
 
-# Complex combination
+# Complex combination with flexible filters
 langsmith-cli runs list \
   --tag staging \
-  --slow \
-  --recent \
+  --min-latency 2s \
+  --max-latency 10s \
+  --last 48h \
   --name-pattern "*checkout*"
+
+# Find moderately slow LLM runs from last week
+langsmith-cli runs list \
+  --run-type llm \
+  --min-latency 1s \
+  --max-latency 5s \
+  --last 7d
 ```
 
 **How it works**: Multiple filters are combined with FQL `and()` operator.
@@ -81,8 +136,12 @@ All user-friendly flags are translated to LangSmith Filter Query Language (FQL):
 | `--tag foo` | `has(tags, "foo")` |
 | `--name-pattern "*auth*"` | `search("auth")` |
 | `--slow` | `gt(latency, "5s")` |
-| `--recent` | `gt(start_time, "<timestamp>")` |
+| `--recent` | `gt(start_time, "<1-hour-ago>")` |
 | `--today` | `gt(start_time, "<midnight>")` |
+| `--min-latency 2s` | `gt(latency, "2s")` |
+| `--max-latency 10s` | `lt(latency, "10s")` |
+| `--last 24h` | `gt(start_time, "<24-hours-ago>")` |
+| `--since "2024-01-14T10:00:00Z"` | `gt(start_time, "2024-01-14T10:00:00...")` |
 
 ### Multiple Filters
 
@@ -131,12 +190,28 @@ langsmith-cli runs list --tag production --slow --limit 50
 ### Performance Analysis
 
 ```bash
-# Find slow LLM calls today
-langsmith-cli runs list --slow --today --run-type llm
+# Find runs with specific latency characteristics
+langsmith-cli runs list --min-latency 2s --max-latency 5s --run-type llm
 
-# Export slow runs to JSON for analysis
-langsmith-cli --json runs list --slow \
+# Moderately slow runs from last 24 hours
+langsmith-cli runs list --min-latency 1s --max-latency 3s --last 24h
+
+# Export latency data for analysis
+langsmith-cli --json runs list --min-latency 2s --last 7d \
   | jq -r '.[] | [.id, .name, .latency] | @csv'
+```
+
+### Time-Based Analysis
+
+```bash
+# Compare runs from different time periods
+langsmith-cli runs list --since "2024-01-10T00:00:00Z" --last 24h
+
+# Weekly performance review
+langsmith-cli runs list --last 7d --min-latency 5s
+
+# Find issues from specific deployment
+langsmith-cli runs list --since "2024-01-14T15:30:00Z" --status error
 ```
 
 ### Pattern-Based Debugging
@@ -145,8 +220,8 @@ langsmith-cli --json runs list --slow \
 # Find authentication-related runs with errors
 langsmith-cli runs list --name-pattern "*auth*" --status error
 
-# Search for checkout flows
-langsmith-cli runs list --name-pattern "*checkout*" --slow
+# Search for checkout flows with specific latency
+langsmith-cli runs list --name-pattern "*checkout*" --min-latency 3s
 ```
 
 ## Future Enhancements
