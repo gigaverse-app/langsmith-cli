@@ -19,7 +19,9 @@ def prompts():
 
 @prompts.command("list")
 @click.option("--limit", default=20, help="Limit number of prompts (default 20).")
-@click.option("--is-public", type=bool, default=None, help="Filter by public/private status.")
+@click.option(
+    "--is-public", type=bool, default=None, help="Filter by public/private status."
+)
 @click.pass_context
 def list_prompts(ctx, limit, is_public):
     """List available prompt repositories."""

@@ -1,4 +1,5 @@
 """Utility functions shared across commands."""
+
 from typing import Any, Callable, Dict, List, Optional
 import click
 
@@ -23,10 +24,12 @@ def output_formatted_data(
             return
         elif format_type == "yaml":
             import yaml
+
             click.echo(yaml.dump([], default_flow_style=False))
             return
         elif format_type == "json":
             import json
+
             click.echo(json.dumps([], default=str))
             return
 
@@ -36,15 +39,18 @@ def output_formatted_data(
 
     if format_type == "json":
         import json
+
         click.echo(json.dumps(data, default=str))
     elif format_type == "csv":
         import csv
         import sys
+
         writer = csv.DictWriter(sys.stdout, fieldnames=data[0].keys())
         writer.writeheader()
         writer.writerows(data)
     elif format_type == "yaml":
         import yaml
+
         click.echo(yaml.dump(data, default_flow_style=False, sort_keys=False))
     else:
         raise ValueError(f"Unsupported format: {format_type}")
@@ -109,12 +115,17 @@ def apply_regex_filter(
         return items
 
     import re
+
     try:
         compiled_pattern = re.compile(regex_pattern)
     except re.error as e:
         raise click.BadParameter(f"Invalid regex pattern: {regex_pattern}. Error: {e}")
 
-    return [item for item in items if field_getter(item) and compiled_pattern.search(field_getter(item))]
+    return [
+        item
+        for item in items
+        if field_getter(item) and compiled_pattern.search(field_getter(item))
+    ]
 
 
 def apply_wildcard_filter(
@@ -136,6 +147,7 @@ def apply_wildcard_filter(
         return items
 
     import re
+
     # Convert wildcards to regex
     pattern = wildcard_pattern.replace("*", ".*").replace("?", ".")
 
@@ -147,7 +159,11 @@ def apply_wildcard_filter(
 
     regex_pattern = re.compile(pattern)
 
-    return [item for item in items if field_getter(item) and regex_pattern.search(field_getter(item))]
+    return [
+        item
+        for item in items
+        if field_getter(item) and regex_pattern.search(field_getter(item))
+    ]
 
 
 def determine_output_format(
@@ -178,7 +194,9 @@ def print_empty_result_message(console: Any, item_type: str) -> None:
     console.print(f"[yellow]No {item_type} found.[/yellow]")
 
 
-def parse_json_string(json_str: Optional[str], field_name: str = "input") -> Optional[Dict[str, Any]]:
+def parse_json_string(
+    json_str: Optional[str], field_name: str = "input"
+) -> Optional[Dict[str, Any]]:
     """Parse a JSON string with error handling.
 
     Args:
@@ -195,6 +213,7 @@ def parse_json_string(json_str: Optional[str], field_name: str = "input") -> Opt
         return None
 
     import json
+
     try:
         return json.loads(json_str)
     except json.JSONDecodeError as e:

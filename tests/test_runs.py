@@ -234,7 +234,9 @@ def test_runs_list_with_latency_range(runner):
         mock_client = MockClient.return_value
         mock_client.list_runs.return_value = []
 
-        runner.invoke(cli, ["runs", "list", "--min-latency", "1s", "--max-latency", "5s"])
+        runner.invoke(
+            cli, ["runs", "list", "--min-latency", "1s", "--max-latency", "5s"]
+        )
 
         args, kwargs = mock_client.list_runs.call_args
         assert 'gt(latency, "1s")' in kwargs["filter"]
@@ -253,7 +255,7 @@ def test_runs_list_with_last_filter(runner):
         args, kwargs = mock_client.list_runs.call_args
         assert 'gt(start_time, "' in kwargs["filter"]
         # Verify it's a valid ISO timestamp
-        assert 'T' in kwargs["filter"]
+        assert "T" in kwargs["filter"]
 
 
 def test_runs_list_with_since_relative(runner):
@@ -307,7 +309,9 @@ def test_runs_list_with_name_regex(runner):
         mock_client.list_runs.return_value = iter([run1, run2, run3])
 
         # Filter with regex for "test-auth-v[0-9]+"
-        result = runner.invoke(cli, ["runs", "list", "--name-regex", "test-auth-v[0-9]+"])
+        result = runner.invoke(
+            cli, ["runs", "list", "--name-regex", "test-auth-v[0-9]+"]
+        )
 
         assert result.exit_code == 0
         # Should match run1 and run2, but not run3
@@ -670,10 +674,13 @@ def test_runs_stats_json_output(runner):
             "error_count": 2,
         }
 
-        result = runner.invoke(cli, ["--json", "runs", "stats", "--project", "my-project"])
+        result = runner.invoke(
+            cli, ["--json", "runs", "stats", "--project", "my-project"]
+        )
 
         assert result.exit_code == 0
         import json
+
         data = json.loads(result.output)
         assert data["run_count"] == 50
         assert data["error_count"] == 2
@@ -687,7 +694,9 @@ def test_runs_stats_fallback_to_project_id(runner):
         mock_client.read_project.side_effect = Exception("Not found")
         mock_client.get_run_stats.return_value = {"run_count": 10}
 
-        result = runner.invoke(cli, ["--json", "runs", "stats", "--project", "fallback-id"])
+        result = runner.invoke(
+            cli, ["--json", "runs", "stats", "--project", "fallback-id"]
+        )
 
         assert result.exit_code == 0
         # Should have called get_run_stats with the project name as ID
@@ -702,7 +711,9 @@ def test_runs_open_command(runner):
         assert result.exit_code == 0
         assert "Opening run test-run-id" in result.output
         assert "https://smith.langchain.com/r/test-run-id" in result.output
-        mock_browser.assert_called_once_with("https://smith.langchain.com/r/test-run-id")
+        mock_browser.assert_called_once_with(
+            "https://smith.langchain.com/r/test-run-id"
+        )
 
 
 def test_runs_watch_keyboard_interrupt(runner):

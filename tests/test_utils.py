@@ -1,4 +1,5 @@
 """Tests for utility functions in langsmith_cli.utils."""
+
 import pytest
 import json
 from unittest.mock import MagicMock
@@ -20,6 +21,7 @@ from langsmith_cli.utils import (
 @dataclass
 class MockItem:
     """Simple mock item for testing."""
+
     name: str = None
     value: int = 0
 
@@ -101,6 +103,7 @@ class TestOutputFormattedData:
     def test_output_json_with_datetime(self, capsys):
         """Test JSON output handles datetime objects with default=str."""
         from datetime import datetime
+
         data = [{"name": "test", "timestamp": datetime(2024, 1, 14)}]
         output_formatted_data(data, "json")
 
@@ -208,6 +211,7 @@ class TestApplyRegexFilter:
             MockItem(name="test-auth-v2"),
             MockItem(name="prod-checkout"),
         ]
+
         def field_getter(x):
             return x.name
 
@@ -220,6 +224,7 @@ class TestApplyRegexFilter:
     def test_regex_filter_no_matches(self):
         """Test regex filtering with no matches."""
         items = [MockItem(name="test1"), MockItem(name="test2")]
+
         def field_getter(x):
             return x.name
 
@@ -230,6 +235,7 @@ class TestApplyRegexFilter:
     def test_regex_filter_none_pattern(self):
         """Test that None pattern returns all items."""
         items = [MockItem(name="test1"), MockItem(name="test2")]
+
         def field_getter(x):
             return x.name
 
@@ -240,6 +246,7 @@ class TestApplyRegexFilter:
     def test_regex_filter_empty_pattern(self):
         """Test that empty string pattern returns all items."""
         items = [MockItem(name="test1")]
+
         def field_getter(x):
             return x.name
 
@@ -250,6 +257,7 @@ class TestApplyRegexFilter:
     def test_regex_filter_invalid_pattern(self):
         """Test that invalid regex raises BadParameter."""
         items = [MockItem(name="test")]
+
         def field_getter(x):
             return x.name
 
@@ -262,6 +270,7 @@ class TestApplyRegexFilter:
             MockItem(name="auth-service"),
             MockItem(name="test-auth"),
         ]
+
         def field_getter(x):
             return x.name
 
@@ -276,6 +285,7 @@ class TestApplyRegexFilter:
             MockItem(name="test"),
             MockItem(name=None),
         ]
+
         def field_getter(x):
             return x.name
 
@@ -296,6 +306,7 @@ class TestApplyWildcardFilter:
             MockItem(name="prod-web-v1"),
             MockItem(name="staging-api"),
         ]
+
         def field_getter(x):
             return x.name
 
@@ -312,6 +323,7 @@ class TestApplyWildcardFilter:
             MockItem(name="test2"),
             MockItem(name="test10"),
         ]
+
         def field_getter(x):
             return x.name
 
@@ -324,6 +336,7 @@ class TestApplyWildcardFilter:
     def test_wildcard_none_pattern(self):
         """Test that None pattern returns all items."""
         items = [MockItem(name="test")]
+
         def field_getter(x):
             return x.name
 
@@ -334,6 +347,7 @@ class TestApplyWildcardFilter:
     def test_wildcard_empty_pattern(self):
         """Test that empty pattern returns all items."""
         items = [MockItem(name="test")]
+
         def field_getter(x):
             return x.name
 
@@ -344,6 +358,7 @@ class TestApplyWildcardFilter:
     def test_wildcard_no_matches(self):
         """Test wildcard with no matches."""
         items = [MockItem(name="test1"), MockItem(name="test2")]
+
         def field_getter(x):
             return x.name
 
@@ -357,6 +372,7 @@ class TestApplyWildcardFilter:
             MockItem(name="test"),
             MockItem(name=None),
         ]
+
         def field_getter(x):
             return x.name
 
@@ -447,7 +463,7 @@ class TestParseJsonString:
     def test_parse_json_error_includes_field_name(self):
         """Test that error message includes field name."""
         with pytest.raises(click.BadParameter) as exc_info:
-            parse_json_string('invalid', "custom_field")
+            parse_json_string("invalid", "custom_field")
         assert "custom_field" in str(exc_info.value)
 
 

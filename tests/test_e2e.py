@@ -70,12 +70,9 @@ def test_runs_list_with_multiple_tags_e2e():
     if not os.getenv("LANGSMITH_API_KEY"):
         pytest.skip("LANGSMITH_API_KEY not set")
 
-    result = run_cli_cmd([
-        "runs", "list",
-        "--tag", "production",
-        "--tag", "experimental",
-        "--limit", "5"
-    ])
+    result = run_cli_cmd(
+        ["runs", "list", "--tag", "production", "--tag", "experimental", "--limit", "5"]
+    )
     assert result.returncode == 0
     assert "Runs" in result.stdout or "No runs found" in result.stdout
 
@@ -130,12 +127,9 @@ def test_runs_list_with_combined_filters_e2e():
     if not os.getenv("LANGSMITH_API_KEY"):
         pytest.skip("LANGSMITH_API_KEY not set")
 
-    result = run_cli_cmd([
-        "runs", "list",
-        "--recent",
-        "--name-pattern", "*",
-        "--limit", "5"
-    ])
+    result = run_cli_cmd(
+        ["runs", "list", "--recent", "--name-pattern", "*", "--limit", "5"]
+    )
     assert result.returncode == 0
     assert "Runs" in result.stdout or "No runs found" in result.stdout
 
@@ -146,15 +140,11 @@ def test_runs_list_qol_with_json_output_e2e():
     if not os.getenv("LANGSMITH_API_KEY"):
         pytest.skip("LANGSMITH_API_KEY not set")
 
-    result = run_cli_cmd([
-        "--json",
-        "runs", "list",
-        "--recent",
-        "--limit", "2"
-    ])
+    result = run_cli_cmd(["--json", "runs", "list", "--recent", "--limit", "2"])
     assert result.returncode == 0
 
     import json
+
     data = json.loads(result.stdout)
     assert isinstance(data, list)
     # Data can be empty, but should be valid JSON list

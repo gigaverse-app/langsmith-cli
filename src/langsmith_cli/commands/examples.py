@@ -30,7 +30,19 @@ def examples():
 @click.option("--include-attachments", type=bool, help="Include attachments.")
 @click.option("--as-of", help="Dataset version tag or ISO timestamp.")
 @click.pass_context
-def list_examples(ctx, dataset, example_ids, limit, offset, filter_, metadata, splits, inline_s3_urls, include_attachments, as_of):
+def list_examples(
+    ctx,
+    dataset,
+    example_ids,
+    limit,
+    offset,
+    filter_,
+    metadata,
+    splits,
+    inline_s3_urls,
+    include_attachments,
+    as_of,
+):
     """List examples for a dataset."""
     client = langsmith.Client()
 

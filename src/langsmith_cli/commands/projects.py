@@ -24,14 +24,40 @@ def projects():
 @click.option("--limit", default=100, help="Limit number of projects (default 100).")
 @click.option("--name", "name_", help="Filter by project name substring.")
 @click.option("--name-pattern", help="Filter by name with wildcards (e.g. '*prod*').")
-@click.option("--name-regex", help="Filter by name with regex (e.g. '^prod-.*-v[0-9]+$').")
-@click.option("--reference-dataset-id", help="Filter experiments for a dataset (by ID).")
-@click.option("--reference-dataset-name", help="Filter experiments for a dataset (by name).")
-@click.option("--has-runs", is_flag=True, help="Show only projects with runs (run_count > 0).")
-@click.option("--sort-by", help="Sort by field (name, run_count). Prefix with - for descending.")
-@click.option("--format", "output_format", type=click.Choice(["table", "json", "csv", "yaml"]), help="Output format (default: table, or json if --json flag used).")
+@click.option(
+    "--name-regex", help="Filter by name with regex (e.g. '^prod-.*-v[0-9]+$')."
+)
+@click.option(
+    "--reference-dataset-id", help="Filter experiments for a dataset (by ID)."
+)
+@click.option(
+    "--reference-dataset-name", help="Filter experiments for a dataset (by name)."
+)
+@click.option(
+    "--has-runs", is_flag=True, help="Show only projects with runs (run_count > 0)."
+)
+@click.option(
+    "--sort-by", help="Sort by field (name, run_count). Prefix with - for descending."
+)
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["table", "json", "csv", "yaml"]),
+    help="Output format (default: table, or json if --json flag used).",
+)
 @click.pass_context
-def list_projects(ctx, limit, name_, name_pattern, name_regex, reference_dataset_id, reference_dataset_name, has_runs, sort_by, output_format):
+def list_projects(
+    ctx,
+    limit,
+    name_,
+    name_pattern,
+    name_regex,
+    reference_dataset_id,
+    reference_dataset_name,
+    has_runs,
+    sort_by,
+    output_format,
+):
     """List all projects."""
 
     client = langsmith.Client()
@@ -64,14 +90,20 @@ def list_projects(ctx, limit, name_, name_pattern, name_regex, reference_dataset
 
     # Filter by projects with runs
     if has_runs:
-        projects_list = [p for p in projects_list if hasattr(p, "run_count") and p.run_count and p.run_count > 0]
+        projects_list = [
+            p
+            for p in projects_list
+            if hasattr(p, "run_count") and p.run_count and p.run_count > 0
+        ]
 
     # Client-side sorting for table output
     if sort_by and not ctx.obj.get("json"):
         # Map sort field to project attribute
         sort_key_map = {
             "name": lambda p: (p.name or "").lower(),
-            "run_count": lambda p: p.run_count if hasattr(p, "run_count") and p.run_count else 0,
+            "run_count": lambda p: p.run_count
+            if hasattr(p, "run_count") and p.run_count
+            else 0,
         }
         projects_list = sort_items(projects_list, sort_by, sort_key_map, console)
 

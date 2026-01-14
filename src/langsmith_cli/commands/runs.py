@@ -21,10 +21,13 @@ def runs():
 def parse_duration_to_seconds(duration_str):
     """Parse duration string like '2s', '500ms', '1.5s' to FQL format."""
     import re
+
     # LangSmith FQL accepts durations like "2s", "500ms", "1.5s"
     # Just validate format and return as-is
-    if not re.match(r'^\d+(\.\d+)?(s|ms|m|h|d)$', duration_str):
-        raise click.BadParameter(f"Invalid duration format: {duration_str}. Use format like '2s', '500ms', '1.5s', '5m', '2h', '7d'")
+    if not re.match(r"^\d+(\.\d+)?(s|ms|m|h|d)$", duration_str):
+        raise click.BadParameter(
+            f"Invalid duration format: {duration_str}. Use format like '2s', '500ms', '1.5s', '5m', '2h', '7d'"
+        )
     return duration_str
 
 
@@ -33,17 +36,19 @@ def parse_relative_time(time_str):
     import re
     import datetime
 
-    match = re.match(r'^(\d+)(m|h|d)$', time_str)
+    match = re.match(r"^(\d+)(m|h|d)$", time_str)
     if not match:
-        raise click.BadParameter(f"Invalid time format: {time_str}. Use format like '30m', '24h', '7d'")
+        raise click.BadParameter(
+            f"Invalid time format: {time_str}. Use format like '30m', '24h', '7d'"
+        )
 
     value, unit = int(match.group(1)), match.group(2)
 
-    if unit == 'm':
+    if unit == "m":
         delta = datetime.timedelta(minutes=value)
-    elif unit == 'h':
+    elif unit == "h":
         delta = datetime.timedelta(hours=value)
-    elif unit == 'd':
+    elif unit == "d":
         delta = datetime.timedelta(days=value)
     else:
         raise click.BadParameter(f"Unsupported time unit: {unit}")
@@ -59,29 +64,85 @@ def parse_relative_time(time_str):
 )
 @click.option("--filter", "filter_", help="LangSmith filter string.")
 @click.option("--trace-id", help="Get all runs in a specific trace.")
-@click.option("--run-type", help="Filter by run type (llm, chain, tool, retriever, etc).")
+@click.option(
+    "--run-type", help="Filter by run type (llm, chain, tool, retriever, etc)."
+)
 @click.option("--is-root", type=bool, help="Filter root traces only (true/false).")
 @click.option("--trace-filter", help="Filter applied to root trace.")
 @click.option("--tree-filter", help="Filter if any run in trace tree matches.")
-@click.option("--order-by", default="-start_time", help="Sort field (prefix with - for desc).")
+@click.option(
+    "--order-by", default="-start_time", help="Sort field (prefix with - for desc)."
+)
 @click.option("--reference-example-id", help="Filter runs for a specific example.")
-@click.option("--tag", multiple=True, help="Filter by tag (can specify multiple times for AND logic).")
+@click.option(
+    "--tag",
+    multiple=True,
+    help="Filter by tag (can specify multiple times for AND logic).",
+)
 @click.option("--name-pattern", help="Filter by name with wildcards (e.g. '*auth*').")
-@click.option("--name-regex", help="Filter by name with regex (e.g. '^test-.*-v[0-9]+$').")
+@click.option(
+    "--name-regex", help="Filter by name with regex (e.g. '^test-.*-v[0-9]+$')."
+)
 @click.option("--model", help="Filter by model name (e.g. 'gpt-4', 'claude-3').")
-@click.option("--failed", is_flag=True, help="Show only failed/error runs (equivalent to --status error).")
-@click.option("--succeeded", is_flag=True, help="Show only successful runs (equivalent to --status success).")
+@click.option(
+    "--failed",
+    is_flag=True,
+    help="Show only failed/error runs (equivalent to --status error).",
+)
+@click.option(
+    "--succeeded",
+    is_flag=True,
+    help="Show only successful runs (equivalent to --status success).",
+)
 @click.option("--slow", is_flag=True, help="Filter to slow runs (latency > 5s).")
 @click.option("--recent", is_flag=True, help="Filter to recent runs (last hour).")
 @click.option("--today", is_flag=True, help="Filter to today's runs.")
 @click.option("--min-latency", help="Minimum latency (e.g., '2s', '500ms', '1.5s').")
 @click.option("--max-latency", help="Maximum latency (e.g., '10s', '2000ms').")
-@click.option("--since", help="Show runs since time (ISO format or relative like '1 hour ago').")
+@click.option(
+    "--since", help="Show runs since time (ISO format or relative like '1 hour ago')."
+)
 @click.option("--last", help="Show runs from last duration (e.g., '24h', '7d', '30m').")
-@click.option("--sort-by", help="Sort by field (name, status, latency, start_time). Prefix with - for descending.")
-@click.option("--format", "output_format", type=click.Choice(["table", "json", "csv", "yaml"]), help="Output format (default: table, or json if --json flag used).")
+@click.option(
+    "--sort-by",
+    help="Sort by field (name, status, latency, start_time). Prefix with - for descending.",
+)
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["table", "json", "csv", "yaml"]),
+    help="Output format (default: table, or json if --json flag used).",
+)
 @click.pass_context
-def list_runs(ctx, project, limit, status, filter_, trace_id, run_type, is_root, trace_filter, tree_filter, order_by, reference_example_id, tag, name_pattern, name_regex, model, failed, succeeded, slow, recent, today, min_latency, max_latency, since, last, sort_by, output_format):
+def list_runs(
+    ctx,
+    project,
+    limit,
+    status,
+    filter_,
+    trace_id,
+    run_type,
+    is_root,
+    trace_filter,
+    tree_filter,
+    order_by,
+    reference_example_id,
+    tag,
+    name_pattern,
+    name_regex,
+    model,
+    failed,
+    succeeded,
+    slow,
+    recent,
+    today,
+    min_latency,
+    max_latency,
+    since,
+    last,
+    sort_by,
+    output_format,
+):
     """Fetch recent runs."""
     import datetime
 
@@ -125,12 +186,16 @@ def list_runs(ctx, project, limit, status, filter_, trace_id, run_type, is_root,
 
     if recent:
         # Last hour
-        one_hour_ago = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=1)
+        one_hour_ago = datetime.datetime.now(
+            datetime.timezone.utc
+        ) - datetime.timedelta(hours=1)
         fql_filters.append(f'gt(start_time, "{one_hour_ago.isoformat()}")')
 
     if today:
         # Today's runs (midnight to now)
-        today_start = datetime.datetime.now(datetime.timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        today_start = datetime.datetime.now(datetime.timezone.utc).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
         fql_filters.append(f'gt(start_time, "{today_start.isoformat()}")')
 
     # Flexible latency filters
@@ -147,13 +212,15 @@ def list_runs(ctx, project, limit, status, filter_, trace_id, run_type, is_root,
         # Try parsing as ISO timestamp first, then as relative time
         try:
             # ISO format (Python 3.7+ fromisoformat)
-            timestamp = datetime.datetime.fromisoformat(since.replace('Z', '+00:00'))
+            timestamp = datetime.datetime.fromisoformat(since.replace("Z", "+00:00"))
         except Exception:
             # Try relative time parsing
             try:
                 timestamp = parse_relative_time(since)
             except Exception:
-                raise click.BadParameter(f"Invalid --since format: {since}. Use ISO format (2024-01-14T10:00:00Z) or relative time (24h, 7d)")
+                raise click.BadParameter(
+                    f"Invalid --since format: {since}. Use ISO format (2024-01-14T10:00:00Z) or relative time (24h, 7d)"
+                )
         fql_filters.append(f'gt(start_time, "{timestamp.isoformat()}")')
 
     if last:
@@ -168,7 +235,7 @@ def list_runs(ctx, project, limit, status, filter_, trace_id, run_type, is_root,
         else:
             # Wrap in and() for multiple filters
             filter_str = ", ".join(fql_filters)
-            combined_filter = f'and({filter_str})'
+            combined_filter = f"and({filter_str})"
 
     runs = client.list_runs(
         project_name=project,
@@ -197,7 +264,9 @@ def list_runs(ctx, project, limit, status, filter_, trace_id, run_type, is_root,
             "name": lambda r: (r.name or "").lower(),
             "status": lambda r: r.status or "",
             "latency": lambda r: r.latency if r.latency is not None else 0,
-            "start_time": lambda r: r.start_time if hasattr(r, "start_time") else datetime.datetime.min,
+            "start_time": lambda r: r.start_time
+            if hasattr(r, "start_time")
+            else datetime.datetime.min,
         }
         runs = sort_items(runs, sort_by, sort_key_map, console)
 
@@ -389,12 +458,36 @@ def watch_runs(ctx, project, interval):
 @click.argument("query")
 @click.option("--project", default="default", help="Project name.")
 @click.option("--limit", default=10, help="Max results.")
-@click.option("--in", "search_in", type=click.Choice(["all", "inputs", "outputs", "error"]), default="all", help="Where to search (default: all fields).")
-@click.option("--input-contains", help="Filter by content in inputs (JSON path or text).")
-@click.option("--output-contains", help="Filter by content in outputs (JSON path or text).")
-@click.option("--format", "output_format", type=click.Choice(["table", "json", "csv", "yaml"]), help="Output format.")
+@click.option(
+    "--in",
+    "search_in",
+    type=click.Choice(["all", "inputs", "outputs", "error"]),
+    default="all",
+    help="Where to search (default: all fields).",
+)
+@click.option(
+    "--input-contains", help="Filter by content in inputs (JSON path or text)."
+)
+@click.option(
+    "--output-contains", help="Filter by content in outputs (JSON path or text)."
+)
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["table", "json", "csv", "yaml"]),
+    help="Output format.",
+)
 @click.pass_context
-def search_runs(ctx, query, project, limit, search_in, input_contains, output_contains, output_format):
+def search_runs(
+    ctx,
+    query,
+    project,
+    limit,
+    search_in,
+    input_contains,
+    output_contains,
+    output_format,
+):
     """Search runs using full-text search.
 
     QUERY is the text to search for across runs.
@@ -417,7 +510,7 @@ def search_runs(ctx, query, project, limit, search_in, input_contains, output_co
         filters.append(f'search("{output_contains}")')
 
     # Combine filters with AND
-    combined_filter = filters[0] if len(filters) == 1 else f'and({", ".join(filters)})'
+    combined_filter = filters[0] if len(filters) == 1 else f"and({', '.join(filters)})"
 
     # Invoke list_runs with the filter
     return ctx.invoke(

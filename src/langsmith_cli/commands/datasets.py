@@ -27,7 +27,9 @@ def datasets():
 @click.option("--name-contains", help="Dataset name substring search.")
 @click.option("--metadata", help="Filter by metadata (JSON string).")
 @click.pass_context
-def list_datasets(ctx, dataset_ids, limit, data_type, dataset_name, name_contains, metadata):
+def list_datasets(
+    ctx, dataset_ids, limit, data_type, dataset_name, name_contains, metadata
+):
     """List all available datasets."""
     client = langsmith.Client()
 

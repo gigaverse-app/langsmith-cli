@@ -110,7 +110,9 @@ def test_projects_list_with_name_regex(runner):
         mock_client.list_projects.return_value = iter([p1, p2, p3])
 
         # Filter with regex "^prod-.*-v[0-9]+"
-        result = runner.invoke(cli, ["projects", "list", "--name-regex", "^prod-.*-v[0-9]+"])
+        result = runner.invoke(
+            cli, ["projects", "list", "--name-regex", "^prod-.*-v[0-9]+"]
+        )
 
         assert result.exit_code == 0
         # Should match p1 and p2, but not p3
@@ -281,7 +283,9 @@ def test_projects_create_already_exists(runner):
 
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
-        mock_client.create_project.side_effect = LangSmithConflictError("Project already exists")
+        mock_client.create_project.side_effect = LangSmithConflictError(
+            "Project already exists"
+        )
 
         result = runner.invoke(cli, ["projects", "create", "existing-proj"])
 
