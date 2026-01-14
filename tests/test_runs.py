@@ -728,6 +728,10 @@ def test_runs_watch_keyboard_interrupt(runner):
     """Test runs watch handles keyboard interrupt gracefully."""
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
+
+        # Mock list_projects - returns empty since we're only using --project
+        mock_client.list_projects.return_value = []
+
         mock_run = MagicMock()
         mock_run.id = "watch-run"
         mock_run.name = "Watched Run"

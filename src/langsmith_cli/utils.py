@@ -529,41 +529,41 @@ def add_project_filter_options(func: Callable[..., Any]) -> Callable[..., Any]:
 
     Adds the following Click options in consistent order:
     - --project: Single project name (default/fallback)
-    - --name: Substring/contains match
-    - --name-exact: Exact match
-    - --name-pattern: Wildcard pattern (*, ?)
-    - --name-regex: Regular expression
+    - --project-name: Substring/contains match
+    - --project-name-exact: Exact match
+    - --project-name-pattern: Wildcard pattern (*, ?)
+    - --project-name-regex: Regular expression
 
     Usage:
         @runs.command("list")
         @add_project_filter_options
         @click.pass_context
-        def list_runs(ctx, project, name, name_exact, name_pattern, name_regex, ...):
+        def list_runs(ctx, project, project_name, project_name_exact, project_name_pattern, project_name_regex, ...):
             client = get_or_create_client(ctx)
             projects = get_matching_projects(
                 client,
                 project=project,
-                name=name,
-                name_exact=name_exact,
-                name_pattern=name_pattern,
-                name_regex=name_regex,
+                name=project_name,
+                name_exact=project_name_exact,
+                name_pattern=project_name_pattern,
+                name_regex=project_name_regex,
             )
             # Use projects list...
     """
     func = click.option(
-        "--name-regex",
+        "--project-name-regex",
         help="Regular expression pattern for project names (e.g., '^prod-.*-v[0-9]+$').",
     )(func)
     func = click.option(
-        "--name-pattern",
+        "--project-name-pattern",
         help="Wildcard pattern for project names (e.g., 'dev/*', '*production*').",
     )(func)
     func = click.option(
-        "--name-exact",
+        "--project-name-exact",
         help="Exact project name match.",
     )(func)
     func = click.option(
-        "--name",
+        "--project-name",
         help="Substring/contains match for project names (convenience filter).",
     )(func)
     func = click.option(

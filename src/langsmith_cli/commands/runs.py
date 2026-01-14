@@ -8,6 +8,8 @@ from langsmith_cli.utils import (
     determine_output_format,
     apply_client_side_limit,
     get_or_create_client,
+    add_project_filter_options,
+    get_matching_projects,
 )
 
 console = Console()
@@ -58,8 +60,8 @@ def parse_relative_time(time_str):
 
 
 @runs.command("list")
-@click.option("--project", default="default", help="Project name.")
-@click.option("--limit", default=20, help="Max runs to fetch.")
+@add_project_filter_options
+@click.option("--limit", default=20, help="Max runs to fetch (per project).")
 @click.option(
     "--status", type=click.Choice(["success", "error"]), help="Filter by status."
 )
@@ -80,9 +82,9 @@ def parse_relative_time(time_str):
     multiple=True,
     help="Filter by tag (can specify multiple times for AND logic).",
 )
-@click.option("--name-pattern", help="Filter by name with wildcards (e.g. '*auth*').")
+@click.option("--name-pattern", help="Filter run names with wildcards (e.g. '*auth*').")
 @click.option(
-    "--name-regex", help="Filter by name with regex (e.g. '^test-.*-v[0-9]+$')."
+    "--name-regex", help="Filter run names with regex (e.g. '^test-.*-v[0-9]+$')."
 )
 @click.option("--model", help="Filter by model name (e.g. 'gpt-4', 'claude-3').")
 @click.option(
@@ -118,6 +120,10 @@ def parse_relative_time(time_str):
 def list_runs(
     ctx,
     project,
+    project_name,
+    project_name_exact,
+    project_name_pattern,
+    project_name_regex,
     limit,
     status,
     filter_,
@@ -144,10 +150,24 @@ def list_runs(
     sort_by,
     output_format,
 ):
-    """Fetch recent runs."""
+    """Fetch recent runs from one or more projects.
+
+    Use project filters (--project-name, --project-name-pattern, --project-name-regex, --project-name-exact) to match multiple projects.
+    Use run name filters (--name-pattern, --name-regex) to filter specific run names.
+    """
     import datetime
 
     client = get_or_create_client(ctx)
+
+    # Get matching projects using universal helper
+    projects_to_query = get_matching_projects(
+        client,
+        project=project,
+        name=project_name,
+        name_exact=project_name_exact,
+        name_pattern=project_name_pattern,
+        name_regex=project_name_regex,
+    )
 
     # Handle status filtering with multiple options
     error_filter = None
@@ -168,7 +188,7 @@ def list_runs(
         for t in tag:
             fql_filters.append(f'has(tags, "{t}")')
 
-    # Name pattern (convert wildcards to FQL search)
+    # Run name pattern (convert wildcards to FQL search)
     if name_pattern:
         # Convert shell wildcards to FQL search pattern
         # For now, simple implementation: * becomes substring search
@@ -244,22 +264,29 @@ def list_runs(
     # If client-side filtering needed, fetch more results
     api_limit = None if needs_client_filtering else limit
 
-    runs = client.list_runs(
-        project_name=project,
-        limit=api_limit,
-        error=error_filter,
-        filter=combined_filter,
-        trace_id=trace_id,
-        run_type=run_type,
-        is_root=is_root,
-        trace_filter=trace_filter,
-        tree_filter=tree_filter,
-        order_by=order_by,
-        reference_example_id=reference_example_id,
-    )
+    # Fetch runs from all matching projects
+    all_runs = []
+    for proj_name in projects_to_query:
+        try:
+            project_runs = client.list_runs(
+                project_name=proj_name,
+                limit=api_limit,
+                error=error_filter,
+                filter=combined_filter,
+                trace_id=trace_id,
+                run_type=run_type,
+                is_root=is_root,
+                trace_filter=trace_filter,
+                tree_filter=tree_filter,
+                order_by=order_by,
+                reference_example_id=reference_example_id,
+            )
+            all_runs.extend(list(project_runs))
+        except Exception:
+            # Skip projects that fail to fetch (e.g., permissions)
+            pass
 
-    # Convert generator to list
-    runs = list(runs)
+    runs = all_runs
 
     # Client-side regex filtering (FQL doesn't support full regex)
     runs = apply_regex_filter(runs, name_regex, lambda r: r.name)
@@ -289,7 +316,13 @@ def list_runs(
         output_formatted_data(data, format_type)
         return
 
-    table = Table(title=f"Runs ({project})")
+    # Build descriptive table title
+    if len(projects_to_query) == 1:
+        table_title = f"Runs ({projects_to_query[0]})"
+    else:
+        table_title = f"Runs ({len(projects_to_query)} projects)"
+
+    table = Table(title=table_title)
     table.add_column("ID", style="dim", no_wrap=True)
     table.add_column("Name")
     table.add_column("Status", justify="center")
@@ -371,20 +404,47 @@ def get_run(ctx, run_id, fields):
 
 
 @runs.command("stats")
-@click.option("--project", default="default", help="Project name.")
+@add_project_filter_options
 @click.pass_context
-def run_stats(ctx, project):
-    """Fetch aggregated metrics for a project."""
-    client = get_or_create_client(ctx)
-    # Resolve project name to ID
-    try:
-        p = client.read_project(project_name=project)
-        project_id = p.id
-    except Exception:
-        # Fallback if name fails or user passed ID
-        project_id = project
+def run_stats(
+    ctx,
+    project,
+    project_name,
+    project_name_exact,
+    project_name_pattern,
+    project_name_regex,
+):
+    """Fetch aggregated metrics for one or more projects.
 
-    stats = client.get_run_stats(project_ids=[project_id])
+    Use project filters to match multiple projects and get combined statistics.
+    """
+    client = get_or_create_client(ctx)
+
+    # Get matching projects using universal helper
+    projects_to_query = get_matching_projects(
+        client,
+        project=project,
+        name=project_name,
+        name_exact=project_name_exact,
+        name_pattern=project_name_pattern,
+        name_regex=project_name_regex,
+    )
+
+    # Resolve project names to IDs
+    project_ids = []
+    for proj_name in projects_to_query:
+        try:
+            p = client.read_project(project_name=proj_name)
+            project_ids.append(p.id)
+        except Exception:
+            # Fallback: use project name as ID (user might have passed ID directly)
+            project_ids.append(proj_name)
+
+    if not project_ids:
+        console.print("[yellow]No matching projects found.[/yellow]")
+        return
+
+    stats = client.get_run_stats(project_ids=project_ids)
 
     if ctx.obj.get("json"):
         import json
@@ -392,7 +452,13 @@ def run_stats(ctx, project):
         click.echo(json.dumps(stats, default=str))
         return
 
-    table = Table(title=f"Stats: {project}")
+    # Build descriptive title
+    if len(projects_to_query) == 1:
+        table_title = f"Stats: {projects_to_query[0]}"
+    else:
+        table_title = f"Stats: {len(projects_to_query)} projects"
+
+    table = Table(title=table_title)
     table.add_column("Metric")
     table.add_column("Value")
 
@@ -419,22 +485,28 @@ def open_run(ctx, run_id):
 
 
 @runs.command("watch")
-@click.option("--project", default="default", help="Project name.")
-@click.option(
-    "--name-pattern",
-    help="Wildcard pattern for project names (e.g., 'dev/*'). Overrides --project.",
-)
+@add_project_filter_options
 @click.option("--interval", default=2.0, help="Refresh interval in seconds.")
 @click.pass_context
-def watch_runs(ctx, project, name_pattern, interval):
+def watch_runs(
+    ctx,
+    project,
+    project_name,
+    project_name_exact,
+    project_name_pattern,
+    project_name_regex,
+    interval,
+):
     """Live dashboard of runs (root traces only).
 
-    Watch a single project or multiple projects matching a pattern.
+    Watch a single project or multiple projects matching filters.
 
     Examples:
         langsmith-cli runs watch --project my-project
-        langsmith-cli runs watch --name-pattern "dev/*"
-        langsmith-cli runs watch --name-pattern "*production*"
+        langsmith-cli runs watch --project-name-pattern "dev/*"
+        langsmith-cli runs watch --project-name-exact "production-api"
+        langsmith-cli runs watch --project-name-regex "^dev-.*-v[0-9]+$"
+        langsmith-cli runs watch --project-name prod
     """
     from rich.live import Live
     import time
@@ -443,16 +515,29 @@ def watch_runs(ctx, project, name_pattern, interval):
 
     def generate_table():
         # Get projects to watch using universal helper
-        from langsmith_cli.utils import get_matching_projects
-
         projects_to_watch = get_matching_projects(
-            client, project=project, name_pattern=name_pattern
+            client,
+            project=project,
+            name=project_name,
+            name_exact=project_name_exact,
+            name_pattern=project_name_pattern,
+            name_regex=project_name_regex,
         )
-        title = (
-            f"Watching: {name_pattern} ({len(projects_to_watch)} projects)"
-            if name_pattern
-            else f"Watching: {project}"
-        )
+        # Build descriptive title based on filter used
+        if project_name_exact:
+            title = f"Watching: {project_name_exact}"
+        elif project_name_regex:
+            title = f"Watching: regex({project_name_regex}) ({len(projects_to_watch)} projects)"
+        elif project_name_pattern:
+            title = (
+                f"Watching: {project_name_pattern} ({len(projects_to_watch)} projects)"
+            )
+        elif project_name:
+            title = f"Watching: *{project_name}* ({len(projects_to_watch)} projects)"
+        elif len(projects_to_watch) > 1:
+            title = f"Watching: {len(projects_to_watch)} projects"
+        else:
+            title = f"Watching: {project}"
         title += f" (Interval: {interval}s)"
 
         table = Table(title=title)
@@ -470,7 +555,7 @@ def watch_runs(ctx, project, name_pattern, interval):
                 runs = list(
                     client.list_runs(
                         project_name=proj_name,
-                        limit=5 if name_pattern else 10,
+                        limit=5 if project_name_pattern else 10,
                         is_root=True,
                     )
                 )
@@ -522,7 +607,7 @@ def watch_runs(ctx, project, name_pattern, interval):
 
 @runs.command("search")
 @click.argument("query")
-@click.option("--project", default="default", help="Project name.")
+@add_project_filter_options
 @click.option("--limit", default=10, help="Max results.")
 @click.option(
     "--in",
@@ -548,20 +633,27 @@ def search_runs(
     ctx,
     query,
     project,
+    project_name,
+    project_name_exact,
+    project_name_pattern,
+    project_name_regex,
     limit,
     search_in,
     input_contains,
     output_contains,
     output_format,
 ):
-    """Search runs using full-text search.
+    """Search runs using full-text search across one or more projects.
 
     QUERY is the text to search for across runs.
+
+    Use project filters to search across multiple projects.
 
     Examples:
       langsmith-cli runs search "authentication failed"
       langsmith-cli runs search "timeout" --in error
       langsmith-cli runs search "user_123" --in inputs
+      langsmith-cli runs search "error" --project-name-pattern "prod-*"
     """
     # Build FQL filter for full-text search
     filter_expr = f'search("{query}")'
@@ -578,10 +670,14 @@ def search_runs(
     # Combine filters with AND
     combined_filter = filters[0] if len(filters) == 1 else f"and({', '.join(filters)})"
 
-    # Invoke list_runs with the filter
+    # Invoke list_runs with the filter and project filters
     return ctx.invoke(
         list_runs,
         project=project,
+        project_name=project_name,
+        project_name_exact=project_name_exact,
+        project_name_pattern=project_name_pattern,
+        project_name_regex=project_name_regex,
         limit=limit,
         filter_=combined_filter,
         output_format=output_format,
