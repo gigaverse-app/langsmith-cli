@@ -163,3 +163,52 @@ def open_run(ctx, run_id):
     click.echo(f"Opening run {run_id} in browser...")
     click.echo(f"URL: {url}")
     webbrowser.open(url)
+
+
+@runs.command("watch")
+@click.option("--project", default="default", help="Project name.")
+@click.option("--interval", default=2.0, help="Refresh interval in seconds.")
+@click.pass_context
+def watch_runs(ctx, project, interval):
+    """Live dashboard of runs."""
+    from rich.live import Live
+    import time
+
+    client = langsmith.Client()
+
+    def generate_table():
+        runs = client.list_runs(project_name=project, limit=10)
+        table = Table(title=f"Watching: {project} (Interval: {interval}s)")
+        table.add_column("ID", style="dim", no_wrap=True)
+        table.add_column("Name")
+        table.add_column("Status", justify="center")
+        table.add_column("Latency")
+
+        for r in runs:
+            r_id = str(getattr(r, "id", ""))
+            r_name = getattr(r, "name", "Unknown")
+            r_status = getattr(r, "status", "unknown")
+            status_style = (
+                "green"
+                if r_status == "success"
+                else "red"
+                if r_status == "error"
+                else "yellow"
+            )
+            latency = (
+                f"{getattr(r, 'latency', 0):.2f}s"
+                if getattr(r, "latency") is not None
+                else "-"
+            )
+            table.add_row(
+                r_id, r_name, f"[{status_style}]{r_status}[/{status_style}]", latency
+            )
+        return table
+
+    with Live(generate_table(), refresh_per_second=1 / interval) as live:
+        try:
+            while True:
+                time.sleep(interval)
+                live.update(generate_table())
+        except KeyboardInterrupt:
+            pass
