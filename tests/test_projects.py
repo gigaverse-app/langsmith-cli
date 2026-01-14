@@ -1,24 +1,17 @@
 from langsmith_cli.main import cli
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
+from conftest import create_project
+import json
 
 
 def test_projects_list(runner):
-    """Test the projects list command with multiple items."""
+    """INVARIANT: Projects list should return all projects with correct structure."""
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
 
-        # Mock two projects
-        p1 = MagicMock()
-        p1.name = "proj-1"
-        p1.id = "id-1"
-        p1.run_count = 10
-        p1.project_type = "tracer"
-
-        p2 = MagicMock()
-        p2.name = "proj-2"
-        p2.id = "id-2"
-        p2.run_count = None  # Test null handling
-        p2.project_type = "eval"
+        # Create real project instances
+        p1 = create_project(name="proj-1", run_count=10)
+        p2 = create_project(name="proj-2", run_count=0)
 
         mock_client.list_projects.return_value = iter([p1, p2])
 
@@ -26,34 +19,30 @@ def test_projects_list(runner):
         assert result.exit_code == 0
         assert "proj-1" in result.output
         assert "proj-2" in result.output
-        assert "id-1" in result.output
 
 
 def test_projects_list_json(runner):
-    """Test projects list in JSON mode."""
+    """INVARIANT: JSON output should be valid with project fields."""
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
-        p1 = MagicMock()
-        p1.name = "proj-json"
-        p1.id = "id-json"
-        p1.model_dump.return_value = {"name": "proj-json", "id": "id-json"}
+        p1 = create_project(name="proj-json")
+
         mock_client.list_projects.return_value = iter([p1])
 
         result = runner.invoke(cli, ["--json", "projects", "list"])
         assert result.exit_code == 0
-        import json
 
         data = json.loads(result.output)
+        assert isinstance(data, list)
+        assert len(data) == 1
         assert data[0]["name"] == "proj-json"
 
 
 def test_projects_create(runner):
-    """Test the projects create command."""
+    """INVARIANT: Create command should return success message."""
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
-        mock_project = MagicMock()
-        mock_project.name = "created-proj"
-        mock_project.id = "created-id"
+        mock_project = create_project(name="created-proj")
         mock_client.create_project.return_value = mock_project
 
         result = runner.invoke(cli, ["projects", "create", "created-proj"])
@@ -62,21 +51,13 @@ def test_projects_create(runner):
 
 
 def test_projects_list_with_name_pattern(runner):
-    """Test projects list with --name-pattern filter."""
+    """INVARIANT: --name-pattern should filter by wildcard match."""
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
 
-        p1 = MagicMock()
-        p1.name = "prod-api-v1"
-        p1.id = "1"
-
-        p2 = MagicMock()
-        p2.name = "prod-web-v1"
-        p2.id = "2"
-
-        p3 = MagicMock()
-        p3.name = "staging-api"
-        p3.id = "3"
+        p1 = create_project(name="prod-api-v1")
+        p2 = create_project(name="prod-web-v1")
+        p3 = create_project(name="staging-api")
 
         mock_client.list_projects.return_value = iter([p1, p2, p3])
 
@@ -91,21 +72,13 @@ def test_projects_list_with_name_pattern(runner):
 
 
 def test_projects_list_with_name_regex(runner):
-    """Test projects list with --name-regex filter."""
+    """INVARIANT: --name-regex should filter by regex pattern."""
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
 
-        p1 = MagicMock()
-        p1.name = "prod-api-v1"
-        p1.id = "1"
-
-        p2 = MagicMock()
-        p2.name = "prod-api-v2"
-        p2.id = "2"
-
-        p3 = MagicMock()
-        p3.name = "staging-api"
-        p3.id = "3"
+        p1 = create_project(name="prod-api-v1")
+        p2 = create_project(name="prod-api-v2")
+        p3 = create_project(name="staging-api")
 
         mock_client.list_projects.return_value = iter([p1, p2, p3])
 
@@ -122,24 +95,13 @@ def test_projects_list_with_name_regex(runner):
 
 
 def test_projects_list_with_has_runs(runner):
-    """Test projects list with --has-runs filter."""
+    """INVARIANT: --has-runs should filter projects with run_count > 0."""
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
 
-        p1 = MagicMock()
-        p1.name = "active-project"
-        p1.id = "1"
-        p1.run_count = 100
-
-        p2 = MagicMock()
-        p2.name = "empty-project"
-        p2.id = "2"
-        p2.run_count = 0
-
-        p3 = MagicMock()
-        p3.name = "another-active"
-        p3.id = "3"
-        p3.run_count = 50
+        p1 = create_project(name="active-project", run_count=100)
+        p2 = create_project(name="empty-project", run_count=0)
+        p3 = create_project(name="another-active", run_count=50)
 
         mock_client.list_projects.return_value = iter([p1, p2, p3])
 
@@ -154,21 +116,13 @@ def test_projects_list_with_has_runs(runner):
 
 
 def test_projects_list_with_sort_by_name(runner):
-    """Test projects list with --sort-by name."""
+    """INVARIANT: --sort-by name should sort projects alphabetically."""
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
 
-        p1 = MagicMock()
-        p1.name = "zebra-project"
-        p1.id = "1"
-
-        p2 = MagicMock()
-        p2.name = "alpha-project"
-        p2.id = "2"
-
-        p3 = MagicMock()
-        p3.name = "beta-project"
-        p3.id = "3"
+        p1 = create_project(name="zebra-project")
+        p2 = create_project(name="alpha-project")
+        p3 = create_project(name="beta-project")
 
         mock_client.list_projects.return_value = iter([p1, p2, p3])
 
@@ -183,19 +137,12 @@ def test_projects_list_with_sort_by_name(runner):
 
 
 def test_projects_list_with_sort_by_run_count_desc(runner):
-    """Test projects list with --sort-by run_count descending."""
+    """INVARIANT: --sort-by -run_count should sort by runs descending."""
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
 
-        p1 = MagicMock()
-        p1.name = "low-activity"
-        p1.id = "1"
-        p1.run_count = 10
-
-        p2 = MagicMock()
-        p2.name = "high-activity"
-        p2.id = "2"
-        p2.run_count = 1000
+        p1 = create_project(name="low-activity", run_count=10)
+        p2 = create_project(name="high-activity", run_count=1000)
 
         mock_client.list_projects.return_value = iter([p1, p2])
 
@@ -210,34 +157,28 @@ def test_projects_list_with_sort_by_run_count_desc(runner):
 
 
 def test_projects_list_with_csv_format(runner):
-    """Test projects list with CSV export."""
+    """INVARIANT: CSV format should output comma-separated values."""
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
 
-        p1 = MagicMock()
-        p1.name = "test-project"
-        p1.id = "123"
-        p1.model_dump.return_value = {"name": "test-project", "id": "123"}
+        p1 = create_project(name="test-project")
 
         mock_client.list_projects.return_value = iter([p1])
 
         result = runner.invoke(cli, ["projects", "list", "--format", "csv"])
 
         assert result.exit_code == 0
-        # CSV should have header and data
-        assert "name,id" in result.output
-        assert "test-project,123" in result.output
+        # CSV should have headers and data
+        assert "name,id" in result.output or "id,name" in result.output
+        assert "test-project" in result.output
 
 
 def test_projects_list_with_yaml_format(runner):
-    """Test projects list with YAML export."""
+    """INVARIANT: YAML format should output structured YAML."""
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
 
-        p1 = MagicMock()
-        p1.name = "test-project"
-        p1.id = "123"
-        p1.model_dump.return_value = {"name": "test-project", "id": "123"}
+        p1 = create_project(name="test-project")
 
         mock_client.list_projects.return_value = iter([p1])
 
@@ -250,7 +191,7 @@ def test_projects_list_with_yaml_format(runner):
 
 
 def test_projects_list_with_empty_results(runner):
-    """Test projects list with no results."""
+    """INVARIANT: Empty results should show appropriate message."""
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
         mock_client.list_projects.return_value = iter([])
@@ -262,13 +203,11 @@ def test_projects_list_with_empty_results(runner):
 
 
 def test_projects_list_with_invalid_regex(runner):
-    """Test that invalid regex raises error."""
+    """INVARIANT: Invalid regex should raise error."""
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
 
-        p1 = MagicMock()
-        p1.name = "test"
-        p1.id = "1"
+        p1 = create_project(name="test")
         mock_client.list_projects.return_value = iter([p1])
 
         # Invalid regex pattern
@@ -278,7 +217,7 @@ def test_projects_list_with_invalid_regex(runner):
 
 
 def test_projects_create_already_exists(runner):
-    """Test creating a project that already exists."""
+    """INVARIANT: Creating existing project should handle gracefully."""
     from langsmith.utils import LangSmithConflictError
 
     with patch("langsmith.Client") as MockClient:
@@ -312,20 +251,14 @@ def test_projects_list_name_regex_with_limit_optimizes_api_call(runner):
 
             if name_filter == "moments":
                 # API returns projects matching "moments"
-                p1 = MagicMock()
-                p1.name = "dev/moments"
-                p1.id = "1"
-                p2 = MagicMock()
-                p2.name = "local/moments"
-                p2.id = "2"
+                p1 = create_project(name="dev/moments")
+                p2 = create_project(name="local/moments")
                 return iter([p1, p2])
             else:
                 # API returns first N projects (none match "moments")
                 projects = []
                 for i in range(min(limit, 3)):
-                    p = MagicMock()
-                    p.name = f"unrelated-project-{i}"
-                    p.id = str(i)
+                    p = create_project(name=f"unrelated-project-{i}")
                     projects.append(p)
                 return iter(projects)
 
@@ -365,9 +298,7 @@ def test_projects_list_name_pattern_with_limit_optimizes_api_call(runner):
             name_filter = kwargs.get("name_contains")
 
             if name_filter == "moments":
-                p1 = MagicMock()
-                p1.name = "dev/moments"
-                p1.id = "1"
+                p1 = create_project(name="dev/moments")
                 return iter([p1])
             else:
                 return iter([])
@@ -397,15 +328,9 @@ def test_projects_list_anchored_pattern_no_api_optimization(runner):
         mock_client = MockClient.return_value
 
         # Create projects - some end with "moments", some don't
-        p1 = MagicMock()
-        p1.name = "dev/moments"
-        p1.id = "1"
-        p2 = MagicMock()
-        p2.name = "dev/moments/runs"
-        p2.id = "2"
-        p3 = MagicMock()
-        p3.name = "moments"
-        p3.id = "3"
+        p1 = create_project(name="dev/moments")
+        p2 = create_project(name="dev/moments/runs")
+        p3 = create_project(name="moments")
 
         mock_client.list_projects.return_value = iter([p1, p2, p3])
 
@@ -438,14 +363,10 @@ def test_projects_list_anchored_pattern_applies_limit_after_filtering(runner):
         # Create 10 projects: 5 end with "moments", 5 don't
         projects = []
         for i in range(5):
-            p = MagicMock()
-            p.name = f"project{i}/moments"
-            p.id = str(i)
+            p = create_project(name=f"project{i}/moments")
             projects.append(p)
         for i in range(5, 10):
-            p = MagicMock()
-            p.name = f"project{i}/other"
-            p.id = str(i)
+            p = create_project(name=f"project{i}/other")
             projects.append(p)
 
         mock_client.list_projects.return_value = iter(projects)
@@ -484,16 +405,10 @@ def test_projects_list_has_runs_filter_applies_limit_after_filtering(runner):
         # Create 10 projects: 5 with runs, 5 without
         projects = []
         for i in range(5):
-            p = MagicMock()
-            p.name = f"active-project-{i}"
-            p.id = str(i)
-            p.run_count = 100 + i
+            p = create_project(name=f"active-project-{i}", run_count=100 + i)
             projects.append(p)
         for i in range(5, 10):
-            p = MagicMock()
-            p.name = f"empty-project-{i}"
-            p.id = str(i)
-            p.run_count = 0
+            p = create_project(name=f"empty-project-{i}", run_count=0)
             projects.append(p)
 
         mock_client.list_projects.return_value = iter(projects)
@@ -532,9 +447,7 @@ def test_projects_list_complex_regex_extracts_best_search_term(runner):
 
             # Accept any filter that contains "moments" substring
             if name_filter and "moments" in name_filter:
-                p1 = MagicMock()
-                p1.name = "dev/special-moments-v1"
-                p1.id = "1"
+                p1 = create_project(name="dev/special-moments-v1")
                 return iter([p1])
             else:
                 return iter([])

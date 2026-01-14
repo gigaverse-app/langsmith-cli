@@ -2,7 +2,7 @@ import pytest
 from click.testing import CliRunner
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
-from langsmith.schemas import Dataset, Example, Prompt
+from langsmith.schemas import Dataset, Example, Prompt, TracerSessionResult
 
 
 @pytest.fixture
@@ -100,4 +100,28 @@ def create_prompt(
         num_commits=1,  # required field
         created_at=datetime(2024, 7, 3, 9, 27, 16, tzinfo=timezone.utc),
         updated_at=datetime(2024, 7, 3, 9, 27, 16, tzinfo=timezone.utc),
+    )
+
+
+def create_project(
+    name: str = "test-project",
+    project_type: str = "tracer",
+    run_count: int = 0,
+) -> TracerSessionResult:
+    """Create a real TracerSessionResult (project) Pydantic model instance.
+
+    Args:
+        name: Project name
+        project_type: Type of project (tracer, eval, etc)
+        run_count: Number of runs in the project
+    """
+    return TracerSessionResult(
+        id=UUID("f47ac10b-58cc-4372-a567-0e02b2c3d479"),
+        name=name,
+        description="Test project",
+        created_at=datetime(2024, 7, 3, 9, 27, 16, tzinfo=timezone.utc),
+        run_count=run_count,
+        project_type=project_type,
+        tenant_id=UUID("00000000-0000-0000-0000-000000000000"),  # required field
+        reference_dataset_id=None,  # optional field
     )
