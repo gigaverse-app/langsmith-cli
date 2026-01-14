@@ -386,6 +386,45 @@ def test_projects_list_name_pattern_with_limit_optimizes_api_call(runner):
         assert call_kwargs.get("name_contains") == "moments"
 
 
+def test_projects_list_anchored_pattern_no_api_optimization(runner):
+    """
+    INVARIANT: Anchored wildcard patterns (*moments or moments*) should NOT use API optimization.
+
+    Anchored patterns need client-side filtering for correctness. Only unanchored patterns
+    (*moments*) can safely use API substring search optimization.
+    """
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        # Create projects - some end with "moments", some don't
+        p1 = MagicMock()
+        p1.name = "dev/moments"
+        p1.id = "1"
+        p2 = MagicMock()
+        p2.name = "dev/moments/runs"
+        p2.id = "2"
+        p3 = MagicMock()
+        p3.name = "moments"
+        p3.id = "3"
+
+        mock_client.list_projects.return_value = iter([p1, p2, p3])
+
+        # Test anchored pattern *moments (ends with)
+        result = runner.invoke(
+            cli, ["projects", "list", "--limit", "10", "--name-pattern", "*moments"]
+        )
+
+        assert result.exit_code == 0
+        # Should match only projects ending with "moments"
+        assert "dev/moments" in result.output
+        assert "moments" in result.output
+        assert "dev/moments/runs" not in result.output
+
+        # Verify API was called WITHOUT name filter (no optimization)
+        call_kwargs = mock_client.list_projects.call_args[1]
+        assert call_kwargs.get("name_contains") is None
+
+
 def test_projects_list_complex_regex_extracts_best_search_term(runner):
     """
     INVARIANT: Complex regex patterns should extract the longest/best literal substring

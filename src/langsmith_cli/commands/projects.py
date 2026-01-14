@@ -66,10 +66,13 @@ def list_projects(
     # Use name_pattern/name_regex as a fallback to name_ for API optimization
     api_name_filter = name_
     if name_pattern and not name_:
-        # Extract search term from wildcard pattern for API filtering
-        search_term = name_pattern.replace("*", "")
-        if search_term:
-            api_name_filter = search_term
+        # Only optimize if pattern is unanchored (*term*) - anchored patterns (*term or term*)
+        # need client-side filtering for correct results
+        if name_pattern.startswith("*") and name_pattern.endswith("*"):
+            # Extract search term from wildcard pattern for API filtering
+            search_term = name_pattern.replace("*", "")
+            if search_term:
+                api_name_filter = search_term
     elif name_regex and not name_ and not name_pattern:
         # Extract search term from regex pattern for API filtering
         import re
