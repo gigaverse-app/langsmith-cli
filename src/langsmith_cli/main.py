@@ -87,14 +87,63 @@ class LangSmithCLIGroup(click.Group):
                 return
 
             elif isinstance(e, LangSmithError):
-                # Generic LangSmith error
-                error_msg = str(e)
-                if json_mode:
-                    error_data = {"error": "LangSmithError", "message": error_msg}
-                    click.echo(json_lib.dumps(error_data))
+                # Generic LangSmith error - check if it's a 403 Forbidden
+                error_str = str(e)
+
+                # Check for 403 Forbidden errors (invalid/expired API key)
+                if "403" in error_str or "Forbidden" in error_str:
+                    error_msg = (
+                        "Access forbidden. Your API key may be invalid or expired."
+                    )
+                    help_msg = "Run 'langsmith-cli auth login' to update your API key."
+
+                    if json_mode:
+                        error_data = {
+                            "error": "PermissionError",
+                            "message": error_msg,
+                            "help": help_msg,
+                            "details": error_str,
+                        }
+                        click.echo(json_lib.dumps(error_data))
+                    else:
+                        console.print(f"[red]Error:[/red] {error_msg}")
+                        console.print(f"[yellow]→[/yellow] {help_msg}")
+                        console.print(
+                            f"[dim]Details: {error_str if len(error_str) < 200 else error_str[:200] + '...'}[/dim]"
+                        )
+
+                    sys.exit(1)
+
+                # Check for 401 Unauthorized (catches cases not caught by LangSmithAuthError)
+                elif "401" in error_str or "Unauthorized" in error_str:
+                    error_msg = (
+                        "Authentication failed. Your API key is missing or invalid."
+                    )
+                    help_msg = (
+                        "Run 'langsmith-cli auth login' to configure your API key."
+                    )
+
+                    if json_mode:
+                        error_data = {
+                            "error": "AuthenticationError",
+                            "message": error_msg,
+                            "help": help_msg,
+                        }
+                        click.echo(json_lib.dumps(error_data))
+                    else:
+                        console.print(f"[red]Error:[/red] {error_msg}")
+                        console.print(f"[yellow]→[/yellow] {help_msg}")
+
+                    sys.exit(1)
+
+                # Other LangSmith errors
                 else:
-                    console.print(f"[red]Error:[/red] {error_msg}")
-                sys.exit(1)
+                    if json_mode:
+                        error_data = {"error": "LangSmithError", "message": error_str}
+                        click.echo(json_lib.dumps(error_data))
+                    else:
+                        console.print(f"[red]Error:[/red] {error_str}")
+                    sys.exit(1)
 
             else:
                 # Unexpected error - re-raise for debugging

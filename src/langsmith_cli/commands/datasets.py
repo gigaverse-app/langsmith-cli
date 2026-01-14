@@ -118,14 +118,24 @@ def get_dataset(ctx, dataset_id):
 @click.argument("name")
 @click.option("--description", help="Dataset description.")
 @click.option(
-    "--type", "dataset_type", default="kv", help="Dataset type (kv, chat, etc.)"
+    "--type",
+    "dataset_type",
+    default="kv",
+    type=click.Choice(["kv", "llm", "chat"], case_sensitive=False),
+    help="Dataset type (kv, llm, or chat)",
 )
 @click.pass_context
 def create_dataset(ctx, name, description, dataset_type):
     """Create a new dataset."""
+    from langsmith.schemas import DataType
+
     client = langsmith.Client()
+
+    # Convert string to DataType enum
+    data_type_enum = DataType(dataset_type)
+
     dataset = client.create_dataset(
-        dataset_name=name, description=description, data_type=dataset_type
+        dataset_name=name, description=description, data_type=data_type_enum
     )
 
     if ctx.obj.get("json"):
