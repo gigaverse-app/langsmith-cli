@@ -598,6 +598,8 @@ def test_runs_list_with_invalid_regex(runner):
 
 def test_runs_get_rich_output(runner):
     """Test runs get with Rich console output (not JSON mode)."""
+    import re
+
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
         mock_run = MagicMock()
@@ -614,10 +616,16 @@ def test_runs_get_rich_output(runner):
         result = runner.invoke(cli, ["runs", "get", "run-rich-123"])
 
         assert result.exit_code == 0
-        assert "run-rich-123" in result.output
-        assert "Rich Output Test" in result.output
-        assert "status" in result.output
-        assert "inputs" in result.output
+
+        # Strip ANSI color codes for clean assertions
+        # ANSI codes are like \x1b[1;36m (start) and \x1b[0m (reset)
+        ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
+        clean_output = ansi_escape.sub("", result.output)
+
+        assert "run-rich-123" in clean_output
+        assert "Rich Output Test" in clean_output
+        assert "status" in clean_output
+        assert "inputs" in clean_output
 
 
 def test_runs_get_with_complex_data_types(runner):

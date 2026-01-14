@@ -213,6 +213,115 @@ docs/
 
 **Why:** Exception types are semantic contracts that won't break with message changes.
 
+## Type Safety Guidelines
+
+**For comprehensive type safety guidelines, see [docs/TYPE_SAFETY_GUIDE.md](docs/TYPE_SAFETY_GUIDE.md)**
+
+### Philosophy: Zero Tolerance for Weak Types
+
+Strong types catch bugs at development time, not runtime. Weak types defer errors to production.
+
+**Golden Rules:**
+1. ❌ Never use `Any` without a documented reason
+2. ❌ Never use bare `list` or `dict` - always parameterize: `list[T]`, `dict[K, V]`
+3. ✅ Always use SDK Pydantic models when available (Run, Dataset, Example, Prompt, TracerSessionResult)
+4. ✅ Always handle `None` explicitly with `T | None`
+5. ✅ Always use direct attribute access over `getattr()`
+6. ✅ Always run `pyright` before committing (must be 0 errors)
+7. ✅ Use Python 3.12+ syntax: `list[T]` not `List[T]`, `dict[K, V]` not `Dict[K, V]`, `T | None` not `Optional[T]`
+
+### Common Type Patterns
+
+**Parameterize Collections:**
+```python
+# ❌ WRONG
+def process_data(items: list) -> dict:
+    results: List = []
+    return {}
+
+# ✅ CORRECT
+from langsmith.schemas import Run
+
+def process_runs(runs: list[Run]) -> dict[str, list[str]]:
+    results: list[str] = []
+    return {"names": results}
+```
+
+**Use SDK Models:**
+```python
+# ❌ WRONG
+def format_run(run: Any) -> dict:
+    return {"name": getattr(run, "name", "Unknown")}
+
+# ✅ CORRECT
+from langsmith.schemas import Run
+
+def format_run(run: Run) -> dict[str, str]:
+    return {"name": run.name}  # Type checker guarantees .name exists
+```
+
+**Generic Functions:**
+```python
+# ❌ WRONG
+from typing import Callable, Any
+
+def sort_items(items: list, key_func: Callable[[Any], Any]) -> list:
+    return sorted(items, key=key_func)
+
+# ✅ CORRECT
+from typing import TypeVar, Callable
+
+T = TypeVar('T')
+K = TypeVar('K')
+
+def sort_items(items: list[T], key_func: Callable[[T], K]) -> list[T]:
+    return sorted(items, key=key_func)
+```
+
+**Handle Optional Values:**
+```python
+# ❌ WRONG
+def get_error(run: Any) -> str:
+    return run.error  # What if error is None?
+
+# ✅ CORRECT
+from langsmith.schemas import Run
+
+def get_error(run: Run) -> str | None:
+    return run.error  # Type checker knows this can be None
+
+def get_error_message(run: Run) -> str:
+    return run.error or "No error"  # Handle None explicitly
+```
+
+### When Is `Any` Acceptable?
+
+Only in these rare cases:
+1. **JSON.loads() result** (must be narrowed immediately)
+2. **Console object** (when Rich types are too heavy - use Protocol instead)
+3. **Click Context object** (Click's obj is Any - extract and narrow immediately)
+
+**Even then, narrow immediately:**
+```python
+def get_json_mode(ctx: click.Context) -> bool:
+    """Extract json mode from Click context."""
+    return bool(ctx.obj.get("json", False))  # Narrow Any to bool
+```
+
+### Verification
+
+Always verify type safety with:
+```bash
+# Type checking (zero errors is the goal)
+uv run pyright
+
+# Tests still pass
+uv run pytest
+
+# Linting
+uv run ruff check .
+```
+
 ## Testing Patterns
 
 ### Current Test Approach
@@ -239,7 +348,9 @@ def test_runs_list(runner):
 
 ### 1. Type Safety (Zero Tolerance for Weak Types)
 - ❌ Prohibit: `getattr()`, `hasattr()`, stringly-typed logic
+- ❌ **NEVER use `# type: ignore` comments** - Fix the underlying type issue instead
 - ✅ Require: Direct attribute access, strict SDK contracts, Enums for logic
+- ✅ Write safe code with proper type guards and None checks
 - ✅ Always use LangSmith SDK's Pydantic models directly (Dataset, Example, Run, Prompt, TracerSessionResult)
 - ✅ For context efficiency, use `.model_dump(include={...}, mode="json")` to select specific fields
 - ✅ Never create duplicate response models - reuse SDK models with field selection

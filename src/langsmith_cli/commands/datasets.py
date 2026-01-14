@@ -39,16 +39,18 @@ def list_datasets(
     # Parse metadata JSON
     metadata_dict = parse_json_string(metadata, "metadata")
 
-    datasets_gen = client.list_datasets(
-        dataset_ids=dataset_ids_list
-        if dataset_ids_list is None
-        else list(dataset_ids_list),  # type: ignore[arg-type]
-        limit=limit,
-        data_type=data_type,
-        dataset_name=dataset_name,
-        dataset_name_contains=name_contains,
-        metadata=metadata_dict,
-    )
+    # Build kwargs for list_datasets (type-safe approach)
+    list_kwargs = {
+        "limit": limit,
+        "data_type": data_type,
+        "dataset_name": dataset_name,
+        "dataset_name_contains": name_contains,
+        "metadata": metadata_dict,
+    }
+    if dataset_ids_list is not None:
+        list_kwargs["dataset_ids"] = dataset_ids_list
+
+    datasets_gen = client.list_datasets(**list_kwargs)
     datasets_list = list(datasets_gen)
 
     if ctx.obj.get("json"):

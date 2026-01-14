@@ -1,19 +1,22 @@
 """Utility functions shared across commands."""
 
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, TypeVar
 import click
+
+T = TypeVar("T")
+K = TypeVar("K")
 
 
 def output_formatted_data(
-    data: List[Dict[str, Any]],
+    data: list[dict[str, Any]],
     format_type: str,
     *,
-    fields: Optional[List[str]] = None,
+    fields: list[str] | None = None,
 ) -> None:
     """Output data in the specified format (json, csv, yaml).
 
     Args:
-        data: List of dictionaries to output
+        data: list of dictionaries to output (Any is acceptable for JSON data)
         format_type: Output format ("json", "csv", "yaml")
         fields: Optional list of fields to include (for field filtering)
     """
@@ -45,7 +48,7 @@ def output_formatted_data(
         import csv
         import sys
 
-        writer = csv.DictWriter(sys.stdout, fieldnames=data[0].keys())
+        writer = csv.dictWriter(sys.stdout, fieldnames=data[0].keys())
         writer.writeheader()
         writer.writerows(data)
     elif format_type == "yaml":
@@ -57,17 +60,17 @@ def output_formatted_data(
 
 
 def sort_items(
-    items: List[Any],
+    items: list[Any],
     sort_by: str | None,
-    sort_key_map: Dict[str, Callable[[Any], Any]],
+    sort_key_map: dict[str, Callable[[Any], Any]],
     console: Any,
-) -> List[Any]:
+) -> list[Any]:
     """Sort items by a given field.
 
     Args:
-        items: List of items to sort
+        items: list of items to sort
         sort_by: Sort specification (e.g., "name" or "-name" for descending)
-        sort_key_map: Dictionary mapping field names to key functions
+        sort_key_map: dictionary mapping field names to key functions
         console: Rich console for printing warnings
 
     Returns:
@@ -94,14 +97,14 @@ def sort_items(
 
 
 def apply_regex_filter(
-    items: List[Any],
-    regex_pattern: Optional[str],
-    field_getter: Callable[[Any], Optional[str]],
-) -> List[Any]:
+    items: list[Any],
+    regex_pattern: str | None,
+    field_getter: Callable[[Any], str | None],
+) -> list[Any]:
     """Apply regex filtering to a list of items.
 
     Args:
-        items: List of items to filter
+        items: list of items to filter
         regex_pattern: Regex pattern to match (None to skip filtering)
         field_getter: Function to extract the field value from an item
 
@@ -130,14 +133,14 @@ def apply_regex_filter(
 
 
 def apply_wildcard_filter(
-    items: List[Any],
-    wildcard_pattern: Optional[str],
-    field_getter: Callable[[Any], Optional[str]],
-) -> List[Any]:
+    items: list[Any],
+    wildcard_pattern: str | None,
+    field_getter: Callable[[Any], str | None],
+) -> list[Any]:
     """Apply wildcard pattern filtering to a list of items.
 
     Args:
-        items: List of items to filter
+        items: list of items to filter
         wildcard_pattern: Wildcard pattern (e.g., "*prod*")
         field_getter: Function to extract the field value from an item
 
@@ -169,7 +172,7 @@ def apply_wildcard_filter(
 
 
 def determine_output_format(
-    output_format: Optional[str],
+    output_format: str | None,
     json_flag: bool,
 ) -> str:
     """Determine the output format to use.
@@ -197,8 +200,8 @@ def print_empty_result_message(console: Any, item_type: str) -> None:
 
 
 def parse_json_string(
-    json_str: Optional[str], field_name: str = "input"
-) -> Optional[Dict[str, Any]]:
+    json_str: str | None, field_name: str = "input"
+) -> dict[str, Any] | None:
     """Parse a JSON string with error handling.
 
     Args:
@@ -222,14 +225,14 @@ def parse_json_string(
         raise click.BadParameter(f"Invalid JSON in {field_name}: {e}")
 
 
-def parse_comma_separated_list(input_str: Optional[str]) -> Optional[list[str]]:
+def parse_comma_separated_list(input_str: str | None) -> list[str] | None:
     """Parse a comma-separated string into a list.
 
     Args:
         input_str: Comma-separated string (None returns None)
 
     Returns:
-        List of stripped strings or None if input is None
+        list of stripped strings or None if input is None
     """
     if not input_str:
         return None
