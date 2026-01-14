@@ -3,31 +3,32 @@
 These tests verify that the examples from SKILL.md work correctly
 against live LangSmith data. They are lenient (balance between zealous
 and too lenient) since they test against a moving target.
+
+Performance optimizations:
+- Uses in-process CLI invocation (no subprocess overhead)
+- Session-scoped fixtures for shared test resources
+- Parallelizable with pytest-xdist
 """
 
-import subprocess
 import json
 import pytest
 import os
-import sys
+from click.testing import CliRunner
+from langsmith_cli.main import cli
 
 
 def run_cli(*args):
-    """Run langsmith-cli with the given arguments.
+    """Run langsmith-cli with the given arguments in-process.
+
+    This is much faster than subprocess as it avoids process spawn overhead.
 
     Returns:
         tuple: (exit_code, stdout, stderr)
     """
-    # Optimization: Use python -m instead of uv run to avoid uv overhead
-    # This runs the CLI directly in the current Python environment
-    cmd = [sys.executable, "-m", "langsmith_cli.main", *args]
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        env=os.environ.copy(),
-    )
-    return result.returncode, result.stdout, result.stderr
+    runner = CliRunner()
+    result = runner.invoke(cli, args, catch_exceptions=False)
+    # CliRunner combines stdout/stderr in output, stderr is always empty string
+    return result.exit_code, result.output, ""
 
 
 def parse_json_output(stdout):
@@ -40,6 +41,7 @@ def parse_json_output(stdout):
 
 # Mark all tests as slow and smoke tests for easy filtering
 # Skip all tests if LANGSMITH_API_KEY is not set
+# Use pytest-xdist for parallel execution
 pytestmark = [
     pytest.mark.slow,
     pytest.mark.smoke,
@@ -48,6 +50,38 @@ pytestmark = [
         reason="LANGSMITH_API_KEY not set - skipping smoke tests",
     ),
 ]
+
+
+# Session-scoped fixtures for shared test resources
+@pytest.fixture(scope="session")
+def shared_test_dataset():
+    """Create one dataset for all smoke tests to share.
+
+    This avoids creating multiple datasets and reduces API calls.
+    """
+    dataset_name = f"smoke-test-shared-{os.urandom(4).hex()}"
+    exit_code, stdout, _ = run_cli("--json", "datasets", "create", dataset_name)
+
+    if exit_code == 0:
+        data = parse_json_output(stdout)
+        if data:
+            return data
+    return None
+
+
+@pytest.fixture(scope="session")
+def sample_run_id():
+    """Get a sample run ID for tests that need one.
+
+    This avoids each test fetching a run ID separately.
+    """
+    exit_code, stdout, _ = run_cli("--json", "runs", "list", "--limit", "1")
+
+    if exit_code == 0:
+        data = parse_json_output(stdout)
+        if data and len(data) > 0:
+            return data[0]["id"]
+    return None
 
 
 class TestProjectsSkill:
@@ -131,25 +165,17 @@ class TestRunsSkill:
             assert "id" in run, "Run should have 'id'"
             assert "status" in run, "Run should have 'status'"
 
-    def test_runs_get_with_fields(self):
+    def test_runs_get_with_fields(self, sample_run_id):
         """Test: langsmith-cli --json runs get <id> --fields inputs,outputs,error"""
-        # First, get a run ID
-        exit_code, stdout, _ = run_cli("--json", "runs", "list", "--limit", "1")
-        if exit_code != 0:
+        if not sample_run_id:
             pytest.skip("No runs available to test get command")
 
-        data = parse_json_output(stdout)
-        if not data or len(data) == 0:
-            pytest.skip("No runs available to test get command")
-
-        run_id = data[0]["id"]
-
-        # Now test get with fields
+        # Test get with fields using shared run ID
         exit_code, stdout, stderr = run_cli(
             "--json",
             "runs",
             "get",
-            run_id,
+            sample_run_id,
             "--fields",
             "inputs,outputs,error,name",
         )
@@ -239,26 +265,12 @@ class TestDatasetsSkill:
 class TestExamplesSkill:
     """Test examples from SKILL.md - Examples section."""
 
-    def test_examples_list(self):
+    def test_examples_list(self, shared_test_dataset):
         """Test: langsmith-cli --json examples list --dataset <name>"""
-        # First, find or create a dataset
-        exit_code, stdout, _ = run_cli("--json", "datasets", "list", "--limit", "1")
-        if exit_code != 0:
-            pytest.skip("Cannot list datasets")
+        if not shared_test_dataset:
+            pytest.skip("Shared test dataset not available")
 
-        data = parse_json_output(stdout)
-        if not data or len(data) == 0:
-            # Create a test dataset
-            dataset_name = f"smoke-test-examples-{os.urandom(4).hex()}"
-            exit_code, stdout, _ = run_cli("--json", "datasets", "create", dataset_name)
-            if exit_code != 0:
-                pytest.skip("Cannot create test dataset")
-            create_data = parse_json_output(stdout)
-            if not create_data:
-                pytest.skip("Invalid JSON response from create dataset")
-            dataset_name = create_data.get("name")
-        else:
-            dataset_name = data[0]["name"]
+        dataset_name = shared_test_dataset["name"]
 
         # List examples for this dataset
         exit_code, stdout, stderr = run_cli(
@@ -270,13 +282,12 @@ class TestExamplesSkill:
         assert examples_data is not None, "Output is not valid JSON"
         assert isinstance(examples_data, list), "Expected list of examples"
 
-    def test_examples_create(self):
+    def test_examples_create(self, shared_test_dataset):
         """Test: langsmith-cli --json examples create --dataset <name> --inputs <json> --outputs <json>"""
-        # Create a test dataset first
-        dataset_name = f"smoke-test-examples-{os.urandom(4).hex()}"
-        exit_code, stdout, _ = run_cli("--json", "datasets", "create", dataset_name)
-        if exit_code != 0:
-            pytest.skip("Cannot create test dataset")
+        if not shared_test_dataset:
+            pytest.skip("Shared test dataset not available")
+
+        dataset_name = shared_test_dataset["name"]
 
         # Create an example
         exit_code, stdout, stderr = run_cli(

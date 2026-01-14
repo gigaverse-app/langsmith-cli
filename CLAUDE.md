@@ -37,8 +37,15 @@ uv run pytest tests/test_runs.py -v
 # Run specific test
 uv run pytest tests/test_runs.py::test_runs_list -v
 
-# Run E2E tests (requires LANGSMITH_API_KEY)
+# Run smoke tests (requires LANGSMITH_API_KEY)
+# Smoke tests use in-process CLI invocation and session fixtures for speed
 export LANGSMITH_API_KEY="lsv2_..."
+uv run pytest tests/test_smoke.py -v
+
+# Run smoke tests in parallel (much faster!)
+uv run pytest tests/test_smoke.py -n auto
+
+# Run E2E tests (requires LANGSMITH_API_KEY)
 uv run pytest tests/test_e2e.py -v
 ```
 

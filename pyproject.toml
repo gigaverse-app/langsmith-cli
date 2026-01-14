@@ -67,3 +67,8 @@ markers = [
     "smoke: marks tests as smoke tests (E2E validation)",
     "e2e: marks tests as end-to-end tests",
 ]
+# Strict markers and helpful config
+addopts = "--strict-markers"
+
+# Note: Smoke tests run much faster with parallelization
+# Usage: pytest tests/test_smoke.py -n auto
