@@ -49,6 +49,7 @@ dev = [
     "pyright>=1.1.408",
     "pytest>=9.0.2",
     "pytest-cov>=7.0.0",
+    "pytest-integration>=0.2.3",
     "pytest-xdist>=3.8.0",
     "ruff>=0.14.11",
 ]
@@ -59,3 +60,10 @@ langsmith-cli = "langsmith_cli.main:cli"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+markers = [
+    "slow: marks tests as slow (integration tests with real API calls)",
+    "smoke: marks tests as smoke tests (E2E validation)",
+    "e2e: marks tests as end-to-end tests",
+]

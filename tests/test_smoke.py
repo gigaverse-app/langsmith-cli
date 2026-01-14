@@ -9,6 +9,7 @@ import subprocess
 import json
 import pytest
 import os
+import sys
 
 
 def run_cli(*args):
@@ -17,7 +18,9 @@ def run_cli(*args):
     Returns:
         tuple: (exit_code, stdout, stderr)
     """
-    cmd = ["uv", "run", "langsmith-cli", *args]
+    # Optimization: Use python -m instead of uv run to avoid uv overhead
+    # This runs the CLI directly in the current Python environment
+    cmd = [sys.executable, "-m", "langsmith_cli.main", *args]
     result = subprocess.run(
         cmd,
         capture_output=True,
@@ -35,11 +38,16 @@ def parse_json_output(stdout):
         return None
 
 
+# Mark all tests as slow and smoke tests for easy filtering
 # Skip all tests if LANGSMITH_API_KEY is not set
-pytestmark = pytest.mark.skipif(
-    not os.environ.get("LANGSMITH_API_KEY"),
-    reason="LANGSMITH_API_KEY not set - skipping smoke tests",
-)
+pytestmark = [
+    pytest.mark.slow,
+    pytest.mark.smoke,
+    pytest.mark.skipif(
+        not os.environ.get("LANGSMITH_API_KEY"),
+        reason="LANGSMITH_API_KEY not set - skipping smoke tests",
+    ),
+]
 
 
 class TestProjectsSkill:

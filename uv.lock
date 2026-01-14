@@ -324,6 +324,7 @@ dev = [
     { name = "pyright" },
     { name = "pytest" },
     { name = "pytest-cov" },
+    { name = "pytest-integration" },
     { name = "pytest-xdist" },
     { name = "ruff" },
 ]
@@ -345,6 +346,7 @@ dev = [
     { name = "pyright", specifier = ">=1.1.408" },
     { name = "pytest", specifier = ">=9.0.2" },
     { name = "pytest-cov", specifier = ">=7.0.0" },
+    { name = "pytest-integration", specifier = ">=0.2.3" },
     { name = "pytest-xdist", specifier = ">=3.8.0" },
     { name = "ruff", specifier = ">=0.14.11" },
 ]
@@ -611,6 +613,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/5e/f7/c933acc76f5208b3b00089573cf6a2bc26dc80a8aece8f52bb7d6b1855ca/pytest_cov-7.0.0.tar.gz", hash = "sha256:33c97eda2e049a0c5298e91f519302a1334c26ac65c1a483d6206fd458361af1", size = 54328, upload-time = "2025-09-09T10:57:02.113Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ee/49/1377b49de7d0c1ce41292161ea0f721913fa8722c19fb9c1e3aa0367eecb/pytest_cov-7.0.0-py3-none-any.whl", hash = "sha256:3b8e9558b16cc1479da72058bdecf8073661c7f57f7d3c5f22a1c23507f2d861", size = 22424, upload-time = "2025-09-09T10:57:00.695Z" },
+]
+
+[[package]]
+name = "pytest-integration"
+version = "0.2.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/35/e0/c823048dc0866f2e0fa2e4a34cd6ec290697b238b7672b30cb07c65e59cc/pytest_integration-0.2.3.tar.gz", hash = "sha256:b00988a5de8a6826af82d4c7a3485b43fbf32c11235e9f4a8b7225eef5fbcf65", size = 3295, upload-time = "2022-11-17T10:34:50.319Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1b/41/9b393be6252635e4d39c3e62805018c42bfcc486b42246b582b755ff9ad3/pytest_integration-0.2.3-py3-none-any.whl", hash = "sha256:7f59ed1fa1cc8cb240f9495b68bc02c0421cce48589f78e49b7b842231604b12", size = 4456, upload-time = "2022-11-17T10:34:47.341Z" },
 ]
 
 [[package]]

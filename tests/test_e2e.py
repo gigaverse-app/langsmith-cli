@@ -16,6 +16,7 @@ def run_cli_cmd(args):
     return result
 
 
+@pytest.mark.integration_test
 def test_projects_list_e2e():
     """E2E test for projects list if API KEY is available."""
     load_dotenv()
@@ -27,6 +28,7 @@ def test_projects_list_e2e():
     assert "Projects" in result.stdout
 
 
+@pytest.mark.integration_test
 def test_projects_list_json_e2e():
     """E2E test for JSON output."""
     load_dotenv()
@@ -41,6 +43,7 @@ def test_projects_list_json_e2e():
     assert isinstance(data, list)
 
 
+@pytest.mark.integration_test
 def test_runs_list_e2e():
     """E2E test for runs list."""
     load_dotenv()
@@ -52,6 +55,7 @@ def test_runs_list_e2e():
     assert "Runs" in result.stdout or "No runs found" in result.stdout
 
 
+@pytest.mark.integration_test
 def test_runs_list_with_tag_e2e():
     """E2E test for runs list with tag filtering."""
     load_dotenv()
@@ -64,6 +68,7 @@ def test_runs_list_with_tag_e2e():
     assert "Runs" in result.stdout or "No runs found" in result.stdout
 
 
+@pytest.mark.integration_test
 def test_runs_list_with_multiple_tags_e2e():
     """E2E test for runs list with multiple tags."""
     load_dotenv()
@@ -77,6 +82,7 @@ def test_runs_list_with_multiple_tags_e2e():
     assert "Runs" in result.stdout or "No runs found" in result.stdout
 
 
+@pytest.mark.integration_test
 def test_runs_list_with_name_pattern_e2e():
     """E2E test for runs list with name pattern."""
     load_dotenv()
@@ -88,6 +94,7 @@ def test_runs_list_with_name_pattern_e2e():
     assert "Runs" in result.stdout or "No runs found" in result.stdout
 
 
+@pytest.mark.integration_test
 def test_runs_list_with_slow_filter_e2e():
     """E2E test for runs list with --slow filter."""
     load_dotenv()
@@ -99,6 +106,7 @@ def test_runs_list_with_slow_filter_e2e():
     assert "Runs" in result.stdout or "No runs found" in result.stdout
 
 
+@pytest.mark.integration_test
 def test_runs_list_with_recent_filter_e2e():
     """E2E test for runs list with --recent filter."""
     load_dotenv()
@@ -110,6 +118,7 @@ def test_runs_list_with_recent_filter_e2e():
     assert "Runs" in result.stdout or "No runs found" in result.stdout
 
 
+@pytest.mark.integration_test
 def test_runs_list_with_today_filter_e2e():
     """E2E test for runs list with --today filter."""
     load_dotenv()
@@ -121,6 +130,7 @@ def test_runs_list_with_today_filter_e2e():
     assert "Runs" in result.stdout or "No runs found" in result.stdout
 
 
+@pytest.mark.integration_test
 def test_runs_list_with_combined_filters_e2e():
     """E2E test for runs list with multiple QoL filters combined."""
     load_dotenv()
@@ -134,6 +144,7 @@ def test_runs_list_with_combined_filters_e2e():
     assert "Runs" in result.stdout or "No runs found" in result.stdout
 
 
+@pytest.mark.integration_test
 def test_runs_list_qol_with_json_output_e2e():
     """E2E test for QoL filters with JSON output."""
     load_dotenv()

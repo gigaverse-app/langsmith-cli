@@ -5,9 +5,13 @@ from uuid import UUID, uuid4
 from langsmith.schemas import Dataset, Example, Prompt, TracerSessionResult
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def runner():
-    """Fixture for invoking command-line interfaces."""
+    """Fixture for invoking command-line interfaces.
+
+    Module-scoped for performance - CliRunner creates isolated environments
+    for each invoke() call, making it safe to share across tests.
+    """
     return CliRunner()
 
 
