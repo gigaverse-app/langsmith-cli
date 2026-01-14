@@ -5,7 +5,11 @@ from langsmith_cli.main import cli
 
 def test_login_command_success(runner, tmp_path):
     """Test successful login writes to config directory by default."""
-    with runner.isolated_filesystem(), patch("webbrowser.open") as mock_open:
+    with (
+        runner.isolated_filesystem(),
+        patch("webbrowser.open") as mock_open,
+        patch("langsmith_cli.config.get_config_dir", return_value=tmp_path),
+    ):
         # Input the key when prompted
         result = runner.invoke(cli, ["auth", "login"], input="lsv2_test_key\n")
 
@@ -14,6 +18,11 @@ def test_login_command_success(runner, tmp_path):
         assert "Successfully logged in" in result.output
         # Should mention config path, not .env
         assert ".env" not in result.output or "langsmith-cli" in result.output
+
+        # Verify credentials were written to tmp_path, not real config dir
+        creds_file = tmp_path / "credentials"
+        assert creds_file.exists()
+        assert "lsv2_test_key" in creds_file.read_text()
 
 
 def test_login_command_local_flag(runner):

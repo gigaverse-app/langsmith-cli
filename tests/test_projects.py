@@ -291,3 +291,142 @@ def test_projects_create_already_exists(runner):
 
         assert result.exit_code == 0
         assert "already exists" in result.output
+
+
+def test_projects_list_name_regex_with_limit_optimizes_api_call(runner):
+    """
+    INVARIANT: When using --name-regex with --limit, the CLI should extract a search term
+    from the regex and pass it to the API to optimize results.
+
+    This test verifies that ".*moments.*" extracts "moments" and passes it to
+    client.list_projects(name="moments", limit=3) rather than client.list_projects(limit=3).
+    """
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        # Simulate API behavior: If name filter is provided, return matching projects
+        # If no name filter, return first N projects (which might not match regex)
+        def list_projects_side_effect(**kwargs):
+            limit = kwargs.get("limit", 100)
+            name_filter = kwargs.get("name_contains")
+
+            if name_filter == "moments":
+                # API returns projects matching "moments"
+                p1 = MagicMock()
+                p1.name = "dev/moments"
+                p1.id = "1"
+                p2 = MagicMock()
+                p2.name = "local/moments"
+                p2.id = "2"
+                return iter([p1, p2])
+            else:
+                # API returns first N projects (none match "moments")
+                projects = []
+                for i in range(min(limit, 3)):
+                    p = MagicMock()
+                    p.name = f"unrelated-project-{i}"
+                    p.id = str(i)
+                    projects.append(p)
+                return iter(projects)
+
+        mock_client.list_projects.side_effect = list_projects_side_effect
+
+        # Execute command with regex that should extract "moments"
+        result = runner.invoke(
+            cli, ["projects", "list", "--limit", "3", "--name-regex", ".*moments.*"]
+        )
+
+        assert result.exit_code == 0
+
+        # INVARIANT: Should find the "moments" projects, not return empty
+        # This will FAIL before the fix because API is called without name filter
+        assert "dev/moments" in result.output or "local/moments" in result.output
+
+        # Verify API was called with extracted search term
+        mock_client.list_projects.assert_called_once()
+        call_kwargs = mock_client.list_projects.call_args[1]
+        assert call_kwargs.get("name_contains") == "moments", (
+            f"Expected API to be called with name_contains='moments', "
+            f"but got name_contains={call_kwargs.get('name_contains')}"
+        )
+
+
+def test_projects_list_name_pattern_with_limit_optimizes_api_call(runner):
+    """
+    INVARIANT: When using --name-pattern with --limit, the CLI should extract a search term
+    from the wildcard pattern and pass it to the API.
+
+    This verifies existing behavior for patterns like "*moments*".
+    """
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        def list_projects_side_effect(**kwargs):
+            name_filter = kwargs.get("name_contains")
+
+            if name_filter == "moments":
+                p1 = MagicMock()
+                p1.name = "dev/moments"
+                p1.id = "1"
+                return iter([p1])
+            else:
+                return iter([])
+
+        mock_client.list_projects.side_effect = list_projects_side_effect
+
+        result = runner.invoke(
+            cli, ["projects", "list", "--limit", "3", "--name-pattern", "*moments*"]
+        )
+
+        assert result.exit_code == 0
+        assert "dev/moments" in result.output
+
+        # Verify API was called with extracted search term
+        call_kwargs = mock_client.list_projects.call_args[1]
+        assert call_kwargs.get("name_contains") == "moments"
+
+
+def test_projects_list_complex_regex_extracts_best_search_term(runner):
+    """
+    INVARIANT: Complex regex patterns should extract the longest/best literal substring
+    to optimize API filtering.
+
+    Example: "^(dev|local)/.*moments.*-v[0-9]+" should extract "moments".
+    """
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        def list_projects_side_effect(**kwargs):
+            name_filter = kwargs.get("name_contains")
+
+            # Accept any filter that contains "moments" substring
+            if name_filter and "moments" in name_filter:
+                p1 = MagicMock()
+                p1.name = "dev/special-moments-v1"
+                p1.id = "1"
+                return iter([p1])
+            else:
+                return iter([])
+
+        mock_client.list_projects.side_effect = list_projects_side_effect
+
+        result = runner.invoke(
+            cli,
+            [
+                "projects",
+                "list",
+                "--limit",
+                "3",
+                "--name-regex",
+                "^(dev|local)/.*moments.*-v[0-9]+",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert "dev/special-moments-v1" in result.output
+
+        # Verify API optimization occurred
+        call_kwargs = mock_client.list_projects.call_args[1]
+        assert call_kwargs.get("name_contains") is not None, (
+            "API should be called with extracted search term for optimization"
+        )

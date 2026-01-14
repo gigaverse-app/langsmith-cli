@@ -63,18 +63,26 @@ def list_projects(
     client = langsmith.Client()
 
     # Use name_ (SDK substring filter) if provided and no pattern/regex
-    # Use name_pattern as a fallback to name_ if neither are specific filters
+    # Use name_pattern/name_regex as a fallback to name_ for API optimization
     api_name_filter = name_
     if name_pattern and not name_:
         # Extract search term from wildcard pattern for API filtering
         search_term = name_pattern.replace("*", "")
         if search_term:
             api_name_filter = search_term
+    elif name_regex and not name_ and not name_pattern:
+        # Extract search term from regex pattern for API filtering
+        import re
+
+        # Remove common regex metacharacters to find literal substring
+        search_term = re.sub(r"[.*+?^${}()\[\]\\|]", "", name_regex)
+        if search_term and len(search_term) >= 2:  # Only use if reasonably long
+            api_name_filter = search_term
 
     # list_projects returns a generator
     projects_gen = client.list_projects(
         limit=limit,
-        name=api_name_filter,
+        name_contains=api_name_filter,
         reference_dataset_id=reference_dataset_id,
         reference_dataset_name=reference_dataset_name,
     )
