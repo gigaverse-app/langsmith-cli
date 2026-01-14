@@ -590,3 +590,141 @@ def test_runs_list_with_invalid_regex(runner):
         result = runner.invoke(cli, ["runs", "list", "--name-regex", "[invalid("])
         assert result.exit_code != 0
         assert "Invalid regex pattern" in result.output
+
+
+def test_runs_get_rich_output(runner):
+    """Test runs get with Rich console output (not JSON mode)."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_run = MagicMock()
+        mock_run.dict.return_value = {
+            "id": "run-rich-123",
+            "name": "Rich Output Test",
+            "status": "success",
+            "inputs": {"query": "test"},
+            "outputs": {"result": "success"},
+        }
+        mock_client.read_run.return_value = mock_run
+
+        # No --json flag, should use Rich output
+        result = runner.invoke(cli, ["runs", "get", "run-rich-123"])
+
+        assert result.exit_code == 0
+        assert "run-rich-123" in result.output
+        assert "Rich Output Test" in result.output
+        assert "status" in result.output
+        assert "inputs" in result.output
+
+
+def test_runs_get_with_complex_data_types(runner):
+    """Test runs get handles dict and list data types."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_run = MagicMock()
+        mock_run.dict.return_value = {
+            "id": "run-complex",
+            "name": "Complex Data",
+            "metadata": {"key": "value", "nested": {"deep": "data"}},
+            "tags": ["tag1", "tag2"],
+            "simple_field": "simple_value",
+        }
+        mock_client.read_run.return_value = mock_run
+
+        result = runner.invoke(cli, ["runs", "get", "run-complex"])
+
+        assert result.exit_code == 0
+        assert "metadata" in result.output
+        assert "tags" in result.output
+        assert "simple_field" in result.output
+
+
+def test_runs_stats_table_output(runner):
+    """Test runs stats with table output."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_project = MagicMock()
+        mock_project.id = "project-123"
+        mock_client.read_project.return_value = mock_project
+        mock_client.get_run_stats.return_value = {
+            "run_count": 100,
+            "error_count": 5,
+            "avg_latency": 1.5,
+        }
+
+        result = runner.invoke(cli, ["runs", "stats", "--project", "test-project"])
+
+        assert result.exit_code == 0
+        assert "100" in result.output
+        assert "5" in result.output
+
+
+def test_runs_stats_json_output(runner):
+    """Test runs stats with JSON output."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_project = MagicMock()
+        mock_project.id = "project-456"
+        mock_client.read_project.return_value = mock_project
+        mock_client.get_run_stats.return_value = {
+            "run_count": 50,
+            "error_count": 2,
+        }
+
+        result = runner.invoke(cli, ["--json", "runs", "stats", "--project", "my-project"])
+
+        assert result.exit_code == 0
+        import json
+        data = json.loads(result.output)
+        assert data["run_count"] == 50
+        assert data["error_count"] == 2
+
+
+def test_runs_stats_fallback_to_project_id(runner):
+    """Test runs stats falls back to using project name as ID on error."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        # read_project raises error, should fallback to using name as ID
+        mock_client.read_project.side_effect = Exception("Not found")
+        mock_client.get_run_stats.return_value = {"run_count": 10}
+
+        result = runner.invoke(cli, ["--json", "runs", "stats", "--project", "fallback-id"])
+
+        assert result.exit_code == 0
+        # Should have called get_run_stats with the project name as ID
+        mock_client.get_run_stats.assert_called_once()
+
+
+def test_runs_open_command(runner):
+    """Test runs open command opens browser."""
+    with patch("webbrowser.open") as mock_browser:
+        result = runner.invoke(cli, ["runs", "open", "test-run-id"])
+
+        assert result.exit_code == 0
+        assert "Opening run test-run-id" in result.output
+        assert "https://smith.langchain.com/r/test-run-id" in result.output
+        mock_browser.assert_called_once_with("https://smith.langchain.com/r/test-run-id")
+
+
+def test_runs_watch_keyboard_interrupt(runner):
+    """Test runs watch handles keyboard interrupt gracefully."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_run = MagicMock()
+        mock_run.id = "watch-run"
+        mock_run.name = "Watched Run"
+        mock_run.status = "success"
+        mock_run.latency = 1.0
+
+        # Make list_runs raise KeyboardInterrupt after first call
+        mock_client.list_runs.side_effect = [
+            [mock_run],  # First call succeeds
+            KeyboardInterrupt(),  # Second call interrupted
+        ]
+
+        # Use timeout to prevent hanging
+        with patch("time.sleep") as mock_sleep:
+            mock_sleep.side_effect = KeyboardInterrupt()
+            result = runner.invoke(cli, ["runs", "watch", "--project", "test"])
+
+        # Should exit cleanly on KeyboardInterrupt
+        assert result.exit_code == 0

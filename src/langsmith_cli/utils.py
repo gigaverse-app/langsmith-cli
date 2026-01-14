@@ -166,3 +166,51 @@ def determine_output_format(
     if output_format:
         return output_format
     return "json" if json_flag else "table"
+
+
+def print_empty_result_message(console: Any, item_type: str) -> None:
+    """Print a standardized message when no results are found.
+
+    Args:
+        console: Rich console for printing
+        item_type: Type of item (e.g., "runs", "projects", "datasets")
+    """
+    console.print(f"[yellow]No {item_type} found.[/yellow]")
+
+
+def parse_json_string(json_str: Optional[str], field_name: str = "input") -> Optional[Dict[str, Any]]:
+    """Parse a JSON string with error handling.
+
+    Args:
+        json_str: JSON string to parse (None returns None)
+        field_name: Name of the field being parsed (for error messages)
+
+    Returns:
+        Parsed dictionary or None if input is None
+
+    Raises:
+        click.BadParameter: If JSON parsing fails
+    """
+    if not json_str:
+        return None
+
+    import json
+    try:
+        return json.loads(json_str)
+    except json.JSONDecodeError as e:
+        raise click.BadParameter(f"Invalid JSON in {field_name}: {e}")
+
+
+def parse_comma_separated_list(input_str: Optional[str]) -> Optional[List[str]]:
+    """Parse a comma-separated string into a list.
+
+    Args:
+        input_str: Comma-separated string (None returns None)
+
+    Returns:
+        List of stripped strings or None if input is None
+    """
+    if not input_str:
+        return None
+
+    return [item.strip() for item in input_str.split(",")]

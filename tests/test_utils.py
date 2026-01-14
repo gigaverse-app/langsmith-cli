@@ -13,6 +13,9 @@ from langsmith_cli.utils import (
     apply_regex_filter,
     apply_wildcard_filter,
     determine_output_format,
+    print_empty_result_message,
+    parse_json_string,
+    parse_comma_separated_list,
 )
 
 
@@ -373,3 +376,104 @@ class TestDetermineOutputFormat:
     def test_explicit_json_format(self):
         """Test explicit json format."""
         assert determine_output_format("json", False) == "json"
+
+
+class TestPrintEmptyResultMessage:
+    """Tests for print_empty_result_message function."""
+
+    def test_print_empty_result_message(self, capsys):
+        """Test printing empty result message."""
+        console = MagicMock()
+        print_empty_result_message(console, "runs")
+
+        console.print.assert_called_once()
+        call_args = str(console.print.call_args)
+        assert "No runs found" in call_args
+        assert "yellow" in call_args
+
+    def test_print_empty_result_message_different_types(self, capsys):
+        """Test printing empty result messages for different item types."""
+        console = MagicMock()
+
+        print_empty_result_message(console, "projects")
+        assert "No projects found" in str(console.print.call_args)
+
+        console.reset_mock()
+        print_empty_result_message(console, "datasets")
+        assert "No datasets found" in str(console.print.call_args)
+
+
+class TestParseJsonString:
+    """Tests for parse_json_string function."""
+
+    def test_parse_valid_json(self):
+        """Test parsing valid JSON string."""
+        result = parse_json_string('{"key": "value", "num": 42}')
+        assert result == {"key": "value", "num": 42}
+
+    def test_parse_none_input(self):
+        """Test parsing None returns None."""
+        result = parse_json_string(None)
+        assert result is None
+
+    def test_parse_empty_string(self):
+        """Test parsing empty string returns None."""
+        result = parse_json_string("")
+        assert result is None
+
+    def test_parse_invalid_json(self):
+        """Test parsing invalid JSON raises BadParameter."""
+        with pytest.raises(click.BadParameter, match="Invalid JSON"):
+            parse_json_string('{"invalid": }', "metadata")
+
+    def test_parse_json_with_nested_objects(self):
+        """Test parsing JSON with nested objects."""
+        json_str = '{"outer": {"inner": "value"}, "list": [1, 2, 3]}'
+        result = parse_json_string(json_str)
+        assert result["outer"]["inner"] == "value"
+        assert result["list"] == [1, 2, 3]
+
+    def test_parse_json_error_includes_field_name(self):
+        """Test that error message includes field name."""
+        with pytest.raises(click.BadParameter) as exc_info:
+            parse_json_string('invalid', "custom_field")
+        assert "custom_field" in str(exc_info.value)
+
+
+class TestParseCommaSeparatedList:
+    """Tests for parse_comma_separated_list function."""
+
+    def test_parse_simple_list(self):
+        """Test parsing simple comma-separated list."""
+        result = parse_comma_separated_list("item1,item2,item3")
+        assert result == ["item1", "item2", "item3"]
+
+    def test_parse_list_with_spaces(self):
+        """Test parsing list with spaces around items."""
+        result = parse_comma_separated_list("item1 , item2 ,  item3")
+        assert result == ["item1", "item2", "item3"]
+
+    def test_parse_single_item(self):
+        """Test parsing single item (no commas)."""
+        result = parse_comma_separated_list("single")
+        assert result == ["single"]
+
+    def test_parse_none_input(self):
+        """Test parsing None returns None."""
+        result = parse_comma_separated_list(None)
+        assert result is None
+
+    def test_parse_empty_string(self):
+        """Test parsing empty string returns None."""
+        result = parse_comma_separated_list("")
+        assert result is None
+
+    def test_parse_list_with_empty_items(self):
+        """Test parsing list with empty items."""
+        result = parse_comma_separated_list("item1,,item2")
+        assert result == ["item1", "", "item2"]
+
+    def test_parse_list_with_special_characters(self):
+        """Test parsing list with special characters."""
+        result = parse_comma_separated_list("item-1,item_2,item.3")
+        assert result == ["item-1", "item_2", "item.3"]
