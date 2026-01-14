@@ -442,6 +442,95 @@ def render_output(
         console.print(data)
 
 
+def get_matching_items(
+    items: list[Any],
+    *,
+    default_item: str | None = None,
+    name: str | None = None,
+    name_exact: str | None = None,
+    name_pattern: str | None = None,
+    name_regex: str | None = None,
+    name_getter: Callable[[Any], str],
+) -> list[Any]:
+    """Get list of items matching the given filters.
+
+    Universal helper for pattern matching across any item type.
+
+    Filter precedence (most specific to least specific):
+    1. name_exact - Exact match (highest priority)
+    2. name_regex - Regular expression
+    3. name_pattern - Wildcard pattern (*, ?)
+    4. name - Substring/contains match
+    5. default_item - Single item (default/fallback)
+
+    Args:
+        items: List of items to filter
+        default_item: Single item (default fallback)
+        name: Substring/contains match (convenience filter)
+        name_exact: Exact name match
+        name_pattern: Wildcard pattern (e.g., "dev/*", "*production*")
+        name_regex: Regular expression pattern
+        name_getter: Function to extract name from an item
+
+    Returns:
+        List of matching items
+
+    Examples:
+        # Single item (default)
+        get_matching_items(projects, default_item="my-project", name_getter=lambda p: p.name)
+        # -> [project_with_name_my_project]
+
+        # Exact match
+        get_matching_items(projects, name_exact="production-api", name_getter=lambda p: p.name)
+        # -> [project_with_name_production_api] or []
+
+        # Substring contains
+        get_matching_items(projects, name="prod", name_getter=lambda p: p.name)
+        # -> [production-api, production-web, dev-prod-test]
+
+        # Wildcard pattern
+        get_matching_items(projects, name_pattern="dev/*", name_getter=lambda p: p.name)
+        # -> [dev/api, dev/web, dev/worker]
+
+        # Regex pattern
+        get_matching_items(projects, name_regex="^prod-.*-v[0-9]+$", name_getter=lambda p: p.name)
+        # -> [prod-api-v1, prod-web-v2]
+    """
+    # Exact match has highest priority - return immediately if found
+    if name_exact:
+        matching = [item for item in items if name_getter(item) == name_exact]
+        return matching
+
+    # If a default item is given and no other filters, find and return just that item
+    if default_item and not name and not name_pattern and not name_regex:
+        # Try to find item with matching name
+        matching = [item for item in items if name_getter(item) == default_item]
+        if matching:
+            return matching
+        # If not found, assume default_item might be used elsewhere (e.g., for API calls)
+        # Return empty list - caller will handle
+        return []
+
+    # Apply filters in order
+    filtered_items = items
+
+    # Apply regex filter (higher priority than wildcard)
+    if name_regex:
+        filtered_items = apply_regex_filter(filtered_items, name_regex, name_getter)
+
+    # Apply wildcard pattern filter
+    if name_pattern:
+        filtered_items = apply_wildcard_filter(
+            filtered_items, name_pattern, name_getter
+        )
+
+    # Apply substring/contains filter (lowest priority)
+    if name:
+        filtered_items = [item for item in filtered_items if name in name_getter(item)]
+
+    return filtered_items
+
+
 def get_matching_projects(
     client: Any,
     *,
@@ -494,34 +583,34 @@ def get_matching_projects(
         get_matching_projects(client, name_regex="^prod-.*-v[0-9]+$")
         # -> ["prod-api-v1", "prod-web-v2"]
     """
-    # Exact match has highest priority - return immediately if found
-    if name_exact:
-        all_projects = list(client.list_projects())
-        matching = [p for p in all_projects if p.name == name_exact]
-        return [p.name for p in matching]
-
     # If a specific project is given and no other filters, return just that project
-    if project and not name and not name_pattern and not name_regex:
+    # (don't need to call API)
+    if project and not name and not name_exact and not name_pattern and not name_regex:
         return [project]
 
-    # Otherwise, list all projects and apply filters in order
+    # Otherwise, list all projects and use universal filter
     all_projects = list(client.list_projects())
 
-    # Apply regex filter (higher priority than wildcard)
-    if name_regex:
-        all_projects = apply_regex_filter(all_projects, name_regex, lambda p: p.name)
+    matching = get_matching_items(
+        all_projects,
+        default_item=project,
+        name=name,
+        name_exact=name_exact,
+        name_pattern=name_pattern,
+        name_regex=name_regex,
+        name_getter=lambda p: p.name,
+    )
 
-    # Apply wildcard pattern filter
-    if name_pattern:
-        all_projects = apply_wildcard_filter(
-            all_projects, name_pattern, lambda p: p.name
-        )
+    # If we found matching projects, return their names
+    if matching:
+        return [p.name for p in matching]
 
-    # Apply substring/contains filter (lowest priority)
-    if name:
-        all_projects = [p for p in all_projects if name in p.name]
+    # If no matches and we have a default project, return it
+    # (it might be a valid project that just isn't in the list yet)
+    if project:
+        return [project]
 
-    return [p.name for p in all_projects]
+    return []
 
 
 def add_project_filter_options(func: Callable[..., Any]) -> Callable[..., Any]:

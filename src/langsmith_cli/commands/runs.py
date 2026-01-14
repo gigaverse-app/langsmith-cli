@@ -1,15 +1,19 @@
+from typing import Any
+
 import click
 from rich.console import Console
 from rich.table import Table
+
 from langsmith_cli.utils import (
-    output_formatted_data,
-    sort_items,
-    apply_regex_filter,
-    determine_output_format,
-    apply_client_side_limit,
-    get_or_create_client,
     add_project_filter_options,
+    apply_client_side_limit,
+    determine_output_format,
+    get_matching_items,
     get_matching_projects,
+    get_or_create_client,
+    output_formatted_data,
+    safe_model_dump,
+    sort_items,
 )
 
 console = Console()
@@ -188,13 +192,8 @@ def list_runs(
         for t in tag:
             fql_filters.append(f'has(tags, "{t}")')
 
-    # Run name pattern (convert wildcards to FQL search)
-    if name_pattern:
-        # Convert shell wildcards to FQL search pattern
-        # For now, simple implementation: * becomes substring search
-        search_term = name_pattern.replace("*", "")
-        if search_term:
-            fql_filters.append(f'search("{search_term}")')
+    # Run name pattern - skip FQL filtering, do client-side instead
+    # (FQL search doesn't support proper wildcard matching)
 
     # Model filtering (search in model-related fields)
     if model:
@@ -259,7 +258,8 @@ def list_runs(
             combined_filter = f"and({filter_str})"
 
     # Determine if client-side filtering is needed
-    needs_client_filtering = bool(name_regex)
+    # (for run name pattern/regex matching)
+    needs_client_filtering = bool(name_regex or name_pattern)
 
     # If client-side filtering needed, fetch more results
     api_limit = None if needs_client_filtering else limit
@@ -286,10 +286,14 @@ def list_runs(
             # Skip projects that fail to fetch (e.g., permissions)
             pass
 
-    runs = all_runs
-
-    # Client-side regex filtering (FQL doesn't support full regex)
-    runs = apply_regex_filter(runs, name_regex, lambda r: r.name)
+    # Apply universal filtering to run names (client-side filtering)
+    # FQL doesn't support full regex or complex patterns for run names
+    runs = get_matching_items(
+        all_runs,
+        name_pattern=name_pattern,
+        name_regex=name_regex,
+        name_getter=lambda r: r.name or "",
+    )
 
     # Client-side sorting for table output
     if sort_by and not ctx.obj.get("json"):
@@ -312,7 +316,7 @@ def list_runs(
 
     # Handle non-table formats
     if format_type != "table":
-        data = [r.dict() if hasattr(r, "dict") else dict(r) for r in runs]
+        data = [safe_model_dump(r) for r in runs]
         output_formatted_data(data, format_type)
         return
 
@@ -369,7 +373,7 @@ def get_run(ctx, run_id, fields):
     run = client.read_run(run_id)
 
     # Convert to dict
-    data = run.dict() if hasattr(run, "dict") else dict(run)
+    data = safe_model_dump(run)
 
     # Apply context pruning if requested
     if fields:
@@ -548,7 +552,8 @@ def watch_runs(
         table.add_column("Latency", justify="right")
 
         # Collect runs from all matching projects
-        all_runs = []
+        # Store runs with their project names as tuples
+        all_runs: list[tuple[str, Any]] = []
         for proj_name in projects_to_watch:
             try:
                 # Get a few runs from each project
@@ -559,19 +564,20 @@ def watch_runs(
                         is_root=True,
                     )
                 )
-                all_runs.extend(runs)
+                # Store each run with its project name
+                all_runs.extend((proj_name, run) for run in runs)
             except Exception:
                 # Skip projects that fail to fetch
                 pass
 
         # Sort by start time (most recent first) and limit to 10
-        all_runs.sort(key=lambda r: r.start_time or "", reverse=True)
+        all_runs.sort(key=lambda item: item[1].start_time or "", reverse=True)
         all_runs = all_runs[:10]
 
-        for r in all_runs:
+        for proj_name, r in all_runs:
             # Access SDK model fields directly (type-safe)
             r_name = r.name or "Unknown"
-            r_project = r.session_name or "Unknown"
+            r_project = proj_name
             r_status = r.status
             status_style = (
                 "green"
