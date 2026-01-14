@@ -425,6 +425,98 @@ def test_projects_list_anchored_pattern_no_api_optimization(runner):
         assert call_kwargs.get("name_contains") is None
 
 
+def test_projects_list_anchored_pattern_applies_limit_after_filtering(runner):
+    """
+    INVARIANT: When using anchored patterns, limit should be applied AFTER client-side filtering.
+
+    This ensures that `--limit 3 --name-pattern "*moments"` returns 3 projects ending
+    with "moments", not 0-2 projects (which would happen if limit was applied before filtering).
+    """
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        # Create 10 projects: 5 end with "moments", 5 don't
+        projects = []
+        for i in range(5):
+            p = MagicMock()
+            p.name = f"project{i}/moments"
+            p.id = str(i)
+            projects.append(p)
+        for i in range(5, 10):
+            p = MagicMock()
+            p.name = f"project{i}/other"
+            p.id = str(i)
+            projects.append(p)
+
+        mock_client.list_projects.return_value = iter(projects)
+
+        # Request limit=3 with anchored pattern
+        result = runner.invoke(
+            cli, ["projects", "list", "--limit", "3", "--name-pattern", "*moments"]
+        )
+
+        assert result.exit_code == 0
+        # Should return exactly 3 projects (not 0-2)
+        output_lines = [
+            line for line in result.output.split("\n") if "/moments" in line
+        ]
+        assert len(output_lines) == 3, (
+            f"Expected 3 matches, got {len(output_lines)}: {output_lines}"
+        )
+
+        # Verify API was called without limit (to allow client-side filtering)
+        call_kwargs = mock_client.list_projects.call_args[1]
+        assert call_kwargs.get("limit") is None, (
+            "API should be called without limit when client-side filtering is needed"
+        )
+
+
+def test_projects_list_has_runs_filter_applies_limit_after_filtering(runner):
+    """
+    INVARIANT: --has-runs filter should apply limit AFTER filtering.
+
+    This ensures that `--limit 3 --has-runs` returns 3 projects with runs,
+    not fewer (which would happen if limit was applied before filtering).
+    """
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        # Create 10 projects: 5 with runs, 5 without
+        projects = []
+        for i in range(5):
+            p = MagicMock()
+            p.name = f"active-project-{i}"
+            p.id = str(i)
+            p.run_count = 100 + i
+            projects.append(p)
+        for i in range(5, 10):
+            p = MagicMock()
+            p.name = f"empty-project-{i}"
+            p.id = str(i)
+            p.run_count = 0
+            projects.append(p)
+
+        mock_client.list_projects.return_value = iter(projects)
+
+        # Request limit=3 with has-runs filter
+        result = runner.invoke(cli, ["projects", "list", "--limit", "3", "--has-runs"])
+
+        assert result.exit_code == 0
+        # Should return exactly 3 projects with runs
+        output_lines = [
+            line for line in result.output.split("\n") if "active-project" in line
+        ]
+        assert len(output_lines) == 3, (
+            f"Expected 3 active projects, got {len(output_lines)}"
+        )
+
+        # Verify API was called without limit
+        call_kwargs = mock_client.list_projects.call_args[1]
+        assert call_kwargs.get("limit") is None, (
+            "API should be called without limit when --has-runs filter is used"
+        )
+
+
 def test_projects_list_complex_regex_extracts_best_search_term(runner):
     """
     INVARIANT: Complex regex patterns should extract the longest/best literal substring

@@ -9,6 +9,7 @@ from langsmith_cli.utils import (
     apply_regex_filter,
     apply_wildcard_filter,
     determine_output_format,
+    apply_client_side_limit,
 )
 
 console = Console()
@@ -62,9 +63,10 @@ def list_projects(
 
     client = langsmith.Client()
 
-    # Use name_ (SDK substring filter) if provided and no pattern/regex
-    # Use name_pattern/name_regex as a fallback to name_ for API optimization
+    # Determine if client-side filtering is needed
+    needs_client_filtering = False
     api_name_filter = name_
+
     if name_pattern and not name_:
         # Only optimize if pattern is unanchored (*term*) - anchored patterns (*term or term*)
         # need client-side filtering for correct results
@@ -73,7 +75,12 @@ def list_projects(
             search_term = name_pattern.replace("*", "")
             if search_term:
                 api_name_filter = search_term
+        else:
+            # Anchored pattern - needs client-side filtering
+            needs_client_filtering = True
     elif name_regex and not name_ and not name_pattern:
+        # Regex always needs client-side filtering
+        needs_client_filtering = True
         # Extract search term from regex pattern for API filtering
         import re
 
@@ -82,9 +89,17 @@ def list_projects(
         if search_term and len(search_term) >= 2:  # Only use if reasonably long
             api_name_filter = search_term
 
+    # If has_runs filter is used, we need client-side filtering
+    if has_runs:
+        needs_client_filtering = True
+
+    # Determine API limit: if client-side filtering needed, fetch more results
+    # Otherwise use the user's limit directly
+    api_limit = None if needs_client_filtering else limit
+
     # list_projects returns a generator
     projects_gen = client.list_projects(
-        limit=limit,
+        limit=api_limit,
         name_contains=api_name_filter,
         reference_dataset_id=reference_dataset_id,
         reference_dataset_name=reference_dataset_name,
@@ -117,6 +132,11 @@ def list_projects(
             else 0,
         }
         projects_list = sort_items(projects_list, sort_by, sort_key_map, console)
+
+    # Apply user's limit AFTER all client-side filtering/sorting
+    projects_list = apply_client_side_limit(
+        projects_list, limit, needs_client_filtering
+    )
 
     # Determine output format
     format_type = determine_output_format(output_format, ctx.obj.get("json"))

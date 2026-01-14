@@ -373,6 +373,64 @@ def test_runs_list(runner):
 
 **Known Improvement Opportunity:** Tests currently use `patch()` with string paths. Per project standards (docs/AGENTS.md), should migrate to `patch.object()` for better refactor-safety.
 
+### Test Data: Always Use Pydantic Models, Never MagicMock
+
+**Critical Rule:** Always create test data using real LangSmith Pydantic model instances, not MagicMock objects.
+
+❌ **BAD - Using MagicMock for test data:**
+```python
+def test_datasets_list(runner):
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        d = MagicMock()
+        d.name = "test-dataset"  # This doesn't validate schema
+        d.model_dump.return_value = {...}  # Manually mocking model_dump
+        mock_client.list_datasets.return_value = iter([d])
+```
+
+✅ **GOOD - Using real Pydantic models:**
+```python
+from langsmith.schemas import Dataset
+from uuid import UUID
+from datetime import datetime, timezone
+
+def test_datasets_list(runner):
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        # Create real Dataset instance with validation
+        d = Dataset(
+            name="test-dataset",
+            description="Test",
+            data_type="kv",
+            id=UUID("ae99b6fa-a6db-4f1c-8868-bc6764f4c29e"),
+            created_at=datetime(2024, 7, 3, tzinfo=timezone.utc),
+            modified_at=datetime(2024, 7, 3, tzinfo=timezone.utc),
+            example_count=10,
+        )
+        mock_client.list_datasets.return_value = iter([d])
+```
+
+**Why:**
+- Real models validate field types and required fields
+- `model_dump()` works correctly without mocking
+- Catches schema mismatches before production
+- Tests are more realistic and reveal integration issues
+- Pydantic field validators run, catching bad data early
+
+**Helper Pattern:**
+Create reusable factory functions in `tests/conftest.py`:
+```python
+def create_dataset(name="test", example_count=10) -> Dataset:
+    return Dataset(
+        name=name,
+        data_type="kv",
+        id=UUID("ae99b6fa-a6db-4f1c-8868-bc6764f4c29e"),
+        created_at=datetime(2024, 7, 3, tzinfo=timezone.utc),
+        modified_at=datetime(2024, 7, 3, tzinfo=timezone.utc),
+        example_count=example_count,
+    )
+```
+
 ### Test Coverage Requirements
 - All new commands must have unit tests
 - Critical paths need integration tests

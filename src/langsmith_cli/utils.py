@@ -248,3 +248,33 @@ def parse_comma_separated_list(input_str: str | None) -> list[str] | None:
         return None
 
     return [item.strip() for item in input_str.split(",")]
+
+
+def should_use_client_side_limit(has_client_filters: bool) -> bool:
+    """Determine if limit should be applied client-side after filtering.
+
+    Args:
+        has_client_filters: Whether any client-side filtering is being used
+
+    Returns:
+        True if limit should be applied after client-side filtering
+    """
+    return has_client_filters
+
+
+def apply_client_side_limit(
+    items: list[T], limit: int | None, has_client_filters: bool
+) -> list[T]:
+    """Apply limit after client-side filtering if needed.
+
+    Args:
+        items: List of items to limit
+        limit: Maximum number of items to return (None for no limit)
+        has_client_filters: Whether client-side filtering was used
+
+    Returns:
+        Limited list of items
+    """
+    if has_client_filters and limit:
+        return items[:limit]
+    return items

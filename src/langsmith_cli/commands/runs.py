@@ -7,6 +7,7 @@ from langsmith_cli.utils import (
     sort_items,
     apply_regex_filter,
     determine_output_format,
+    apply_client_side_limit,
 )
 
 console = Console()
@@ -237,9 +238,15 @@ def list_runs(
             filter_str = ", ".join(fql_filters)
             combined_filter = f"and({filter_str})"
 
+    # Determine if client-side filtering is needed
+    needs_client_filtering = bool(name_regex)
+
+    # If client-side filtering needed, fetch more results
+    api_limit = None if needs_client_filtering else limit
+
     runs = client.list_runs(
         project_name=project,
-        limit=limit,
+        limit=api_limit,
         error=error_filter,
         filter=combined_filter,
         trace_id=trace_id,
@@ -269,6 +276,9 @@ def list_runs(
             else datetime.datetime.min,
         }
         runs = sort_items(runs, sort_by, sort_key_map, console)
+
+    # Apply user's limit AFTER all client-side filtering/sorting
+    runs = apply_client_side_limit(runs, limit, needs_client_filtering)
 
     # Determine output format
     format_type = determine_output_format(output_format, ctx.obj.get("json"))

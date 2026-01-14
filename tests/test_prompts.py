@@ -1,12 +1,18 @@
 """
 Permanent tests for prompts command.
 
-These tests use mocked data and will continue to work indefinitely.
+These tests use mocked data and will continue to work indefinitely,
+unless E2E tests that depend on real trace data (which expires after 400 days).
+
+All test data is created using real LangSmith Pydantic model instances from
+langsmith.schemas, ensuring compatibility with the actual SDK.
 """
 
 from langsmith_cli.main import cli
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 import json
+from conftest import create_prompt
+from langsmith.schemas import ListPromptsResponse
 
 
 def test_prompts_list(runner):
@@ -14,34 +20,21 @@ def test_prompts_list(runner):
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
 
-        # Create mock prompts
-        p1 = MagicMock()
-        p1.repo_handle = "agent_prompt-profile"
-        p1.full_name = "mitchell-compoze/agent_prompt-profile"
-        p1.id = "a9adf0cb-6238-453f-abab-f75361a39ea8"
-        p1.owner = "mitchell-compoze"
-        p1.description = ""
-        p1.is_public = True
-        p1.tags = ["ChatPromptTemplate"]
-        p1.num_likes = 0
-        p1.num_downloads = 772
-        p1.num_views = 23
-
-        p2 = MagicMock()
-        p2.repo_handle = "outline_generator"
-        p2.full_name = "ethan-work/outline_generator"
-        p2.id = "76974ea6-81de-4649-8e1c-10b98e06d4e5"
-        p2.owner = "ethan-work"
-        p2.description = ""
-        p2.is_public = True
-        p2.tags = ["ChatPromptTemplate"]
-        p2.num_likes = 0
-        p2.num_downloads = 1196
-        p2.num_views = 51
+        # Create real Prompt Pydantic instances
+        p1 = create_prompt(
+            repo_handle="agent_prompt-profile",
+            full_name="mitchell-compoze/agent_prompt-profile",
+            owner="mitchell-compoze",
+        )
+        p2 = create_prompt(
+            repo_handle="outline_generator",
+            full_name="ethan-work/outline_generator",
+            owner="ethan-work",
+            description="Outline generator prompt",
+        )
 
         # list_prompts returns ListPromptsResponse with .repos attribute
-        mock_result = MagicMock()
-        mock_result.repos = [p1, p2]
+        mock_result = ListPromptsResponse(repos=[p1, p2], total=2)
         mock_client.list_prompts.return_value = mock_result
 
         result = runner.invoke(cli, ["prompts", "list"])
@@ -57,27 +50,15 @@ def test_prompts_list_json(runner):
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
 
-        p1 = MagicMock()
-        p1.repo_handle = "test-prompt"
-        p1.full_name = "owner/test-prompt"
-        p1.id = "test-id"
-        p1.owner = "owner"
-        p1.description = "Test prompt"
-        p1.is_public = True
-        p1.num_downloads = 100
-        p1.model_dump.return_value = {
-            "repo_handle": "test-prompt",
-            "full_name": "owner/test-prompt",
-            "id": "test-id",
-            "owner": "owner",
-            "description": "Test prompt",
-            "is_public": True,
-            "num_downloads": 100,
-        }
+        p1 = create_prompt(
+            repo_handle="test-prompt",
+            full_name="owner/test-prompt",
+            owner="owner",
+            description="Test prompt",
+        )
 
         # list_prompts returns ListPromptsResponse with .repos attribute
-        mock_result = MagicMock()
-        mock_result.repos = [p1]
+        mock_result = ListPromptsResponse(repos=[p1], total=1)
         mock_client.list_prompts.return_value = mock_result
 
         result = runner.invoke(cli, ["--json", "prompts", "list"])
@@ -94,21 +75,19 @@ def test_prompts_list_with_limit(runner):
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
 
-        # Create mock prompts
-        prompts = []
-        for i in range(5):
-            p = MagicMock()
-            p.repo_handle = f"prompt-{i}"
-            p.full_name = f"owner/prompt-{i}"
-            p.id = f"id-{i}"
-            p.owner = "owner"
-            p.is_public = True
-            p.description = f"Test prompt {i}"
-            prompts.append(p)
+        # Create real Prompt instances
+        prompts = [
+            create_prompt(
+                repo_handle=f"prompt-{i}",
+                full_name=f"owner/prompt-{i}",
+                owner="owner",
+                description=f"Test prompt {i}",
+            )
+            for i in range(5)
+        ]
 
         # list_prompts returns ListPromptsResponse with .repos attribute
-        mock_result = MagicMock()
-        mock_result.repos = prompts[:3]
+        mock_result = ListPromptsResponse(repos=prompts[:3], total=5)
         mock_client.list_prompts.return_value = mock_result
 
         result = runner.invoke(cli, ["prompts", "list", "--limit", "3"])
@@ -123,17 +102,16 @@ def test_prompts_list_public_only(runner):
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
 
-        p1 = MagicMock()
-        p1.repo_handle = "public-prompt"
-        p1.full_name = "owner/public-prompt"
-        p1.id = "id-1"
-        p1.owner = "owner"
-        p1.is_public = True
-        p1.description = "A public prompt"
+        p1 = create_prompt(
+            repo_handle="public-prompt",
+            full_name="owner/public-prompt",
+            owner="owner",
+            description="A public prompt",
+            is_public=True,
+        )
 
         # list_prompts returns ListPromptsResponse with .repos attribute
-        mock_result = MagicMock()
-        mock_result.repos = [p1]
+        mock_result = ListPromptsResponse(repos=[p1], total=1)
         mock_client.list_prompts.return_value = mock_result
 
         result = runner.invoke(cli, ["prompts", "list"])
@@ -145,27 +123,22 @@ def test_prompts_list_with_filter(runner):
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
 
-        p1 = MagicMock()
-        p1.repo_handle = "llm-analyzer"
-        p1.full_name = "analytics/llm-analyzer"
-        p1.id = "id-1"
-        p1.owner = "analytics"
-        p1.is_public = True
-        p1.description = "LLM analysis prompt"
-
-        p2 = MagicMock()
-        p2.repo_handle = "data-processor"
-        p2.full_name = "tools/data-processor"
-        p2.id = "id-2"
-        p2.owner = "tools"
-        p2.is_public = True
-        p2.description = "Data processing prompt"
+        p1 = create_prompt(
+            repo_handle="llm-analyzer",
+            full_name="analytics/llm-analyzer",
+            owner="analytics",
+            description="LLM analysis prompt",
+        )
+        p2 = create_prompt(
+            repo_handle="data-processor",
+            full_name="tools/data-processor",
+            owner="tools",
+            description="Data processing prompt",
+        )
 
         def list_prompts_side_effect(**kwargs):
-            # Simple filter simulation - return ListPromptsResponse with .repos
-            mock_result = MagicMock()
-            mock_result.repos = [p1, p2]
-            return mock_result
+            # Return ListPromptsResponse with .repos attribute
+            return ListPromptsResponse(repos=[p1, p2], total=2)
 
         mock_client.list_prompts.side_effect = list_prompts_side_effect
 
@@ -177,9 +150,8 @@ def test_prompts_list_empty_results(runner):
     """INVARIANT: Empty results should be handled gracefully."""
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
-        # list_prompts returns ListPromptsResponse with .repos attribute
-        mock_result = MagicMock()
-        mock_result.repos = []
+        # list_prompts returns ListPromptsResponse with empty .repos
+        mock_result = ListPromptsResponse(repos=[], total=0)
         mock_client.list_prompts.return_value = mock_result
 
         result = runner.invoke(cli, ["prompts", "list"])

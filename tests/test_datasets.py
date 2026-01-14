@@ -3,11 +3,15 @@ Permanent tests for datasets command.
 
 These tests use mocked data and will continue to work indefinitely,
 unlike E2E tests that depend on real trace data (which expires after 400 days).
+
+All test data is created using real LangSmith Pydantic model instances from
+langsmith.schemas, ensuring compatibility with the actual SDK.
 """
 
 from langsmith_cli.main import cli
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 import json
+from conftest import create_dataset
 
 
 def test_datasets_list(runner):
@@ -15,26 +19,18 @@ def test_datasets_list(runner):
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
 
-        # Create mock datasets with real structure
-        d1 = MagicMock()
-        d1.id = "ae99b6fa-a6db-4f1c-8868-bc6764f4c29e"
-        d1.name = "ds-soundbites-baseset"
-        d1.description = "Integration Dataset"
-        d1.data_type = "kv"
-        d1.example_count = 111
-        d1.session_count = 1
-        d1.created_at = "2024-07-03T09:27:16.098548+00:00"
-        d1.modified_at = "2024-07-03T09:27:16.098548+00:00"
-
-        d2 = MagicMock()
-        d2.id = "f4057f0c-c31c-49a7-b1d6-b7ca4d50b7e4"
-        d2.name = "ds-factcheck-scoring"
-        d2.description = "Factcheck Scoring Dataset"
-        d2.data_type = "kv"
-        d2.example_count = 4
-        d2.session_count = 43
-        d2.created_at = "2024-06-26T16:42:50.934517+00:00"
-        d2.modified_at = "2024-06-26T16:42:50.934517+00:00"
+        # Create real Dataset Pydantic instances
+        d1 = create_dataset(
+            name="ds-soundbites-baseset",
+            description="Integration Dataset",
+            example_count=111,
+        )
+        d2 = create_dataset(
+            name="ds-factcheck-scoring",
+            description="Factcheck Scoring Dataset",
+            example_count=4,
+            session_count=43,
+        )
 
         mock_client.list_datasets.return_value = iter([d1, d2])
 
@@ -49,17 +45,8 @@ def test_datasets_list_json(runner):
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
 
-        d1 = MagicMock()
-        d1.id = "ae99b6fa-a6db-4f1c-8868-bc6764f4c29e"
-        d1.name = "test-dataset"
-        d1.data_type = "kv"
-        d1.example_count = 10
-        d1.model_dump.return_value = {
-            "id": "ae99b6fa-a6db-4f1c-8868-bc6764f4c29e",
-            "name": "test-dataset",
-            "data_type": "kv",
-            "example_count": 10,
-        }
+        # Create real Dataset instance
+        d1 = create_dataset(name="test-dataset", example_count=10)
 
         mock_client.list_datasets.return_value = iter([d1])
 
@@ -78,14 +65,10 @@ def test_datasets_list_with_limit(runner):
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
 
-        datasets = []
-        for i in range(5):
-            d = MagicMock()
-            d.id = f"id-{i}"
-            d.name = f"dataset-{i}"
-            d.data_type = "kv"
-            d.example_count = i * 10
-            datasets.append(d)
+        # Create real Dataset instances
+        datasets = [
+            create_dataset(name=f"dataset-{i}", example_count=i * 10) for i in range(5)
+        ]
 
         mock_client.list_datasets.return_value = iter(datasets[:2])
 
@@ -101,17 +84,8 @@ def test_datasets_list_with_name_filter(runner):
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
 
-        d1 = MagicMock()
-        d1.id = "1"
-        d1.name = "factcheck-dataset"
-        d1.data_type = "kv"
-        d1.example_count = 5
-
-        d2 = MagicMock()
-        d2.id = "2"
-        d2.name = "other-dataset"
-        d2.data_type = "kv"
-        d2.example_count = 3
+        d1 = create_dataset(name="factcheck-dataset", example_count=5)
+        d2 = create_dataset(name="other-dataset", example_count=3)
 
         # Simulate filtering by name
         def list_datasets_side_effect(**kwargs):
@@ -134,17 +108,7 @@ def test_datasets_list_with_data_type_filter(runner):
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
 
-        d1 = MagicMock()
-        d1.id = "1"
-        d1.name = "kv-dataset"
-        d1.data_type = "kv"
-        d1.example_count = 10
-
-        d2 = MagicMock()
-        d2.id = "2"
-        d2.name = "chat-dataset"
-        d2.data_type = "chat"
-        d2.example_count = 5
+        d1 = create_dataset(name="kv-dataset", data_type="kv", example_count=10)
 
         mock_client.list_datasets.return_value = iter([d1])
 

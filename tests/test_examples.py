@@ -1,12 +1,17 @@
 """
 Permanent tests for examples command.
 
-These tests use mocked data and will continue to work indefinitely.
+These tests use mocked data and will continue to work indefinitely,
+unlike E2E tests that depend on real trace data (which expires after 400 days).
+
+All test data is created using real LangSmith Pydantic model instances from
+langsmith.schemas, ensuring compatibility with the actual SDK.
 """
 
 from langsmith_cli.main import cli
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 import json
+from conftest import create_example
 
 
 def test_examples_list(runner):
@@ -14,20 +19,17 @@ def test_examples_list(runner):
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
 
-        # Create mock examples
-        ex1 = MagicMock()
-        ex1.id = "3442bd7c-27a2-437b-a38c-f278e455d87b"
-        ex1.dataset_id = "ae99b6fa-a6db-4f1c-8868-bc6764f4c29e"
-        ex1.inputs = {"text": "Example input 1"}
-        ex1.outputs = {"result": "Example output 1"}
-        ex1.created_at = "2024-08-15T19:47:22.513097+00:00"
-
-        ex2 = MagicMock()
-        ex2.id = "05da0305-224c-4b3c-9662-671146ee94a5"
-        ex2.dataset_id = "ae99b6fa-a6db-4f1c-8868-bc6764f4c29e"
-        ex2.inputs = {"text": "Example input 2"}
-        ex2.outputs = {"result": "Example output 2"}
-        ex2.created_at = "2024-08-15T19:47:00.263129+00:00"
+        # Create real Example Pydantic instances
+        ex1 = create_example(
+            id_str="3442bd7c-27a2-437b-a38c-f278e455d87b",
+            inputs={"text": "Example input 1"},
+            outputs={"result": "Example output 1"},
+        )
+        ex2 = create_example(
+            id_str="05da0305-224c-4b3c-9662-671146ee94a5",
+            inputs={"text": "Example input 2"},
+            outputs={"result": "Example output 2"},
+        )
 
         mock_client.list_examples.return_value = iter([ex1, ex2])
 
@@ -40,18 +42,11 @@ def test_examples_list_json(runner):
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
 
-        ex1 = MagicMock()
-        ex1.id = "3442bd7c-27a2-437b-a38c-f278e455d87b"
-        ex1.dataset_id = "ae99b6fa-a6db-4f1c-8868-bc6764f4c29e"
-        ex1.inputs = {"text": "Example input"}
-        ex1.outputs = {"result": "Example output"}
-        ex1.created_at = "2024-08-15T19:47:22.513097+00:00"
-        ex1.model_dump.return_value = {
-            "id": "3442bd7c-27a2-437b-a38c-f278e455d87b",
-            "dataset_id": "ae99b6fa-a6db-4f1c-8868-bc6764f4c29e",
-            "inputs": {"text": "Example input"},
-            "outputs": {"result": "Example output"},
-        }
+        ex1 = create_example(
+            id_str="3442bd7c-27a2-437b-a38c-f278e455d87b",
+            inputs={"text": "Example input"},
+            outputs={"result": "Example output"},
+        )
 
         mock_client.list_examples.return_value = iter([ex1])
 
@@ -71,20 +66,22 @@ def test_examples_list_with_limit(runner):
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
 
-        # Create 5 mock examples
-        examples = []
-        for i in range(5):
-            ex = MagicMock()
-            ex.id = f"id-{i}"
-            ex.dataset_id = "dataset-id"
-            ex.inputs = {"text": f"input {i}"}
-            ex.outputs = {"result": f"output {i}"}
-            examples.append(ex)
+        # Create real Example instances with auto-generated valid UUIDs
+        examples = [
+            create_example(
+                id_str="auto",
+                index=i,
+                inputs={"text": f"input {i}"},
+                outputs={"result": f"output {i}"},
+            )
+            for i in range(5)
+        ]
 
         mock_client.list_examples.return_value = iter(examples[:3])
 
         result = runner.invoke(
-            cli, ["examples", "list", "--dataset", "test-dataset", "--limit", "3"]
+            cli,
+            ["examples", "list", "--dataset", "test-dataset", "--limit", "3"],
         )
         assert result.exit_code == 0
         mock_client.list_examples.assert_called_once()
@@ -97,19 +94,12 @@ def test_examples_list_with_offset(runner):
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
 
-        ex1 = MagicMock()
-        ex1.id = "id-1"
-        ex1.dataset_id = "dataset-id"
-        ex1.inputs = {"text": "input 1"}
-        ex1.outputs = {"result": "output 1"}
+        ex1 = create_example(
+            id_str="05da0305-224c-4b3c-9662-671146ee94a5",
+            inputs={"text": "input 2"},
+        )
 
-        ex2 = MagicMock()
-        ex2.id = "id-2"
-        ex2.dataset_id = "dataset-id"
-        ex2.inputs = {"text": "input 2"}
-        ex2.outputs = {"result": "output 2"}
-
-        mock_client.list_examples.return_value = iter([ex2])
+        mock_client.list_examples.return_value = iter([ex1])
 
         result = runner.invoke(
             cli,
@@ -135,18 +125,24 @@ def test_examples_list_with_splits_filter(runner):
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
 
-        ex1 = MagicMock()
-        ex1.id = "id-1"
-        ex1.dataset_id = "dataset-id"
-        ex1.inputs = {"text": "training data"}
-        ex1.outputs = {"result": "result 1"}
-        ex1.metadata = {"dataset_split": ["train"]}
+        ex1 = create_example(
+            id_str="3442bd7c-27a2-437b-a38c-f278e455d001",
+            inputs={"text": "training data"},
+            metadata={"dataset_split": ["train"]},
+        )
 
         mock_client.list_examples.return_value = iter([ex1])
 
         result = runner.invoke(
             cli,
-            ["examples", "list", "--dataset", "test-dataset", "--splits", "train"],
+            [
+                "examples",
+                "list",
+                "--dataset",
+                "test-dataset",
+                "--splits",
+                "train",
+            ],
         )
         assert result.exit_code == 0
         mock_client.list_examples.assert_called_once()
@@ -160,11 +156,11 @@ def test_examples_list_by_dataset_name(runner):
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
 
-        ex1 = MagicMock()
-        ex1.id = "id-1"
-        ex1.dataset_id = "ae99b6fa-a6db-4f1c-8868-bc6764f4c29e"
-        ex1.inputs = {"text": "Example"}
-        ex1.outputs = {"result": "Result"}
+        ex1 = create_example(
+            id_str="3442bd7c-27a2-437b-a38c-f278e455d002",
+            inputs={"text": "Example"},
+            outputs={"result": "Result"},
+        )
 
         mock_client.list_examples.return_value = iter([ex1])
 
