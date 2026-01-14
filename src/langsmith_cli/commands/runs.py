@@ -26,9 +26,17 @@ def runs():
 @click.option("--tree-filter", help="Filter if any run in trace tree matches.")
 @click.option("--order-by", default="-start_time", help="Sort field (prefix with - for desc).")
 @click.option("--reference-example-id", help="Filter runs for a specific example.")
+@click.option("--tag", multiple=True, help="Filter by tag (can specify multiple times for AND logic).")
+@click.option("--name-pattern", help="Filter by name with wildcards (e.g. '*auth*').")
+@click.option("--slow", is_flag=True, help="Filter to slow runs (latency > 5s).")
+@click.option("--expensive", is_flag=True, help="Filter to expensive runs (cost > $0.01).")
+@click.option("--recent", is_flag=True, help="Filter to recent runs (last hour).")
+@click.option("--today", is_flag=True, help="Filter to today's runs.")
 @click.pass_context
-def list_runs(ctx, project, limit, status, filter_, trace_id, run_type, is_root, trace_filter, tree_filter, order_by, reference_example_id):
+def list_runs(ctx, project, limit, status, filter_, trace_id, run_type, is_root, trace_filter, tree_filter, order_by, reference_example_id, tag, name_pattern, slow, expensive, recent, today):
     """Fetch recent runs."""
+    import datetime
+
     client = langsmith.Client()
 
     error_filter = None
@@ -37,11 +45,58 @@ def list_runs(ctx, project, limit, status, filter_, trace_id, run_type, is_root,
     elif status == "success":
         error_filter = False
 
+    # Build FQL filter from smart flags
+    fql_filters = []
+
+    # Add user's custom filter first
+    if filter_:
+        fql_filters.append(filter_)
+
+    # Tag filtering (AND logic - all tags must be present)
+    if tag:
+        for t in tag:
+            fql_filters.append(f'has(tags, "{t}")')
+
+    # Name pattern (convert wildcards to FQL search)
+    if name_pattern:
+        # Convert shell wildcards to FQL search pattern
+        # For now, simple implementation: * becomes substring search
+        search_term = name_pattern.replace("*", "")
+        if search_term:
+            fql_filters.append(f'search("{search_term}")')
+
+    # Smart filters
+    if slow:
+        fql_filters.append('gt(latency, "5s")')
+
+    if expensive:
+        fql_filters.append('gt(total_cost, "0.01")')
+
+    if recent:
+        # Last hour
+        one_hour_ago = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=1)
+        fql_filters.append(f'gt(start_time, "{one_hour_ago.isoformat()}")')
+
+    if today:
+        # Today's runs (midnight to now)
+        today_start = datetime.datetime.now(datetime.timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        fql_filters.append(f'gt(start_time, "{today_start.isoformat()}")')
+
+    # Combine all filters with AND logic
+    combined_filter = None
+    if fql_filters:
+        if len(fql_filters) == 1:
+            combined_filter = fql_filters[0]
+        else:
+            # Wrap in and() for multiple filters
+            filter_str = ", ".join(fql_filters)
+            combined_filter = f'and({filter_str})'
+
     runs = client.list_runs(
         project_name=project,
         limit=limit,
         error=error_filter,
-        filter=filter_,
+        filter=combined_filter,
         trace_id=trace_id,
         run_type=run_type,
         is_root=is_root,

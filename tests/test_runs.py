@@ -128,3 +128,82 @@ def test_runs_stats(runner):
         assert result.exit_code == 0
         assert "Error Rate" in result.output
         assert "0.1" in result.output
+
+
+def test_runs_list_with_tags(runner):
+    """Test runs list with tag filtering."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_runs.return_value = []
+
+        runner.invoke(
+            cli,
+            ["runs", "list", "--tag", "production", "--tag", "experimental"],
+        )
+
+        # Verify FQL filter was constructed correctly
+        mock_client.list_runs.assert_called_once()
+        args, kwargs = mock_client.list_runs.call_args
+        assert 'has(tags, "production")' in kwargs["filter"]
+        assert 'has(tags, "experimental")' in kwargs["filter"]
+        assert kwargs["filter"].startswith("and(")
+
+
+def test_runs_list_with_name_pattern(runner):
+    """Test runs list with name pattern filtering."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_runs.return_value = []
+
+        runner.invoke(cli, ["runs", "list", "--name-pattern", "*auth*"])
+
+        # Verify FQL search filter was constructed
+        mock_client.list_runs.assert_called_once()
+        args, kwargs = mock_client.list_runs.call_args
+        assert 'search("auth")' in kwargs["filter"]
+
+
+def test_runs_list_with_smart_filters(runner):
+    """Test runs list with smart filters."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_runs.return_value = []
+
+        # Test --slow flag
+        runner.invoke(cli, ["runs", "list", "--slow"])
+        args, kwargs = mock_client.list_runs.call_args
+        assert 'gt(latency, "5s")' in kwargs["filter"]
+
+        # Test --expensive flag
+        runner.invoke(cli, ["runs", "list", "--expensive"])
+        args, kwargs = mock_client.list_runs.call_args
+        assert 'gt(total_cost, "0.01")' in kwargs["filter"]
+
+        # Test --recent flag
+        runner.invoke(cli, ["runs", "list", "--recent"])
+        args, kwargs = mock_client.list_runs.call_args
+        assert 'gt(start_time, "' in kwargs["filter"]
+
+        # Test --today flag
+        runner.invoke(cli, ["runs", "list", "--today"])
+        args, kwargs = mock_client.list_runs.call_args
+        assert 'gt(start_time, "' in kwargs["filter"]
+
+
+def test_runs_list_combined_filters(runner):
+    """Test runs list with multiple filters combined."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_runs.return_value = []
+
+        runner.invoke(
+            cli,
+            ["runs", "list", "--tag", "prod", "--slow", "--name-pattern", "*api*"],
+        )
+
+        # Verify all filters are combined with AND
+        args, kwargs = mock_client.list_runs.call_args
+        assert 'has(tags, "prod")' in kwargs["filter"]
+        assert 'gt(latency, "5s")' in kwargs["filter"]
+        assert 'search("api")' in kwargs["filter"]
+        assert kwargs["filter"].startswith("and(")
