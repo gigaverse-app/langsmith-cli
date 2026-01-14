@@ -61,6 +61,7 @@ def parse_relative_time(time_str):
 @click.option("--reference-example-id", help="Filter runs for a specific example.")
 @click.option("--tag", multiple=True, help="Filter by tag (can specify multiple times for AND logic).")
 @click.option("--name-pattern", help="Filter by name with wildcards (e.g. '*auth*').")
+@click.option("--name-regex", help="Filter by name with regex (e.g. '^test-.*-v[0-9]+$').")
 @click.option("--slow", is_flag=True, help="Filter to slow runs (latency > 5s).")
 @click.option("--recent", is_flag=True, help="Filter to recent runs (last hour).")
 @click.option("--today", is_flag=True, help="Filter to today's runs.")
@@ -69,7 +70,7 @@ def parse_relative_time(time_str):
 @click.option("--since", help="Show runs since time (ISO format or relative like '1 hour ago').")
 @click.option("--last", help="Show runs from last duration (e.g., '24h', '7d', '30m').")
 @click.pass_context
-def list_runs(ctx, project, limit, status, filter_, trace_id, run_type, is_root, trace_filter, tree_filter, order_by, reference_example_id, tag, name_pattern, slow, recent, today, min_latency, max_latency, since, last):
+def list_runs(ctx, project, limit, status, filter_, trace_id, run_type, is_root, trace_filter, tree_filter, order_by, reference_example_id, tag, name_pattern, name_regex, slow, recent, today, min_latency, max_latency, since, last):
     """Fetch recent runs."""
     import datetime
 
@@ -165,6 +166,20 @@ def list_runs(ctx, project, limit, status, filter_, trace_id, run_type, is_root,
         order_by=order_by,
         reference_example_id=reference_example_id,
     )
+
+    # Client-side regex filtering (FQL doesn't support full regex)
+    if name_regex:
+        import re
+        try:
+            regex_pattern = re.compile(name_regex)
+        except re.error as e:
+            raise click.BadParameter(f"Invalid regex pattern: {name_regex}. Error: {e}")
+
+        # Filter runs by regex on name
+        runs = [r for r in runs if r.name and regex_pattern.search(r.name)]
+    else:
+        # Convert generator to list if no regex filtering
+        runs = list(runs)
 
     if ctx.obj.get("json"):
         import json

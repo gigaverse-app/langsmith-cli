@@ -20,17 +20,28 @@ langsmith-cli runs list --tag production --tag experimental
 
 ### Name Pattern Matching
 
-Search runs by name with wildcard support:
+Search runs by name with wildcard or regex support:
 
 ```bash
-# Find runs with "auth" in the name
+# Wildcard matching - Find runs with "auth" in the name
 langsmith-cli runs list --name-pattern "*auth*"
 
-# Find runs starting with "test-"
+# Wildcard matching - Find runs starting with "test-"
 langsmith-cli runs list --name-pattern "test-*"
+
+# Regex matching - Find runs matching pattern "test-auth-v[0-9]+"
+langsmith-cli runs list --name-regex "test-auth-v[0-9]+"
+
+# Regex with anchors - Find runs starting with "auth"
+langsmith-cli runs list --name-regex "^auth"
+
+# Regex for version patterns
+langsmith-cli runs list --name-regex "^prod-.*-v[0-9]+$"
 ```
 
-**How it works**: Converts wildcards to FQL `search()` function for server-side filtering.
+**How it works**:
+- `--name-pattern`: Converts wildcards to FQL `search()` function for server-side filtering
+- `--name-regex`: Uses full Python regex with client-side filtering (FQL doesn't support full regex)
 
 ### Smart Filters (Quick Presets)
 
@@ -125,6 +136,23 @@ langsmith-cli runs list \
 
 **How it works**: Multiple filters are combined with FQL `and()` operator.
 
+## Projects Support
+
+Projects also support pattern and regex filtering:
+
+```bash
+# Wildcard matching - Find projects with "prod" in the name
+langsmith-cli projects list --name-pattern "*prod*"
+
+# Regex matching - Find projects matching versioned pattern
+langsmith-cli projects list --name-regex "^prod-.*-v[0-9]+$"
+
+# Find projects starting with "staging"
+langsmith-cli projects list --name-regex "^staging"
+```
+
+**How it works**: Both wildcards and regex use client-side filtering after fetching from API.
+
 ## Implementation Details
 
 ### FQL Translation
@@ -217,11 +245,17 @@ langsmith-cli runs list --since "2024-01-14T15:30:00Z" --status error
 ### Pattern-Based Debugging
 
 ```bash
-# Find authentication-related runs with errors
+# Find authentication-related runs with errors (wildcard)
 langsmith-cli runs list --name-pattern "*auth*" --status error
 
-# Search for checkout flows with specific latency
+# Search for checkout flows with specific latency (wildcard)
 langsmith-cli runs list --name-pattern "*checkout*" --min-latency 3s
+
+# Find versioned test runs with errors (regex)
+langsmith-cli runs list --name-regex "^test-.*-v[0-9]+$" --status error
+
+# Find specific service endpoints (regex)
+langsmith-cli runs list --name-regex "^(api|web)-service" --recent
 ```
 
 ## Future Enhancements

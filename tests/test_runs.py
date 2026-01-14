@@ -278,3 +278,67 @@ def test_runs_list_with_since_iso(runner):
 
         args, kwargs = mock_client.list_runs.call_args
         assert 'gt(start_time, "2024-01-14T10:00:00' in kwargs["filter"]
+
+
+def test_runs_list_with_name_regex(runner):
+    """Test runs list with --name-regex filter."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        # Create mock runs with different names
+        run1 = MagicMock()
+        run1.name = "test-auth-v1"
+        run1.id = "1"
+        run1.status = "success"
+        run1.latency = 0.5
+
+        run2 = MagicMock()
+        run2.name = "test-auth-v2"
+        run2.id = "2"
+        run2.status = "success"
+        run2.latency = 0.6
+
+        run3 = MagicMock()
+        run3.name = "prod-checkout"
+        run3.id = "3"
+        run3.status = "success"
+        run3.latency = 0.7
+
+        mock_client.list_runs.return_value = iter([run1, run2, run3])
+
+        # Filter with regex for "test-auth-v[0-9]+"
+        result = runner.invoke(cli, ["runs", "list", "--name-regex", "test-auth-v[0-9]+"])
+
+        assert result.exit_code == 0
+        # Should match run1 and run2, but not run3
+        assert "test-auth-v1" in result.output
+        assert "test-auth-v2" in result.output
+        assert "prod-checkout" not in result.output
+
+
+def test_runs_list_with_name_regex_anchors(runner):
+    """Test runs list with --name-regex using anchors."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        run1 = MagicMock()
+        run1.name = "auth-service"
+        run1.id = "1"
+        run1.status = "success"
+        run1.latency = 0.5
+
+        run2 = MagicMock()
+        run2.name = "test-auth"
+        run2.id = "2"
+        run2.status = "success"
+        run2.latency = 0.6
+
+        mock_client.list_runs.return_value = iter([run1, run2])
+
+        # Filter with regex starting with "^auth"
+        result = runner.invoke(cli, ["runs", "list", "--name-regex", "^auth"])
+
+        assert result.exit_code == 0
+        # Should only match run1
+        assert "auth-service" in result.output
+        assert "test-auth" not in result.output

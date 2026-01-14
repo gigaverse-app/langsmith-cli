@@ -59,3 +59,61 @@ def test_projects_create(runner):
         result = runner.invoke(cli, ["projects", "create", "created-proj"])
         assert result.exit_code == 0
         assert "Created project created-proj" in result.output
+
+
+def test_projects_list_with_name_pattern(runner):
+    """Test projects list with --name-pattern filter."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        p1 = MagicMock()
+        p1.name = "prod-api-v1"
+        p1.id = "1"
+
+        p2 = MagicMock()
+        p2.name = "prod-web-v1"
+        p2.id = "2"
+
+        p3 = MagicMock()
+        p3.name = "staging-api"
+        p3.id = "3"
+
+        mock_client.list_projects.return_value = iter([p1, p2, p3])
+
+        # Filter with pattern "*prod*"
+        result = runner.invoke(cli, ["projects", "list", "--name-pattern", "*prod*"])
+
+        assert result.exit_code == 0
+        # Should match p1 and p2, but not p3
+        assert "prod-api-v1" in result.output
+        assert "prod-web-v1" in result.output
+        assert "staging-api" not in result.output
+
+
+def test_projects_list_with_name_regex(runner):
+    """Test projects list with --name-regex filter."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        p1 = MagicMock()
+        p1.name = "prod-api-v1"
+        p1.id = "1"
+
+        p2 = MagicMock()
+        p2.name = "prod-api-v2"
+        p2.id = "2"
+
+        p3 = MagicMock()
+        p3.name = "staging-api"
+        p3.id = "3"
+
+        mock_client.list_projects.return_value = iter([p1, p2, p3])
+
+        # Filter with regex "^prod-.*-v[0-9]+"
+        result = runner.invoke(cli, ["projects", "list", "--name-regex", "^prod-.*-v[0-9]+"])
+
+        assert result.exit_code == 0
+        # Should match p1 and p2, but not p3
+        assert "prod-api-v1" in result.output
+        assert "prod-api-v2" in result.output
+        assert "staging-api" not in result.output
