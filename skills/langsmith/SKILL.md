@@ -7,9 +7,26 @@ description: Inspect and manage LangSmith traces, runs, datasets, and prompts us
 
 Use this tool to debug AI chains, inspect past runs, or manage datasets and prompts in LangSmith.
 
-> **Installation:**
-> 1. Install CLI: `uv tool install langsmith-cli` (or `pip install langsmith-cli`)
-> 2. Add skill: `/plugin marketplace add gigaverse-app/langsmith-cli`
+## Prerequisites
+
+**The CLI must be installed before using this skill.**
+
+**Recommended Installation:**
+```bash
+uv tool install langsmith-cli
+```
+
+**Alternative Methods:**
+- Standalone installer (curl/PowerShell)
+- pip install
+- From source
+
+See **[Installation Guide](references/installation.md)** for all installation methods, troubleshooting, and platform-specific instructions.
+
+**After CLI installation, add this skill:**
+```bash
+/plugin marketplace add gigaverse-app/langsmith-cli
+```
 
 ## ⚡ Efficient Usage Guidelines (READ THIS)
 1. **Machine Output:** ALWAYS add `--json` as the FIRST argument to `langsmith-cli` (e.g. `langsmith-cli --json runs list ...`) to get parseable output.
@@ -52,6 +69,7 @@ Use this tool to debug AI chains, inspect past runs, or manage datasets and prom
 
 For complete documentation, see:
 
+- **[Installation Guide](references/installation.md)** - All installation methods, troubleshooting, and platform notes
 - **[Quick Reference](docs/reference.md)** - Fast command lookup
 - **[Real-World Examples](docs/examples.md)** - Complete workflows and use cases
 

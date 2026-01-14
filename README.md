@@ -21,8 +21,11 @@
 >
 > **Step 1:** Install the CLI tool
 > ```bash
+> # Quick install (Linux/macOS)
+> curl -sSL https://raw.githubusercontent.com/langchain-ai/langsmith-cli/main/scripts/install.sh | sh
+>
+> # Or use uv
 > uv tool install langsmith-cli
-> # or: pip install langsmith-cli
 > ```
 >
 > **Step 2:** Add the skill to Claude Code
@@ -102,7 +105,25 @@ Every LangSmith resource at your fingertips:
 
 ## 🚀 Installation
 
-### Using `uv` (Recommended)
+### Quick Install (Recommended)
+
+**Linux/macOS:**
+```bash
+curl -sSL https://raw.githubusercontent.com/langchain-ai/langsmith-cli/main/scripts/install.sh | sh
+```
+
+**Windows:**
+```powershell
+iwr -useb https://raw.githubusercontent.com/langchain-ai/langsmith-cli/main/scripts/install.ps1 | iex
+```
+
+This standalone installer:
+- Creates an isolated environment (no conflicts)
+- Automatically adds `langsmith-cli` to your PATH
+- Works without manually installing Python packages
+- Requires Python 3.12+
+
+### Using `uv`
 ```bash
 uv tool install langsmith-cli
 ```
