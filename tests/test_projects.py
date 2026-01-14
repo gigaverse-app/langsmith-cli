@@ -245,3 +245,45 @@ def test_projects_list_with_yaml_format(runner):
         # YAML should contain the data
         assert "name: test-project" in result.output
         assert "id:" in result.output
+
+
+def test_projects_list_with_empty_results(runner):
+    """Test projects list with no results."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_projects.return_value = iter([])
+
+        result = runner.invoke(cli, ["projects", "list"])
+
+        assert result.exit_code == 0
+        assert "No projects found" in result.output
+
+
+def test_projects_list_with_invalid_regex(runner):
+    """Test that invalid regex raises error."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        p1 = MagicMock()
+        p1.name = "test"
+        p1.id = "1"
+        mock_client.list_projects.return_value = iter([p1])
+
+        # Invalid regex pattern
+        result = runner.invoke(cli, ["projects", "list", "--name-regex", "[invalid("])
+        assert result.exit_code != 0
+        assert "Invalid regex pattern" in result.output
+
+
+def test_projects_create_already_exists(runner):
+    """Test creating a project that already exists."""
+    from langsmith.utils import LangSmithConflictError
+
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.create_project.side_effect = LangSmithConflictError("Project already exists")
+
+        result = runner.invoke(cli, ["projects", "create", "existing-proj"])
+
+        assert result.exit_code == 0
+        assert "already exists" in result.output

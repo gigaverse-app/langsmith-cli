@@ -520,3 +520,73 @@ def test_runs_search_with_output_contains(runner):
         args, kwargs = mock_client.list_runs.call_args
         assert 'search("error")' in kwargs["filter"]
         assert 'search("timeout")' in kwargs["filter"]
+
+
+def test_runs_list_with_invalid_duration_format(runner):
+    """Test that invalid duration format raises error."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_runs.return_value = []
+
+        # Invalid duration - missing unit
+        result = runner.invoke(cli, ["runs", "list", "--min-latency", "5"])
+        assert result.exit_code != 0
+        assert "Invalid duration format" in result.output
+
+        # Invalid duration - invalid unit
+        result = runner.invoke(cli, ["runs", "list", "--max-latency", "5x"])
+        assert result.exit_code != 0
+        assert "Invalid duration format" in result.output
+
+
+def test_runs_list_with_invalid_time_format(runner):
+    """Test that invalid time format raises error."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_runs.return_value = []
+
+        # Invalid time format
+        result = runner.invoke(cli, ["runs", "list", "--last", "5x"])
+        assert result.exit_code != 0
+        assert "Invalid time format" in result.output
+
+
+def test_runs_list_with_invalid_since_format(runner):
+    """Test that invalid since format raises error."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_runs.return_value = []
+
+        # Invalid since format (neither ISO nor relative)
+        result = runner.invoke(cli, ["runs", "list", "--since", "invalid"])
+        assert result.exit_code != 0
+        assert "Invalid --since format" in result.output
+
+
+def test_runs_list_with_empty_results(runner):
+    """Test runs list with no results."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_runs.return_value = []
+
+        result = runner.invoke(cli, ["runs", "list"])
+
+        assert result.exit_code == 0
+        assert "No runs found" in result.output
+
+
+def test_runs_list_with_invalid_regex(runner):
+    """Test that invalid regex raises error."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_run = MagicMock()
+        mock_run.name = "test"
+        mock_run.id = "1"
+        mock_run.status = "success"
+        mock_run.latency = 1.0
+        mock_client.list_runs.return_value = [mock_run]
+
+        # Invalid regex pattern
+        result = runner.invoke(cli, ["runs", "list", "--name-regex", "[invalid("])
+        assert result.exit_code != 0
+        assert "Invalid regex pattern" in result.output

@@ -2,6 +2,12 @@ import click
 from rich.console import Console
 from rich.table import Table
 import langsmith
+from langsmith_cli.utils import (
+    output_formatted_data,
+    sort_items,
+    apply_regex_filter,
+    determine_output_format,
+)
 
 console = Console()
 
@@ -178,25 +184,14 @@ def list_runs(ctx, project, limit, status, filter_, trace_id, run_type, is_root,
         reference_example_id=reference_example_id,
     )
 
-    # Client-side regex filtering (FQL doesn't support full regex)
-    if name_regex:
-        import re
-        try:
-            regex_pattern = re.compile(name_regex)
-        except re.error as e:
-            raise click.BadParameter(f"Invalid regex pattern: {name_regex}. Error: {e}")
+    # Convert generator to list
+    runs = list(runs)
 
-        # Filter runs by regex on name
-        runs = [r for r in runs if r.name and regex_pattern.search(r.name)]
-    else:
-        # Convert generator to list if no regex filtering
-        runs = list(runs)
+    # Client-side regex filtering (FQL doesn't support full regex)
+    runs = apply_regex_filter(runs, name_regex, lambda r: r.name)
 
     # Client-side sorting for table output
     if sort_by and not ctx.obj.get("json"):
-        reverse = sort_by.startswith("-")
-        sort_field = sort_by.lstrip("-")
-
         # Map sort field to run attribute
         sort_key_map = {
             "name": lambda r: (r.name or "").lower(),
@@ -204,37 +199,15 @@ def list_runs(ctx, project, limit, status, filter_, trace_id, run_type, is_root,
             "latency": lambda r: r.latency if r.latency is not None else 0,
             "start_time": lambda r: r.start_time if hasattr(r, "start_time") else datetime.datetime.min,
         }
-
-        if sort_field in sort_key_map:
-            try:
-                runs = sorted(runs, key=sort_key_map[sort_field], reverse=reverse)
-            except Exception as e:
-                console.print(f"[yellow]Warning: Could not sort by {sort_field}: {e}[/yellow]")
-        else:
-            console.print(f"[yellow]Warning: Unknown sort field '{sort_field}'. Using default order.[/yellow]")
+        runs = sort_items(runs, sort_by, sort_key_map, console)
 
     # Determine output format
-    format_type = output_format
-    if not format_type:
-        format_type = "json" if ctx.obj.get("json") else "table"
+    format_type = determine_output_format(output_format, ctx.obj.get("json"))
 
     # Handle non-table formats
     if format_type != "table":
         data = [r.dict() if hasattr(r, "dict") else dict(r) for r in runs]
-
-        if format_type == "json":
-            import json
-            click.echo(json.dumps(data, default=str))
-        elif format_type == "csv":
-            import csv
-            import sys
-            if data:
-                writer = csv.DictWriter(sys.stdout, fieldnames=data[0].keys())
-                writer.writeheader()
-                writer.writerows(data)
-        elif format_type == "yaml":
-            import yaml
-            click.echo(yaml.dump(data, default_flow_style=False, sort_keys=False))
+        output_formatted_data(data, format_type)
         return
 
     table = Table(title=f"Runs ({project})")
