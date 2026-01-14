@@ -123,3 +123,43 @@ def get_run(ctx, run_id, fields):
             console.print(Syntax(formatted, "json"))
         else:
             console.print(str(v))
+
+
+@runs.command("stats")
+@click.option("--project", default="default", help="Project name.")
+@click.pass_context
+def run_stats(ctx, project):
+    """Fetch aggregated metrics for a project."""
+    client = langsmith.Client()
+    stats = client.get_run_stats(project_name=project)
+
+    if ctx.obj.get("json"):
+        import json
+
+        click.echo(json.dumps(stats, default=str))
+        return
+
+    table = Table(title=f"Stats: {project}")
+    table.add_column("Metric")
+    table.add_column("Value")
+
+    for k, v in stats.items():
+        table.add_row(k.replace("_", " ").title(), str(v))
+
+    console.print(table)
+
+
+@runs.command("open")
+@click.argument("run_id")
+@click.pass_context
+def open_run(ctx, run_id):
+    """Open a run in the LangSmith UI."""
+    import webbrowser
+
+    # Construct the URL. Note: A generic URL works if the user is logged in.
+    # The SDK also has a way to get the URL but it might require project name.
+    url = f"https://smith.langchain.com/r/{run_id}"
+
+    click.echo(f"Opening run {run_id} in browser...")
+    click.echo(f"URL: {url}")
+    webbrowser.open(url)
