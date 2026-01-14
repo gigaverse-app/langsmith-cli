@@ -297,15 +297,50 @@ def get_error_message(run: Run) -> str:
 ### When Is `Any` Acceptable?
 
 Only in these rare cases:
-1. **JSON.loads() result** (must be narrowed immediately)
-2. **Console object** (when Rich types are too heavy - use Protocol instead)
-3. **Click Context object** (Click's obj is Any - extract and narrow immediately)
+1. **JSON data being serialized/deserialized** - `dict[str, Any]` for JSON output where values can be str, int, bool, datetime, nested dicts, etc.
+2. **Click Context object** (Click's obj is Any - extract and narrow immediately)
 
-**Even then, narrow immediately:**
+**For everything else, use strong types:**
+- **Generic functions**: Use `TypeVar` instead of `Any`
+  ```python
+  # ❌ WRONG
+  def sort_items(items: list, key_func: Callable[[Any], Any]) -> list:
+      ...
+
+  # ✅ CORRECT
+  T = TypeVar('T')
+  K = TypeVar('K')
+  def sort_items(items: list[T], key_func: Callable[[T], K]) -> list[T]:
+      ...
+  ```
+
+- **Console objects**: Use Protocol or actual type, not `Any`
+  ```python
+  # ❌ WRONG
+  def print_msg(console: Any) -> None:
+      ...
+
+  # ✅ CORRECT (Protocol)
+  class ConsoleProtocol(Protocol):
+      def print(self, *args: Any, **kwargs: Any) -> None: ...
+
+  def print_msg(console: ConsoleProtocol) -> None:
+      ...
+
+  # ✅ CORRECT (Actual type)
+  from rich.console import Console
+  def print_msg(console: Console) -> None:
+      ...
+  ```
+
+**Document `Any` when you must use it:**
 ```python
-def get_json_mode(ctx: click.Context) -> bool:
-    """Extract json mode from Click context."""
-    return bool(ctx.obj.get("json", False))  # Narrow Any to bool
+def output_json(data: list[dict[str, Any]]) -> None:
+    """Output JSON data.
+
+    Args:
+        data: JSON data (Any is acceptable - values can be str, int, bool, nested dicts, etc.)
+    """
 ```
 
 ### Verification

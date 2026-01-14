@@ -1,10 +1,17 @@
 """Utility functions shared across commands."""
 
-from typing import Any, Callable, TypeVar
+from typing import Any, Callable, Protocol, TypeVar
 import click
 
 T = TypeVar("T")
-K = TypeVar("K")
+
+
+class ConsoleProtocol(Protocol):
+    """Protocol for Rich Console interface - avoids heavy import."""
+
+    def print(self, *args: Any, **kwargs: Any) -> None:
+        """Print to console."""
+        ...
 
 
 def output_formatted_data(
@@ -16,7 +23,8 @@ def output_formatted_data(
     """Output data in the specified format (json, csv, yaml).
 
     Args:
-        data: list of dictionaries to output (Any is acceptable for JSON data)
+        data: List of dictionaries to output.
+              Any is acceptable - JSON values can be str, int, bool, datetime, nested dicts, etc.
         format_type: Output format ("json", "csv", "yaml")
         fields: Optional list of fields to include (for field filtering)
     """
@@ -48,7 +56,7 @@ def output_formatted_data(
         import csv
         import sys
 
-        writer = csv.dictWriter(sys.stdout, fieldnames=data[0].keys())
+        writer = csv.DictWriter(sys.stdout, fieldnames=data[0].keys())
         writer.writeheader()
         writer.writerows(data)
     elif format_type == "yaml":
@@ -60,17 +68,18 @@ def output_formatted_data(
 
 
 def sort_items(
-    items: list[Any],
+    items: list[T],
     sort_by: str | None,
-    sort_key_map: dict[str, Callable[[Any], Any]],
-    console: Any,
-) -> list[Any]:
+    sort_key_map: dict[str, Callable[[T], Any]],
+    console: ConsoleProtocol,
+) -> list[T]:
     """Sort items by a given field.
 
     Args:
-        items: list of items to sort
+        items: List of items to sort
         sort_by: Sort specification (e.g., "name" or "-name" for descending)
-        sort_key_map: dictionary mapping field names to key functions
+        sort_key_map: Dictionary mapping field names to key functions.
+                      Any is acceptable for key return type - can be str, int, datetime, etc.
         console: Rich console for printing warnings
 
     Returns:
@@ -97,14 +106,14 @@ def sort_items(
 
 
 def apply_regex_filter(
-    items: list[Any],
+    items: list[T],
     regex_pattern: str | None,
-    field_getter: Callable[[Any], str | None],
-) -> list[Any]:
+    field_getter: Callable[[T], str | None],
+) -> list[T]:
     """Apply regex filtering to a list of items.
 
     Args:
-        items: list of items to filter
+        items: List of items to filter
         regex_pattern: Regex pattern to match (None to skip filtering)
         field_getter: Function to extract the field value from an item
 
@@ -133,14 +142,14 @@ def apply_regex_filter(
 
 
 def apply_wildcard_filter(
-    items: list[Any],
+    items: list[T],
     wildcard_pattern: str | None,
-    field_getter: Callable[[Any], str | None],
-) -> list[Any]:
+    field_getter: Callable[[T], str | None],
+) -> list[T]:
     """Apply wildcard pattern filtering to a list of items.
 
     Args:
-        items: list of items to filter
+        items: List of items to filter
         wildcard_pattern: Wildcard pattern (e.g., "*prod*")
         field_getter: Function to extract the field value from an item
 
@@ -189,7 +198,7 @@ def determine_output_format(
     return "json" if json_flag else "table"
 
 
-def print_empty_result_message(console: Any, item_type: str) -> None:
+def print_empty_result_message(console: ConsoleProtocol, item_type: str) -> None:
     """Print a standardized message when no results are found.
 
     Args:
@@ -209,7 +218,8 @@ def parse_json_string(
         field_name: Name of the field being parsed (for error messages)
 
     Returns:
-        Parsed dictionary or None if input is None
+        Parsed dictionary or None if input is None.
+        Any is acceptable - JSON values can be str, int, bool, nested dicts, etc.
 
     Raises:
         click.BadParameter: If JSON parsing fails
