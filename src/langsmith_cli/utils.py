@@ -1,10 +1,13 @@
 """Utility functions shared across commands."""
 
-from typing import Any, Callable, Generic, Protocol, TypeVar, overload
+from typing import TYPE_CHECKING, Any, Callable, Generic, Protocol, TypeVar, overload
 import click
 import json
 import langsmith
 from pydantic import BaseModel, Field
+
+if TYPE_CHECKING:
+    from langsmith.schemas import Run
 
 T = TypeVar("T")
 ModelT = TypeVar("ModelT", bound=BaseModel)
@@ -573,7 +576,7 @@ def parse_comma_separated_list(input_str: str | None) -> list[str] | None:
     return [item.strip() for item in input_str.split(",")]
 
 
-def extract_model_name(run: Any, max_length: int = 20) -> str:
+def extract_model_name(run: "Run", max_length: int = 20) -> str:
     """Extract model name from a LangSmith Run object.
 
     Looks for model name in the following order:
@@ -589,7 +592,7 @@ def extract_model_name(run: Any, max_length: int = 20) -> str:
     """
     model_name = "-"
 
-    if hasattr(run, "extra") and run.extra and isinstance(run.extra, dict):
+    if run.extra and isinstance(run.extra, dict):
         # Try invocation_params first
         if "invocation_params" in run.extra:
             inv_params = run.extra["invocation_params"]
@@ -621,7 +624,49 @@ def format_token_count(tokens: int | None) -> str:
     return f"{tokens:,}" if tokens else "-"
 
 
-def build_runs_table(runs: list[Any], title: str, no_truncate: bool = False) -> Any:
+def render_run_details(
+    data: dict[str, Any],
+    console: ConsoleProtocol,
+    *,
+    title: str | None = None,
+) -> None:
+    """Render run details in human-readable format.
+
+    Reusable formatter for get_run and get_latest_run commands.
+
+    Args:
+        data: Run data dictionary (filtered fields from filter_fields())
+        console: Rich console for output
+        title: Optional title to print before details (e.g., "Latest Run")
+
+    Example:
+        >>> render_run_details(
+        ...     {"id": "123", "name": "test", "status": "success"},
+        ...     console,
+        ...     title="Latest Run"
+        ... )
+    """
+    from rich.syntax import Syntax
+
+    if title:
+        console.print(f"[bold]{title}[/bold]")
+
+    console.print(f"[bold]ID:[/bold] {data.get('id')}")
+    console.print(f"[bold]Name:[/bold] {data.get('name')}")
+
+    # Print other fields
+    for k, v in data.items():
+        if k in ["id", "name"]:
+            continue
+        console.print(f"\n[bold]{k}:[/bold]")
+        if isinstance(v, (dict, list)):
+            formatted = json_dumps(v, indent=2)
+            console.print(Syntax(formatted, "json"))
+        else:
+            console.print(str(v))
+
+
+def build_runs_table(runs: list["Run"], title: str, no_truncate: bool = False) -> Any:
     """Build a Rich table for displaying runs.
 
     Reusable table builder for runs list and view-file commands.

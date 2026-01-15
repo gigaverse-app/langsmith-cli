@@ -4,6 +4,7 @@ import json
 import click
 from rich.console import Console
 from rich.table import Table
+from langsmith.schemas import Run
 
 from langsmith_cli.utils import (
     add_project_filter_options,
@@ -26,6 +27,7 @@ from langsmith_cli.utils import (
     output_option,
     parse_duration_to_seconds,
     parse_relative_time,
+    render_run_details,
     sort_items,
     write_output_to_file,
 )
@@ -173,7 +175,7 @@ def build_multi_dimensional_fql_filter(
         return f"and({', '.join(filters)})"
 
 
-def extract_group_value(run: Any, grouping_type: str, field_name: str) -> str | None:
+def extract_group_value(run: Run, grouping_type: str, field_name: str) -> str | None:
     """Extract the group value from a run based on grouping configuration.
 
     Args:
@@ -219,7 +221,7 @@ def extract_group_value(run: Any, grouping_type: str, field_name: str) -> str | 
 
 
 def compute_metrics(
-    runs: list[Any], requested_metrics: list[str]
+    runs: list[Run], requested_metrics: list[str]
 ) -> dict[str, float | int]:
     """Compute aggregate metrics over a list of runs.
 
@@ -847,22 +849,8 @@ def get_run(ctx, run_id, fields):
         click.echo(json_dumps(data))
         return
 
-    # Human readable output
-    from rich.syntax import Syntax
-
-    console.print(f"[bold]Run ID:[/bold] {data.get('id')}")
-    console.print(f"[bold]Name:[/bold] {data.get('name')}")
-
-    # Print other fields
-    for k, v in data.items():
-        if k in ["id", "name"]:
-            continue
-        console.print(f"\n[bold]{k}:[/bold]")
-        if isinstance(v, (dict, list)):
-            formatted = json_dumps(v, indent=2)
-            console.print(Syntax(formatted, "json"))
-        else:
-            console.print(str(v))
+    # Human-readable output using shared helper
+    render_run_details(data, console)
 
 
 @runs.command("get-latest")
@@ -1018,23 +1006,8 @@ def get_latest_run(
         click.echo(json_dumps(data))
         return
 
-    # Human-readable output (reuse logic from `runs get`)
-    from rich.syntax import Syntax
-
-    console.print("[bold]Latest Run[/bold]")
-    console.print(f"[bold]ID:[/bold] {data.get('id')}")
-    console.print(f"[bold]Name:[/bold] {data.get('name')}")
-
-    # Print other fields
-    for k, v in data.items():
-        if k in ["id", "name"]:
-            continue
-        console.print(f"\n[bold]{k}:[/bold]")
-        if isinstance(v, (dict, list)):
-            formatted = json_dumps(v, indent=2)
-            console.print(Syntax(formatted, "json"))
-        else:
-            console.print(str(v))
+    # Human-readable output using shared helper
+    render_run_details(data, console, title="Latest Run")
 
 
 @runs.command("view-file")
@@ -1268,7 +1241,7 @@ def watch_runs(
 
         # Collect runs from all matching projects
         # Store runs with their project names as tuples
-        all_runs: list[tuple[str, Any]] = []
+        all_runs: list[tuple[str, Run]] = []
         failed_count = 0
         for proj_name in projects_to_watch:
             try:
