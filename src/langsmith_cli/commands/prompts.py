@@ -2,9 +2,12 @@ import click
 from rich.console import Console
 from rich.table import Table
 from langsmith_cli.utils import (
-    parse_comma_separated_list,
+    apply_exclude_filter,
+    count_option,
+    exclude_option,
     fields_option,
     get_or_create_client,
+    parse_comma_separated_list,
     render_output,
 )
 
@@ -22,14 +25,19 @@ def prompts():
 @click.option(
     "--is-public", type=bool, default=None, help="Filter by public/private status."
 )
+@exclude_option()
 @fields_option()
+@count_option()
 @click.pass_context
-def list_prompts(ctx, limit, is_public, fields):
+def list_prompts(ctx, limit, is_public, exclude, fields, count):
     """List available prompt repositories."""
     client = get_or_create_client(ctx)
     # list_prompts returns ListPromptsResponse with .repos attribute
     result = client.list_prompts(limit=limit, is_public=is_public)
     prompts_list = result.repos
+
+    # Client-side exclude filtering
+    prompts_list = apply_exclude_filter(prompts_list, exclude, lambda p: p.full_name)
 
     # Define table builder function
     def build_prompts_table(prompts):
@@ -55,6 +63,7 @@ def list_prompts(ctx, limit, is_public, fields):
         ctx,
         include_fields=include_fields,
         empty_message="No prompts found",
+        count_flag=count,
     )
 
 

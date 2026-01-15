@@ -8,8 +8,12 @@ from rich.table import Table
 from langsmith_cli.utils import (
     add_project_filter_options,
     apply_client_side_limit,
+    apply_exclude_filter,
+    build_runs_list_filter,
     build_runs_table,
+    count_option,
     determine_output_format,
+    exclude_option,
     fields_option,
     filter_fields,
     get_matching_items,
@@ -17,6 +21,8 @@ from langsmith_cli.utils import (
     get_or_create_client,
     json_dumps,
     output_formatted_data,
+    parse_duration_to_seconds,
+    parse_relative_time,
     sort_items,
 )
 
@@ -27,44 +33,6 @@ console = Console()
 def runs():
     """Inspect and filter application traces."""
     pass
-
-
-def parse_duration_to_seconds(duration_str):
-    """Parse duration string like '2s', '500ms', '1.5s' to FQL format."""
-    import re
-
-    # LangSmith FQL accepts durations like "2s", "500ms", "1.5s"
-    # Just validate format and return as-is
-    if not re.match(r"^\d+(\.\d+)?(s|ms|m|h|d)$", duration_str):
-        raise click.BadParameter(
-            f"Invalid duration format: {duration_str}. Use format like '2s', '500ms', '1.5s', '5m', '2h', '7d'"
-        )
-    return duration_str
-
-
-def parse_relative_time(time_str):
-    """Parse relative time like '24h', '7d', '30m' to datetime."""
-    import re
-    import datetime
-
-    match = re.match(r"^(\d+)(m|h|d)$", time_str)
-    if not match:
-        raise click.BadParameter(
-            f"Invalid time format: {time_str}. Use format like '30m', '24h', '7d'"
-        )
-
-    value, unit = int(match.group(1)), match.group(2)
-
-    if unit == "m":
-        delta = datetime.timedelta(minutes=value)
-    elif unit == "h":
-        delta = datetime.timedelta(hours=value)
-    elif unit == "d":
-        delta = datetime.timedelta(days=value)
-    else:
-        raise click.BadParameter(f"Unsupported time unit: {unit}")
-
-    return datetime.datetime.now(datetime.timezone.utc) - delta
 
 
 def _parse_single_grouping(grouping_str: str) -> tuple[str, str]:
@@ -397,7 +365,9 @@ def compute_metrics(
     is_flag=True,
     help="Don't truncate long fields in table output (shows full content in all columns).",
 )
+@exclude_option()
 @fields_option()
+@count_option()
 @click.pass_context
 def list_runs(
     ctx,
@@ -433,7 +403,9 @@ def list_runs(
     sort_by,
     output_format,
     no_truncate,
+    exclude,
     fields,
+    count,
 ):
     """Fetch recent runs from one or more projects.
 
@@ -543,8 +515,8 @@ def list_runs(
             combined_filter = f"and({filter_str})"
 
     # Determine if client-side filtering is needed
-    # (for run name pattern/regex matching)
-    needs_client_filtering = bool(name_regex or name_pattern)
+    # (for run name pattern/regex matching or exclude patterns)
+    needs_client_filtering = bool(name_regex or name_pattern or exclude)
 
     # If client-side filtering needed, fetch more results (but with a reasonable cap)
     # Fetching unlimited runs (None) causes severe performance issues for large projects
@@ -586,6 +558,9 @@ def list_runs(
         name_getter=lambda r: r.name or "",
     )
 
+    # Client-side exclude filtering
+    runs = apply_exclude_filter(runs, exclude, lambda r: r.name or "")
+
     # Client-side sorting for table output
     if sort_by and not ctx.obj.get("json"):
         # Map sort field to run attribute
@@ -601,6 +576,11 @@ def list_runs(
 
     # Apply user's limit AFTER all client-side filtering/sorting
     runs = apply_client_side_limit(runs, limit, needs_client_filtering)
+
+    # Handle count mode - short circuit all other output
+    if count:
+        click.echo(str(len(runs)))
+        return
 
     # Determine output format
     format_type = determine_output_format(output_format, ctx.obj.get("json"))
@@ -649,6 +629,157 @@ def get_run(ctx, run_id, fields):
     from rich.syntax import Syntax
 
     console.print(f"[bold]Run ID:[/bold] {data.get('id')}")
+    console.print(f"[bold]Name:[/bold] {data.get('name')}")
+
+    # Print other fields
+    for k, v in data.items():
+        if k in ["id", "name"]:
+            continue
+        console.print(f"\n[bold]{k}:[/bold]")
+        if isinstance(v, (dict, list)):
+            formatted = json_dumps(v, indent=2)
+            console.print(Syntax(formatted, "json"))
+        else:
+            console.print(str(v))
+
+
+@runs.command("get-latest")
+@add_project_filter_options
+@click.option(
+    "--status", type=click.Choice(["success", "error"]), help="Filter by status."
+)
+@click.option(
+    "--failed",
+    is_flag=True,
+    help="Show only failed runs (shorthand for --status error).",
+)
+@click.option(
+    "--succeeded",
+    is_flag=True,
+    help="Show only successful runs (shorthand for --status success).",
+)
+@click.option("--roots", is_flag=True, help="Get latest root trace only.")
+@click.option("--tag", multiple=True, help="Filter by tag (can specify multiple).")
+@click.option("--model", help="Filter by model name (e.g. 'gpt-4', 'claude-3').")
+@click.option("--slow", is_flag=True, help="Filter to slow runs (latency > 5s).")
+@click.option("--recent", is_flag=True, help="Filter to recent runs (last hour).")
+@click.option("--today", is_flag=True, help="Filter to today's runs.")
+@click.option("--min-latency", help="Minimum latency (e.g., '2s', '500ms').")
+@click.option("--max-latency", help="Maximum latency (e.g., '10s', '2000ms').")
+@click.option(
+    "--since", help="Show runs since time (ISO or relative like '1 hour ago')."
+)
+@click.option("--last", help="Show runs from last duration (e.g., '24h', '7d', '30m').")
+@click.option("--filter", "filter_", help="Custom FQL filter string.")
+@fields_option(
+    "Comma-separated field names (e.g., 'id,name,inputs,outputs'). Reduces context."
+)
+@click.pass_context
+def get_latest_run(
+    ctx,
+    project,
+    project_name,
+    project_name_exact,
+    project_name_pattern,
+    project_name_regex,
+    status,
+    failed,
+    succeeded,
+    roots,
+    tag,
+    model,
+    slow,
+    recent,
+    today,
+    min_latency,
+    max_latency,
+    since,
+    last,
+    filter_,
+    fields,
+):
+    """Get the most recent run from a project.
+
+    This is a convenience command that fetches the latest run matching your filters,
+    eliminating the need for piping `runs list` into `jq` and then `runs get`.
+
+    Examples:
+        # Get latest run with just inputs/outputs
+        langsmith-cli --json runs get-latest --project my-project --fields inputs,outputs
+
+        # Get latest successful run
+        langsmith-cli --json runs get-latest --project my-project --succeeded
+
+        # Get latest error from production projects
+        langsmith-cli --json runs get-latest --project-name-pattern "prd/*" --failed --fields id,name,error
+
+        # Get latest slow run from last hour
+        langsmith-cli --json runs get-latest --project my-project --slow --recent --fields name,latency
+    """
+    client = get_or_create_client(ctx)
+
+    # Get matching projects
+    projects_to_query = get_matching_projects(
+        client,
+        project=project,
+        name=project_name,
+        name_exact=project_name_exact,
+        name_pattern=project_name_pattern,
+        name_regex=project_name_regex,
+    )
+
+    # Build filter using shared helper
+    combined_filter, error_filter = build_runs_list_filter(
+        filter_=filter_,
+        status=status,
+        failed=failed,
+        succeeded=succeeded,
+        tag=tag,
+        model=model,
+        slow=slow,
+        recent=recent,
+        today=today,
+        min_latency=min_latency,
+        max_latency=max_latency,
+        since=since,
+        last=last,
+    )
+
+    # Search projects in order until we find a run
+    latest_run = None
+    for proj_name in projects_to_query:
+        try:
+            runs_iter = client.list_runs(
+                project_name=proj_name,
+                limit=1,
+                error=error_filter,
+                filter=combined_filter,
+                is_root=roots,
+                order_by="-start_time",
+            )
+            latest_run = next(runs_iter, None)
+            if latest_run:
+                break  # Found a run, stop searching
+        except Exception:
+            # Skip projects that fail
+            continue
+
+    if not latest_run:
+        console.print("[yellow]No runs found matching the specified filters[/yellow]")
+        raise click.Abort()
+
+    # Use shared field filtering
+    data = filter_fields(latest_run, fields)
+
+    if ctx.obj.get("json"):
+        click.echo(json_dumps(data))
+        return
+
+    # Human-readable output (reuse logic from `runs get`)
+    from rich.syntax import Syntax
+
+    console.print("[bold]Latest Run[/bold]")
+    console.print(f"[bold]ID:[/bold] {data.get('id')}")
     console.print(f"[bold]Name:[/bold] {data.get('name')}")
 
     # Print other fields

@@ -2484,3 +2484,199 @@ def test_runs_view_file_with_fields_preserves_hebrew(runner, tmp_path):
 
     # Verify no Unicode escaping
     assert "\\u05" not in result.output
+
+
+def test_runs_get_latest_basic(runner):
+    """Test basic runs get-latest command."""
+    from conftest import create_run
+
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        run = create_run(
+            name="Latest Run", id_str="12345678-1234-5678-1234-567812345678"
+        )
+        mock_client.list_runs.return_value = iter([run])
+
+        result = runner.invoke(cli, ["runs", "get-latest", "--project", "test"])
+        assert result.exit_code == 0
+        assert "Latest Run" in result.output
+        assert "12345678-1234-5678-1234-567812345678" in result.output
+
+
+def test_runs_get_latest_json_output(runner):
+    """Test runs get-latest with JSON output."""
+    from conftest import create_run
+
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        run = create_run(name="Latest Run")
+        mock_client.list_runs.return_value = iter([run])
+
+        result = runner.invoke(
+            cli, ["--json", "runs", "get-latest", "--project", "test"]
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["name"] == "Latest Run"
+
+
+def test_runs_get_latest_with_fields(runner):
+    """Test runs get-latest with --fields option."""
+    from conftest import create_run
+
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        run = create_run(
+            name="Latest Run",
+            inputs={"text": "test input"},
+            outputs={"response": "test output"},
+        )
+        mock_client.list_runs.return_value = iter([run])
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "get-latest",
+                "--project",
+                "test",
+                "--fields",
+                "inputs,outputs",
+            ],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert "inputs" in data
+        assert "outputs" in data
+        assert data["inputs"]["text"] == "test input"
+        # Should not include other fields like 'id', 'name'
+        assert "id" not in data
+        assert "name" not in data
+
+
+def test_runs_get_latest_with_status_filter(runner):
+    """Test runs get-latest with --failed flag."""
+    from conftest import create_run
+
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        run = create_run(name="Failed Run", error="Test error")
+        mock_client.list_runs.return_value = iter([run])
+
+        result = runner.invoke(
+            cli, ["--json", "runs", "get-latest", "--project", "test", "--failed"]
+        )
+        assert result.exit_code == 0
+        # Verify error filter was passed to API
+        mock_client.list_runs.assert_called_once()
+        call_kwargs = mock_client.list_runs.call_args[1]
+        assert call_kwargs["error"] is True
+
+
+def test_runs_get_latest_with_succeeded_flag(runner):
+    """Test runs get-latest with --succeeded flag."""
+    from conftest import create_run
+
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        run = create_run(name="Success Run")
+        mock_client.list_runs.return_value = iter([run])
+
+        result = runner.invoke(
+            cli, ["--json", "runs", "get-latest", "--project", "test", "--succeeded"]
+        )
+        assert result.exit_code == 0
+        # Verify error filter was passed to API
+        call_kwargs = mock_client.list_runs.call_args[1]
+        assert call_kwargs["error"] is False
+
+
+def test_runs_get_latest_with_roots_flag(runner):
+    """Test runs get-latest with --roots flag."""
+    from conftest import create_run
+
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        run = create_run(name="Root Run")
+        mock_client.list_runs.return_value = iter([run])
+
+        result = runner.invoke(
+            cli, ["--json", "runs", "get-latest", "--project", "test", "--roots"]
+        )
+        assert result.exit_code == 0
+        # Verify is_root was passed to API
+        call_kwargs = mock_client.list_runs.call_args[1]
+        assert call_kwargs["is_root"] is True
+
+
+def test_runs_get_latest_no_runs_found(runner):
+    """Test runs get-latest when no runs match filters."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_runs.return_value = iter([])  # Empty iterator
+
+        result = runner.invoke(
+            cli, ["runs", "get-latest", "--project", "test", "--failed"]
+        )
+        assert result.exit_code == 1
+        assert "No runs found" in result.output
+
+
+def test_runs_get_latest_with_multiple_projects(runner):
+    """Test runs get-latest with project pattern searching multiple projects."""
+    from conftest import create_run, create_project
+
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        # First project has no runs, second has a run - use real Pydantic models
+        mock_client.list_projects.return_value = [
+            create_project(name="prd/project1"),
+            create_project(name="prd/project2"),
+        ]
+
+        def list_runs_side_effect(**kwargs):
+            if kwargs["project_name"] == "prd/project1":
+                return iter([])  # No runs
+            else:
+                return iter([create_run(name="Run from project2")])
+
+        mock_client.list_runs.side_effect = list_runs_side_effect
+
+        result = runner.invoke(
+            cli, ["--json", "runs", "get-latest", "--project-name-pattern", "prd/*"]
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["name"] == "Run from project2"
+
+
+def test_runs_get_latest_with_tag_filter(runner):
+    """Test runs get-latest with --tag filter."""
+    from conftest import create_run
+
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        run = create_run(name="Tagged Run", tags=["prod", "critical"])
+        mock_client.list_runs.return_value = iter([run])
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "get-latest",
+                "--project",
+                "test",
+                "--tag",
+                "prod",
+                "--tag",
+                "critical",
+            ],
+        )
+        assert result.exit_code == 0
+        # Verify filter was built correctly with tags
+        call_kwargs = mock_client.list_runs.call_args[1]
+        assert call_kwargs["filter"] is not None
+        assert 'has(tags, "prod")' in call_kwargs["filter"]
+        assert 'has(tags, "critical")' in call_kwargs["filter"]

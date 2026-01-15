@@ -3,11 +3,14 @@ from rich.console import Console
 from rich.table import Table
 import os
 from langsmith_cli.utils import (
-    parse_json_string,
-    parse_comma_separated_list,
+    apply_exclude_filter,
+    count_option,
+    exclude_option,
     fields_option,
     filter_fields,
     get_or_create_client,
+    parse_comma_separated_list,
+    parse_json_string,
     render_output,
     safe_model_dump,
 )
@@ -28,10 +31,21 @@ def datasets():
 @click.option("--name", "dataset_name", help="Exact dataset name match.")
 @click.option("--name-contains", help="Dataset name substring search.")
 @click.option("--metadata", help="Filter by metadata (JSON string).")
+@exclude_option()
 @fields_option()
+@count_option()
 @click.pass_context
 def list_datasets(
-    ctx, dataset_ids, limit, data_type, dataset_name, name_contains, metadata, fields
+    ctx,
+    dataset_ids,
+    limit,
+    data_type,
+    dataset_name,
+    name_contains,
+    metadata,
+    exclude,
+    fields,
+    count,
 ):
     """List all available datasets."""
     client = get_or_create_client(ctx)
@@ -55,6 +69,9 @@ def list_datasets(
 
     datasets_gen = client.list_datasets(**list_kwargs)
     datasets_list = list(datasets_gen)
+
+    # Client-side exclude filtering
+    datasets_list = apply_exclude_filter(datasets_list, exclude, lambda d: d.name)
 
     # Define table builder function
     def build_datasets_table(datasets):
@@ -80,6 +97,7 @@ def list_datasets(
         ctx,
         include_fields=include_fields,
         empty_message="No datasets found",
+        count_flag=count,
     )
 
 

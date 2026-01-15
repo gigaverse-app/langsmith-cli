@@ -127,6 +127,110 @@ def fields_option(
     )
 
 
+def count_option(
+    help_text: str = "Output only the count of results (integer). Useful for scripting and quick checks.",
+) -> Any:
+    """Reusable Click option decorator for --count flag.
+
+    Use this decorator on all list commands to provide consistent count output.
+    When enabled, outputs only an integer count instead of full results.
+
+    Args:
+        help_text: Custom help text for the option
+
+    Returns:
+        Click option decorator
+
+    Example:
+        @click.command()
+        @count_option()
+        @click.pass_context
+        def list_items(ctx, count):
+            client = get_or_create_client(ctx)
+            items = list(client.list_items())
+            if count:
+                click.echo(str(len(items)))
+                return
+            # ... normal output
+    """
+    return click.option(
+        "--count",
+        is_flag=True,
+        default=False,
+        help=help_text,
+    )
+
+
+def exclude_option(
+    help_text: str = "Exclude items containing this substring (can be specified multiple times). Case-sensitive.",
+) -> Any:
+    """Reusable Click option decorator for --exclude flag.
+
+    Use this decorator on all list commands with name filtering to provide
+    consistent exclusion filtering. Can be specified multiple times.
+
+    Args:
+        help_text: Custom help text for the option
+
+    Returns:
+        Click option decorator
+
+    Example:
+        @click.command()
+        @exclude_option()
+        @click.pass_context
+        def list_items(ctx, exclude):
+            client = get_or_create_client(ctx)
+            items = list(client.list_items())
+            items = apply_exclude_filter(items, exclude, lambda i: i.name)
+            # ... render output
+    """
+    return click.option(
+        "--exclude",
+        multiple=True,
+        default=(),
+        help=help_text,
+    )
+
+
+def apply_exclude_filter(
+    items: list[T],
+    exclude_patterns: tuple[str, ...],
+    name_getter: Callable[[T], str],
+) -> list[T]:
+    """Apply exclusion filters to a list of items.
+
+    Filters out items whose names contain any of the exclude patterns.
+    Uses simple substring matching (case-sensitive).
+
+    Args:
+        items: List of items to filter
+        exclude_patterns: Tuple of patterns to exclude
+        name_getter: Function to get name from item
+
+    Returns:
+        Filtered list of items
+
+    Example:
+        projects = apply_exclude_filter(
+            projects,
+            ("smoke-test", "temp"),
+            lambda p: p.name
+        )
+    """
+    if not exclude_patterns:
+        return items
+
+    filtered_items = []
+    for item in items:
+        name = name_getter(item)
+        # Exclude if name contains any of the exclude patterns
+        if not any(pattern in name for pattern in exclude_patterns):
+            filtered_items.append(item)
+
+    return filtered_items
+
+
 class ConsoleProtocol(Protocol):
     """Protocol for Rich Console interface - avoids heavy import."""
 
@@ -580,6 +684,7 @@ def render_output(
     include_fields: set[str] | None = None,
     empty_message: str = "No results found",
     output_format: str | None = None,
+    count_flag: bool = False,
 ) -> None:
     """Unified output renderer for all output formats (JSON, CSV, YAML, Table).
 
@@ -594,6 +699,7 @@ def render_output(
         include_fields: Optional set of fields to include in output
         empty_message: Message to show when data is empty
         output_format: Explicit format override ("json", "csv", "yaml", "table")
+        count_flag: If True, output only the count (integer)
 
     Example:
         def build_table(projects):
@@ -609,6 +715,11 @@ def render_output(
     """
     # Normalize to list
     items = data if isinstance(data, list) else [data] if data else []
+
+    # Handle count mode - short circuit all other output
+    if count_flag:
+        click.echo(str(len(items)))
+        return
 
     # Determine output format
     format_type = determine_output_format(output_format, ctx.obj.get("json"))
@@ -817,6 +928,44 @@ def get_matching_projects(
     return []
 
 
+def parse_duration_to_seconds(duration_str: str) -> str:
+    """Parse duration string like '2s', '500ms', '1.5s' to FQL format."""
+    import re
+
+    # LangSmith FQL accepts durations like "2s", "500ms", "1.5s"
+    # Just validate format and return as-is
+    if not re.match(r"^\d+(\.\d+)?(s|ms|m|h|d)$", duration_str):
+        raise click.BadParameter(
+            f"Invalid duration format: {duration_str}. Use format like '2s', '500ms', '1.5s', '5m', '2h', '7d'"
+        )
+    return duration_str
+
+
+def parse_relative_time(time_str: str) -> Any:
+    """Parse relative time like '24h', '7d', '30m' to datetime."""
+    import re
+    import datetime
+
+    match = re.match(r"^(\d+)(m|h|d)$", time_str)
+    if not match:
+        raise click.BadParameter(
+            f"Invalid time format: {time_str}. Use format like '30m', '24h', '7d'"
+        )
+
+    value, unit = int(match.group(1)), match.group(2)
+
+    if unit == "m":
+        delta = datetime.timedelta(minutes=value)
+    elif unit == "h":
+        delta = datetime.timedelta(hours=value)
+    elif unit == "d":
+        delta = datetime.timedelta(days=value)
+    else:
+        raise click.BadParameter(f"Unsupported time unit: {unit}")
+
+    return datetime.datetime.now(datetime.timezone.utc) - delta
+
+
 def add_project_filter_options(func: Callable[..., Any]) -> Callable[..., Any]:
     """Decorator to add universal project filtering options to a command.
 
@@ -865,3 +1014,133 @@ def add_project_filter_options(func: Callable[..., Any]) -> Callable[..., Any]:
         help="Project name (default fallback if no other filters specified).",
     )(func)
     return func
+
+
+def build_runs_list_filter(
+    filter_: str | None = None,
+    status: str | None = None,
+    failed: bool = False,
+    succeeded: bool = False,
+    tag: tuple[str, ...] = (),
+    model: str | None = None,
+    slow: bool = False,
+    recent: bool = False,
+    today: bool = False,
+    min_latency: str | None = None,
+    max_latency: str | None = None,
+    since: str | None = None,
+    last: str | None = None,
+) -> tuple[str | None, bool | None]:
+    """Build FQL filter string and error filter from command options.
+
+    This is a canonical helper that consolidates all run filtering logic,
+    shared between `runs list` and `runs get-latest` commands.
+
+    Args:
+        filter_: User's custom FQL filter string
+        status: Status filter ("success" or "error")
+        failed: Show only failed runs (equivalent to status="error")
+        succeeded: Show only successful runs (equivalent to status="success")
+        tag: Tuple of tags (AND logic - all must be present)
+        model: Model name to search for
+        slow: Filter to slow runs (latency > 5s)
+        recent: Filter to recent runs (last hour)
+        today: Filter to today's runs
+        min_latency: Minimum latency (e.g., '2s', '500ms')
+        max_latency: Maximum latency (e.g., '10s', '2000ms')
+        since: Show runs since time (ISO or relative like '1 hour ago')
+        last: Show runs from last duration (e.g., '24h', '7d')
+
+    Returns:
+        Tuple of (combined_filter, error_filter)
+        - combined_filter: FQL filter string or None
+        - error_filter: Boolean error filter or None
+
+    Example:
+        >>> filter_str, error_filter = build_runs_list_filter(
+        ...     status="error",
+        ...     tag=("prod", "critical"),
+        ...     min_latency="5s"
+        ... )
+        >>> print(filter_str)
+        and(has(tags, "prod"), has(tags, "critical"), gt(latency, "5s"))
+        >>> print(error_filter)
+        True
+    """
+    import datetime
+
+    # Handle status filtering with multiple options
+    error_filter = None
+    if status == "error" or failed:
+        error_filter = True
+    elif status == "success" or succeeded:
+        error_filter = False
+
+    # Build FQL filter from smart flags
+    fql_filters = []
+
+    # Add user's custom filter first
+    if filter_:
+        fql_filters.append(filter_)
+
+    # Tag filtering (AND logic - all tags must be present)
+    if tag:
+        for t in tag:
+            fql_filters.append(f'has(tags, "{t}")')
+
+    # Model filtering (search in model-related fields)
+    if model:
+        fql_filters.append(f'search("{model}")')
+
+    # Smart filters
+    if slow:
+        fql_filters.append('gt(latency, "5s")')
+
+    if recent:
+        one_hour_ago = datetime.datetime.now(
+            datetime.timezone.utc
+        ) - datetime.timedelta(hours=1)
+        fql_filters.append(f'gt(start_time, "{one_hour_ago.isoformat()}")')
+
+    if today:
+        today_start = datetime.datetime.now(datetime.timezone.utc).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        fql_filters.append(f'gt(start_time, "{today_start.isoformat()}")')
+
+    # Flexible latency filters
+    if min_latency:
+        duration = parse_duration_to_seconds(min_latency)
+        fql_filters.append(f'gt(latency, "{duration}")')
+
+    if max_latency:
+        duration = parse_duration_to_seconds(max_latency)
+        fql_filters.append(f'lt(latency, "{duration}")')
+
+    # Flexible time filters
+    if since:
+        try:
+            timestamp = datetime.datetime.fromisoformat(since.replace("Z", "+00:00"))
+        except Exception:
+            try:
+                timestamp = parse_relative_time(since)
+            except Exception:
+                raise click.BadParameter(
+                    f"Invalid --since format: {since}. Use ISO format or relative time"
+                )
+        fql_filters.append(f'gt(start_time, "{timestamp.isoformat()}")')
+
+    if last:
+        timestamp = parse_relative_time(last)
+        fql_filters.append(f'gt(start_time, "{timestamp.isoformat()}")')
+
+    # Combine all filters with AND logic
+    combined_filter = None
+    if fql_filters:
+        if len(fql_filters) == 1:
+            combined_filter = fql_filters[0]
+        else:
+            filter_str = ", ".join(fql_filters)
+            combined_filter = f"and({filter_str})"
+
+    return combined_filter, error_filter

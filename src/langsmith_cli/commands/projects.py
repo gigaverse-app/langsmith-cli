@@ -5,10 +5,13 @@ from langsmith_cli.utils import (
     sort_items,
     apply_regex_filter,
     apply_wildcard_filter,
+    apply_exclude_filter,
     apply_client_side_limit,
     extract_wildcard_search_term,
     extract_regex_search_term,
     fields_option,
+    count_option,
+    exclude_option,
     render_output,
     get_or_create_client,
 )
@@ -29,6 +32,7 @@ def projects():
 @click.option(
     "--name-regex", help="Filter by name with regex (e.g. '^prod-.*-v[0-9]+$')."
 )
+@exclude_option()
 @click.option(
     "--reference-dataset-id", help="Filter experiments for a dataset (by ID)."
 )
@@ -48,6 +52,7 @@ def projects():
     help="Output format (default: table, or json if --json flag used).",
 )
 @fields_option()
+@count_option()
 @click.pass_context
 def list_projects(
     ctx,
@@ -55,12 +60,14 @@ def list_projects(
     name_,
     name_pattern,
     name_regex,
+    exclude,
     reference_dataset_id,
     reference_dataset_name,
     has_runs,
     sort_by,
     output_format,
     fields,
+    count,
 ):
     """List all projects."""
 
@@ -91,6 +98,10 @@ def list_projects(
     if has_runs:
         needs_client_filtering = True
 
+    # If exclude patterns specified, need client-side filtering
+    if exclude:
+        needs_client_filtering = True
+
     # Determine API limit: if client-side filtering needed, fetch more results
     # Otherwise use the user's limit directly
     api_limit = None if needs_client_filtering else limit
@@ -111,6 +122,9 @@ def list_projects(
 
     # Client-side regex filtering
     projects_list = apply_regex_filter(projects_list, name_regex, lambda p: p.name)
+
+    # Client-side exclude filtering
+    projects_list = apply_exclude_filter(projects_list, exclude, lambda p: p.name)
 
     # Filter by projects with runs
     if has_runs:
@@ -160,6 +174,7 @@ def list_projects(
         include_fields=include_fields,
         empty_message="No projects found",
         output_format=output_format,
+        count_flag=count,
     )
 
 

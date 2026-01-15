@@ -2,11 +2,14 @@ import click
 from rich.console import Console
 from rich.table import Table
 from langsmith_cli.utils import (
-    parse_json_string,
-    parse_comma_separated_list,
+    apply_exclude_filter,
+    count_option,
+    exclude_option,
     fields_option,
     filter_fields,
     get_or_create_client,
+    parse_comma_separated_list,
+    parse_json_string,
     render_output,
     safe_model_dump,
 )
@@ -31,7 +34,9 @@ def examples():
 @click.option("--inline-s3-urls", type=bool, help="Include S3 URLs inline.")
 @click.option("--include-attachments", type=bool, help="Include attachments.")
 @click.option("--as-of", help="Dataset version tag or ISO timestamp.")
+@exclude_option()
 @fields_option()
+@count_option()
 @click.pass_context
 def list_examples(
     ctx,
@@ -45,7 +50,9 @@ def list_examples(
     inline_s3_urls,
     include_attachments,
     as_of,
+    exclude,
     fields,
+    count,
 ):
     """List examples for a dataset."""
     import json
@@ -71,6 +78,9 @@ def list_examples(
         as_of=as_of,
     )
     examples_list = list(examples_gen)
+
+    # Client-side exclude filtering (filter by ID string representation)
+    examples_list = apply_exclude_filter(examples_list, exclude, lambda e: str(e.id))
 
     # Define table builder function
     def build_examples_table(examples):
@@ -103,6 +113,7 @@ def list_examples(
         ctx,
         include_fields=include_fields,
         empty_message="No examples found",
+        count_flag=count,
     )
 
 

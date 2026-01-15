@@ -37,6 +37,9 @@ See **[Installation Guide](references/installation.md)** for all installation me
 3. **Filter Fast:** Use `--status error` to find failing runs quickly.
 4. **Project Scope:** Always specify `--project` (default is "default") if you know it.
 5. **File Output:** For data extraction, use built-in file output options (e.g., `runs sample --output file.jsonl`) instead of Unix pipes (`> file.json`). Built-in file writing is more reliable and avoids potential formatting issues.
+6. **Universal Flags:** ALL list commands support `--count` (get count instead of data) and `--exclude` (exclude items by substring, repeatable).
+   - Example: `langsmith-cli --json projects list --count` returns just the number
+   - Example: `langsmith-cli --json runs list --exclude smoke-test --exclude dev-test` filters out unwanted runs
 
 ## API Reference
 
@@ -55,6 +58,16 @@ See **[Installation Guide](references/installation.md)** for all installation me
   - `--roots`: Show only root traces (recommended for cleaner output).
 - `langsmith-cli --json runs get <id> [OPTIONS]`: Get details of a single run.
   - `--fields <comma-separated>`: Only return specific fields (e.g., `inputs,outputs,error`).
+- `langsmith-cli --json runs get-latest [OPTIONS]`: Get the most recent run matching filters.
+  - **Eliminates need for piping `runs list` into `jq` and then `runs get`.**
+  - Supports all filter options: `--status`, `--failed`, `--succeeded`, `--roots`, `--tag`, `--model`, `--slow`, `--recent`, `--today`, `--min-latency`, `--max-latency`, `--since`, `--last`, `--filter`.
+  - Supports `--fields` for context efficiency.
+  - Searches across multiple projects if using `--project-name-pattern` or `--project-name-regex`.
+  - Example: `langsmith-cli --json runs get-latest --project my-project --fields inputs,outputs`
+  - Example: `langsmith-cli --json runs get-latest --project my-project --failed --fields id,name,error`
+  - Example: `langsmith-cli --json runs get-latest --project-name-pattern "prd/*" --succeeded --roots`
+  - **Before (complex):** `langsmith-cli --json runs list --project X --limit 1 --roots | jq -r '.[0].id' | xargs langsmith-cli --json runs get --fields inputs,outputs`
+  - **After (simple):** `langsmith-cli --json runs get-latest --project X --roots --fields inputs,outputs`
 - `langsmith-cli runs view-file <pattern> [OPTIONS]`: View runs from JSONL files with table display.
   - `<pattern>`: File path or glob pattern (e.g., `samples.jsonl`, `data/*.jsonl`).
   - `--fields <comma-separated>`: Only show specific fields.
@@ -110,10 +123,69 @@ See **[Installation Guide](references/installation.md)** for all installation me
 - `langsmith-cli --json prompts get <name> [--commit <hash>]`: Fetch a prompt template.
 - `langsmith-cli --json prompts push <name> <file_path>`: Push a local file as a prompt.
 
+## Common Patterns (No Piping Needed)
+
+The CLI provides built-in commands that eliminate the need for Unix pipes, jq, and nested commands:
+
+### Pattern 1: Filter Projects Without Piping
+```bash
+# ❌ BAD (requires piping)
+langsmith-cli --json projects list | jq -r '.[].name' | grep -E "(prd|stg)/"
+
+# ✅ GOOD (use built-in filters)
+langsmith-cli --json projects list --name-regex "^(prd|stg)/" --fields name
+```
+
+### Pattern 2: Get Latest Run Without Nested Commands
+```bash
+# ❌ BAD (requires jq + nested command)
+langsmith-cli --json runs get $(
+  langsmith-cli --json runs list --project X --limit 1 --fields id --roots |
+  jq -r '.[0].id'
+) --fields inputs,outputs
+
+# ✅ GOOD (use get-latest)
+langsmith-cli --json runs get-latest --project X --roots --fields inputs,outputs
+```
+
+### Pattern 3: Get Latest Error from Production
+```bash
+# ❌ BAD (complex piping)
+for project in $(langsmith-cli --json projects list | jq -r '.[].name' | grep "prd/"); do
+  langsmith-cli --json runs list --project "$project" --failed --limit 1
+done | jq -s '.[0]'
+
+# ✅ GOOD (use project patterns + get-latest)
+langsmith-cli --json runs get-latest --project-name-pattern "prd/*" --failed --fields id,name,error
+```
+
+### Pattern 4: Filter Projects by Pattern
+```bash
+# Filter by substring
+langsmith-cli --json projects list --name "production" --fields name
+
+# Filter by wildcard pattern
+langsmith-cli --json projects list --name-pattern "*prod*" --fields name
+
+# Filter by regex
+langsmith-cli --json projects list --name-regex "^(prd|stg)/.*" --fields name
+```
+
+### Pattern 5: Get Latest Successful Run from Multiple Projects
+```bash
+# Searches across all matching projects
+langsmith-cli --json runs get-latest \
+  --project-name-pattern "prd/*" \
+  --succeeded \
+  --roots \
+  --fields inputs,outputs
+```
+
 ## Additional Resources
 
 For complete documentation, see:
 
+- **[Pipes to CLI Reference](../../docs/PIPES_TO_CLI_REFERENCE.md)** - Converting piped commands (jq, grep, loops) to native CLI features
 - **[Installation Guide](references/installation.md)** - All installation methods, troubleshooting, and platform notes
 - **[Quick Reference](docs/reference.md)** - Fast command lookup
 - **[Real-World Examples](docs/examples.md)** - Complete workflows and use cases
