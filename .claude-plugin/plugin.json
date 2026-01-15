@@ -1,6 +1,6 @@
 {
   "name": "langsmith-cli",
-  "version": "0.1.11",
+  "version": "0.2.0",
   "description": "A context-efficient interface for LangSmith observability and evaluations.",
   "author": {
     "name": "Aviad Rozenhek",
