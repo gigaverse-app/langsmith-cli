@@ -1,5 +1,6 @@
 [project]
 name = "langsmith-cli"
+# IMPORTANT: When bumping this version, also update .claude-plugin/plugin.json
 version = "0.2.0"
 description = "Context-efficient CLI for LangSmith. Built for humans and agents."
 readme = "README.md"
