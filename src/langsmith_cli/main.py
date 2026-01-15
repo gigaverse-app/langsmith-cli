@@ -153,13 +153,55 @@ class LangSmithCLIGroup(click.Group):
 @click.group(cls=LangSmithCLIGroup)
 @click.version_option()
 @click.option("--json", is_flag=True, help="Output strict JSON for agents.")
+@click.option(
+    "--verbose",
+    "-v",
+    count=True,
+    help="Increase verbosity (-v: DEBUG, -vv: TRACE)",
+)
+@click.option(
+    "--quiet",
+    "-q",
+    count=True,
+    help="Decrease verbosity (-q: warnings only, -qq: errors only)",
+)
 @click.pass_context
-def cli_main(ctx, json):
+def cli_main(ctx, json, verbose, quiet):
     """
     LangSmith CLI - A context-efficient interface for LangSmith.
     """
     ctx.ensure_object(dict)
     ctx.obj["json"] = json
+
+    # Initialize logger with verbosity level
+    from langsmith_cli.logging import CLILogger, Verbosity
+
+    # Determine if using machine-readable mode
+    # (will be refined in commands when --format/--count/--output is known)
+    is_machine_readable = json
+
+    # Map verbose/quiet counts to logging level
+    # Start with default INFO (20), adjust by verbose/quiet
+    if quiet >= 2:
+        # -qq: Only errors
+        verbosity_level = Verbosity.ERROR
+    elif quiet == 1:
+        # -q: Warnings + errors (no progress)
+        verbosity_level = Verbosity.WARNING
+    elif verbose == 0:
+        # Default: INFO level (progress + warnings + errors)
+        verbosity_level = Verbosity.INFO
+    elif verbose == 1:
+        # -v: DEBUG level (debug details)
+        verbosity_level = Verbosity.DEBUG
+    else:
+        # -vv or more: TRACE level (ultra-verbose)
+        verbosity_level = Verbosity.TRACE
+
+    # Create and store logger
+    ctx.obj["logger"] = CLILogger(
+        verbosity=verbosity_level, use_stderr=is_machine_readable
+    )
 
 
 @click.group()
