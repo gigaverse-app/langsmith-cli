@@ -59,7 +59,7 @@ Traditional tools are slow, verbose, and waste tokens. **LangSmith CLI** is diff
 | **Advanced Filters** | Regex, wildcards, time presets | Basic only |
 | **Stratified Sampling** | `runs sample` by tag/metadata | ❌ |
 | **Aggregate Analytics** | `runs analyze` group & metrics | ❌ |
-| **Unicode Preservation** | Hebrew, Chinese, emoji preserved | ❌ Escaped |
+| **Tag Discovery** | `runs tags` auto-discover patterns | ❌ |
 | **File Operations** | View/analyze offline with globs | ❌ |
 | **Export Formats** | JSON, CSV, YAML | JSON only |
 
