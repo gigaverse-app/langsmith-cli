@@ -596,6 +596,27 @@ def list_runs(
     else:
         api_limit = limit
 
+    # Inform user about fetch strategy for client-side filtering
+    if needs_client_filtering and api_limit != limit:
+        active_filters = []
+        if name_pattern:
+            active_filters.append(f"--name-pattern '{name_pattern}'")
+        if name_regex:
+            active_filters.append(f"--name-regex '{name_regex}'")
+        if exclude:
+            active_filters.append(f"--exclude '{exclude}'")
+        if grep:
+            active_filters.append(f"--grep '{grep}'")
+        filters_str = ", ".join(active_filters)
+
+        console.print(
+            f"[dim]Fetching {api_limit} runs to evaluate client-side filters ({filters_str})[/dim]"
+        )
+        console.print(
+            f"[dim]Will return up to {limit or 'all'} matching results. "
+            f"Adjust with --limit to fetch more/fewer runs.[/dim]\n"
+        )
+
     # Fetch runs from all matching projects using universal helper
     result = fetch_from_projects(
         client,
@@ -662,6 +683,26 @@ def list_runs(
 
     # Apply user's limit AFTER all client-side filtering/sorting
     runs = apply_client_side_limit(runs, limit, needs_client_filtering)
+
+    # Report filtering results if client-side filtering was used
+    if needs_client_filtering and not ctx.obj.get("json"):
+        matches_found = len(runs)
+
+        if limit and matches_found < limit:
+            # Under-fetched: didn't find enough matches
+            console.print(
+                f"[yellow]Found {matches_found}/{limit} requested matches "
+                f"after evaluating {api_limit} runs.[/yellow]"
+            )
+            console.print(
+                f"[yellow]Tip: Increase --limit to fetch more runs and find more matches "
+                f"(current fetch limit: {api_limit}).[/yellow]\n"
+            )
+        elif matches_found > 0:
+            # Success: found enough matches
+            console.print(
+                f"[dim]Found {matches_found} matches after evaluating {len(all_runs)} runs.[/dim]\n"
+            )
 
     # Handle count mode - short circuit all other output
     if count:
