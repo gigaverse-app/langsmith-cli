@@ -398,6 +398,64 @@ def format_token_count(tokens: int | None) -> str:
     return f"{tokens:,}" if tokens else "-"
 
 
+def build_runs_table(runs: list[Any], title: str, no_truncate: bool = False) -> Any:
+    """Build a Rich table for displaying runs.
+
+    Reusable table builder for runs list and view-file commands.
+
+    Args:
+        runs: List of Run objects
+        title: Table title
+        no_truncate: If True, disable column width limits
+
+    Returns:
+        Rich Table object populated with run data
+    """
+    from rich.table import Table
+
+    table = Table(title=title)
+    table.add_column("ID", style="dim", no_wrap=True)
+    # Conditionally apply max_width based on no_truncate flag
+    table.add_column("Name", max_width=None if no_truncate else 30)
+    table.add_column("Status", justify="center")
+    table.add_column("Latency", justify="right")
+    table.add_column("Tokens", justify="right")
+    table.add_column("Model", style="cyan", max_width=None if no_truncate else 20)
+
+    for r in runs:
+        # Access SDK model fields directly (type-safe)
+        r_id = str(r.id)
+        r_name = r.name or "Unknown"
+        r_status = r.status
+
+        # Colorize status
+        status_style = (
+            "green"
+            if r_status == "success"
+            else "red"
+            if r_status == "error"
+            else "yellow"
+        )
+
+        latency = f"{r.latency:.2f}s" if r.latency is not None else "-"
+
+        # Format tokens and extract model name using utility functions
+        tokens = format_token_count(r.total_tokens)
+        # Disable model name truncation if no_truncate is set
+        model_name = extract_model_name(r, max_length=999 if no_truncate else 20)
+
+        table.add_row(
+            r_id,
+            r_name,
+            f"[{status_style}]{r_status}[/{status_style}]",
+            latency,
+            tokens,
+            model_name,
+        )
+
+    return table
+
+
 def should_use_client_side_limit(has_client_filters: bool) -> bool:
     """Determine if limit should be applied client-side after filtering.
 

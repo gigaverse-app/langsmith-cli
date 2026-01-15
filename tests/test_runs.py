@@ -2098,9 +2098,9 @@ def test_runs_list_default_truncate_behavior(runner):
         )
 
 
-def test_runs_view_file_basic(runner, tmp_path):
-    """Test basic view-file command with single JSONL file."""
-    # Create a test JSONL file
+@pytest.fixture
+def sample_runs_file(tmp_path):
+    """Create a JSONL file with sample runs for testing."""
     test_file = tmp_path / "test_runs.jsonl"
     run1 = Run(
         id=UUID("12345678-1234-5678-1234-567812345678"),
@@ -2125,7 +2125,12 @@ def test_runs_view_file_basic(runner, tmp_path):
         f.write(json.dumps(run1.model_dump(mode="json")) + "\n")
         f.write(json.dumps(run2.model_dump(mode="json")) + "\n")
 
-    result = runner.invoke(cli, ["runs", "view-file", str(test_file)])
+    return test_file
+
+
+def test_runs_view_file_basic(runner, sample_runs_file):
+    """Test basic view-file command with single JSONL file."""
+    result = runner.invoke(cli, ["runs", "view-file", str(sample_runs_file)])
     assert result.exit_code == 0
     assert "Test Run 1" in result.output
     assert "Test Run 2" in result.output
@@ -2157,52 +2162,29 @@ def test_runs_view_file_glob_pattern(runner, tmp_path):
     assert "Loaded 3 runs from 3 file(s)" in result.output
 
 
-def test_runs_view_file_json_output(runner, tmp_path):
-    """Test view-file with JSON output."""
-    test_file = tmp_path / "test_runs.jsonl"
-    run = Run(
-        id=UUID("12345678-1234-5678-1234-567812345678"),
-        name="Test Run",
-        run_type="llm",
-        start_time=datetime.now(timezone.utc),
-        status="success",
+@pytest.mark.parametrize(
+    "extra_args,expected_fields",
+    [
+        ([], None),  # All fields
+        (["--fields", "id,name"], {"id", "name"}),
+    ],
+)
+def test_runs_view_file_output_modes(
+    runner, sample_runs_file, extra_args, expected_fields
+):
+    """Test view-file with different output modes and field filtering."""
+    result = runner.invoke(
+        cli, ["--json", "runs", "view-file", str(sample_runs_file)] + extra_args
     )
-
-    with open(test_file, "w") as f:
-        f.write(json.dumps(run.model_dump(mode="json")) + "\n")
-
-    result = runner.invoke(cli, ["--json", "runs", "view-file", str(test_file)])
     assert result.exit_code == 0
 
     data = json.loads(result.output)
     assert isinstance(data, list)
-    assert len(data) == 1
-    assert data[0]["name"] == "Test Run"
+    assert len(data) == 2
+    assert data[0]["name"] == "Test Run 1"
 
-
-def test_runs_view_file_with_fields(runner, tmp_path):
-    """Test view-file with --fields option."""
-    test_file = tmp_path / "test_runs.jsonl"
-    run = Run(
-        id=UUID("12345678-1234-5678-1234-567812345678"),
-        name="Test Run",
-        run_type="llm",
-        start_time=datetime.now(timezone.utc),
-        status="success",
-        latency=1.5,
-    )
-
-    with open(test_file, "w") as f:
-        f.write(json.dumps(run.model_dump(mode="json")) + "\n")
-
-    result = runner.invoke(
-        cli, ["--json", "runs", "view-file", str(test_file), "--fields", "id,name"]
-    )
-    assert result.exit_code == 0
-
-    data = json.loads(result.output)
-    assert len(data) == 1
-    assert set(data[0].keys()) == {"id", "name"}
+    if expected_fields:
+        assert set(data[0].keys()) == expected_fields
 
 
 def test_runs_view_file_no_truncate(runner, tmp_path):
@@ -2230,31 +2212,25 @@ def test_runs_view_file_no_truncate(runner, tmp_path):
     assert "very-long-model-name-that-would-be-trunca" in result.output
 
 
-def test_runs_view_file_missing_file(runner):
-    """Test view-file with non-existent file."""
-    result = runner.invoke(cli, ["runs", "view-file", "nonexistent.jsonl"])
-    assert result.exit_code != 0
-    assert "No files match pattern" in result.output
+@pytest.mark.parametrize(
+    "file_content,expected_msg",
+    [
+        ("nonexistent.jsonl", "No files match pattern"),
+        ('{"invalid json\n', "Warning"),
+        ("", "No valid runs found"),
+    ],
+)
+def test_runs_view_file_error_handling(runner, tmp_path, file_content, expected_msg):
+    """Test view-file handles various error cases gracefully."""
+    if file_content == "nonexistent.jsonl":
+        # Test missing file
+        result = runner.invoke(cli, ["runs", "view-file", file_content])
+        assert result.exit_code != 0
+    else:
+        # Create test file with given content
+        test_file = tmp_path / "test.jsonl"
+        test_file.write_text(file_content)
+        result = runner.invoke(cli, ["runs", "view-file", str(test_file)])
+        assert result.exit_code == 0
 
-
-def test_runs_view_file_invalid_json(runner, tmp_path):
-    """Test view-file handles invalid JSON gracefully."""
-    test_file = tmp_path / "invalid.jsonl"
-    with open(test_file, "w") as f:
-        f.write('{"invalid json\n')
-        f.write('{"also invalid":\n')
-
-    result = runner.invoke(cli, ["runs", "view-file", str(test_file)])
-    # Should not crash, but show warnings
-    assert result.exit_code == 0
-    assert "Warning" in result.output
-
-
-def test_runs_view_file_empty_file(runner, tmp_path):
-    """Test view-file with empty file."""
-    test_file = tmp_path / "empty.jsonl"
-    test_file.touch()
-
-    result = runner.invoke(cli, ["runs", "view-file", str(test_file)])
-    assert result.exit_code == 0
-    assert "No valid runs found" in result.output
+    assert expected_msg in result.output

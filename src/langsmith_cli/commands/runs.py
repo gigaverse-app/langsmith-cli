@@ -7,11 +7,10 @@ from rich.table import Table
 from langsmith_cli.utils import (
     add_project_filter_options,
     apply_client_side_limit,
+    build_runs_table,
     determine_output_format,
-    extract_model_name,
     fields_option,
     filter_fields,
-    format_token_count,
     get_matching_items,
     get_matching_projects,
     get_or_create_client,
@@ -617,49 +616,10 @@ def list_runs(
     else:
         table_title = f"Runs ({len(projects_to_query)} projects)"
 
-    table = Table(title=table_title)
-    table.add_column("ID", style="dim", no_wrap=True)
-    # Conditionally apply max_width based on --no-truncate flag
-    table.add_column("Name", max_width=None if no_truncate else 30)
-    table.add_column("Status", justify="center")
-    table.add_column("Latency", justify="right")
-    table.add_column("Tokens", justify="right")
-    table.add_column("Model", style="cyan", max_width=None if no_truncate else 20)
+    # Use shared table builder utility
+    table = build_runs_table(runs, table_title, no_truncate)
 
-    count = 0
-    for r in runs:
-        count += 1
-        # Access SDK model fields directly (type-safe)
-        r_id = str(r.id)
-        r_name = r.name or "Unknown"
-        r_status = r.status
-
-        # Colorize status
-        status_style = (
-            "green"
-            if r_status == "success"
-            else "red"
-            if r_status == "error"
-            else "yellow"
-        )
-
-        latency = f"{r.latency:.2f}s" if r.latency is not None else "-"
-
-        # Format tokens and extract model name using utility functions
-        tokens = format_token_count(r.total_tokens)
-        # Disable model name truncation if --no-truncate is set
-        model_name = extract_model_name(r, max_length=999 if no_truncate else 20)
-
-        table.add_row(
-            r_id,
-            r_name,
-            f"[{status_style}]{r_status}[/{status_style}]",
-            latency,
-            tokens,
-            model_name,
-        )
-
-    if count == 0:
+    if len(runs) == 0:
         console.print("[yellow]No runs found.[/yellow]")
     else:
         console.print(table)
@@ -772,63 +732,21 @@ def view_file(ctx, pattern, no_truncate, fields):
         output_formatted_data(data, "json")
         return
 
-    # Build table using same logic as runs list
-    from rich.table import Table
-
     # Build descriptive title
     if len(file_paths) == 1:
         table_title = f"Runs from {file_paths[0]}"
     else:
         table_title = f"Runs from {len(file_paths)} files"
 
-    table = Table(title=table_title)
-    table.add_column("ID", style="dim", no_wrap=True)
-    # Conditionally apply max_width based on --no-truncate flag
-    table.add_column("Name", max_width=None if no_truncate else 30)
-    table.add_column("Status", justify="center")
-    table.add_column("Latency", justify="right")
-    table.add_column("Tokens", justify="right")
-    table.add_column("Model", style="cyan", max_width=None if no_truncate else 20)
+    # Use shared table builder utility
+    table = build_runs_table(runs, table_title, no_truncate)
 
-    count = 0
-    for r in runs:
-        count += 1
-        # Access SDK model fields directly (type-safe)
-        r_id = str(r.id)
-        r_name = r.name or "Unknown"
-        r_status = r.status
-
-        # Colorize status
-        status_style = (
-            "green"
-            if r_status == "success"
-            else "red"
-            if r_status == "error"
-            else "yellow"
-        )
-
-        latency = f"{r.latency:.2f}s" if r.latency is not None else "-"
-
-        # Format tokens and extract model name using utility functions
-        tokens = format_token_count(r.total_tokens)
-        # Disable model name truncation if --no-truncate is set
-        model_name = extract_model_name(r, max_length=999 if no_truncate else 20)
-
-        table.add_row(
-            r_id,
-            r_name,
-            f"[{status_style}]{r_status}[/{status_style}]",
-            latency,
-            tokens,
-            model_name,
-        )
-
-    if count == 0:
+    if len(runs) == 0:
         console.print("[yellow]No runs found.[/yellow]")
     else:
         console.print(table)
         console.print(
-            f"\n[dim]Loaded {count} runs from {len(file_paths)} file(s)[/dim]"
+            f"\n[dim]Loaded {len(runs)} runs from {len(file_paths)} file(s)[/dim]"
         )
 
 
