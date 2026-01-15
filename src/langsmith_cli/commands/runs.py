@@ -493,6 +493,12 @@ def list_runs(
     )
     logger.use_stderr = is_machine_readable
 
+    # When --count is used, default to unlimited (0) unless user explicitly set limit
+    # Check if limit was explicitly provided by checking if it's not the default
+    if count and limit == 20:
+        # User didn't explicitly set limit, so use 0 (unlimited) for counting
+        limit = 0
+
     import datetime
 
     logger.debug(
@@ -711,8 +717,14 @@ def list_runs(
         }
         runs = sort_items(runs, sort_by, sort_key_map, console)
 
+    # Track total count before applying limit (for showing "more may exist" message)
+    total_count = len(runs)
+
     # Apply user's limit AFTER all client-side filtering/sorting
     runs = apply_client_side_limit(runs, limit, needs_client_filtering)
+
+    # Track if we hit the limit
+    hit_limit = limit is not None and limit > 0 and total_count > limit
 
     # Report filtering results if client-side filtering was used
     if needs_client_filtering and not ctx.obj.get("json"):
@@ -829,6 +841,14 @@ def list_runs(
         logger.info("  • Check project has runs: langsmith-cli runs list --limit 1")
     else:
         console.print(table)
+
+        # Show message if we hit the limit (not in count mode or JSON mode)
+        if hit_limit and not count and not ctx.obj.get("json"):
+            # Show the exact number we know
+            logger.info(
+                f"Showing {len(runs)} of {total_count} runs. "
+                f"Use --limit 0 to see all {total_count} runs."
+            )
 
 
 @runs.command("get")
