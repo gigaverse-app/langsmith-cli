@@ -350,6 +350,54 @@ def parse_comma_separated_list(input_str: str | None) -> list[str] | None:
     return [item.strip() for item in input_str.split(",")]
 
 
+def extract_model_name(run: Any, max_length: int = 20) -> str:
+    """Extract model name from a LangSmith Run object.
+
+    Looks for model name in the following order:
+    1. extra.invocation_params.model_name
+    2. extra.metadata.ls_model_name
+
+    Args:
+        run: LangSmith Run object
+        max_length: Maximum length before truncating (default 20)
+
+    Returns:
+        Model name string, truncated with "..." if too long, or "-" if not found
+    """
+    model_name = "-"
+
+    if hasattr(run, "extra") and run.extra and isinstance(run.extra, dict):
+        # Try invocation_params first
+        if "invocation_params" in run.extra:
+            inv_params = run.extra["invocation_params"]
+            if isinstance(inv_params, dict) and "model_name" in inv_params:
+                model_name = inv_params["model_name"]
+
+        # Try metadata as fallback
+        if model_name == "-" and "metadata" in run.extra:
+            metadata = run.extra["metadata"]
+            if isinstance(metadata, dict) and "ls_model_name" in metadata:
+                model_name = metadata["ls_model_name"]
+
+    # Truncate long model names
+    if len(model_name) > max_length:
+        model_name = model_name[: max_length - 3] + "..."
+
+    return model_name
+
+
+def format_token_count(tokens: int | None) -> str:
+    """Format token count with comma separators.
+
+    Args:
+        tokens: Token count (None for missing data)
+
+    Returns:
+        Formatted string like "1,234" or "-" if None
+    """
+    return f"{tokens:,}" if tokens else "-"
+
+
 def should_use_client_side_limit(has_client_filters: bool) -> bool:
     """Determine if limit should be applied client-side after filtering.
 

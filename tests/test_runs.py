@@ -32,6 +32,210 @@ def test_runs_list(runner):
         assert "success" in result.output
 
 
+def test_runs_list_json_output_is_valid_json(runner):
+    """Test that runs list --json always outputs valid JSON that can be parsed."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        test_run = Run(
+            id=UUID("12345678-1234-5678-1234-567812345678"),
+            name="My Run",
+            run_type="chain",
+            start_time=datetime.now(timezone.utc),
+            status="success",
+            latency=0.5,
+            error=None,
+        )
+        mock_client.list_runs.return_value = [test_run]
+
+        result = runner.invoke(cli, ["--json", "runs", "list", "--limit", "10"])
+        assert result.exit_code == 0, f"Command failed: {result.output}"
+
+        # Output should be valid JSON that can be parsed
+        data = json.loads(result.output)
+        assert isinstance(data, list)
+        assert len(data) == 1
+        assert data[0]["id"] == "12345678-1234-5678-1234-567812345678"
+        assert data[0]["name"] == "My Run"
+
+
+def test_runs_list_json_output_empty_list(runner):
+    """Test that runs list --json outputs empty JSON array when no results."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_runs.return_value = []
+
+        result = runner.invoke(cli, ["--json", "runs", "list", "--limit", "10"])
+        assert result.exit_code == 0, f"Command failed: {result.output}"
+
+        # Output should be valid JSON - empty array
+        data = json.loads(result.output)
+        assert isinstance(data, list)
+        assert len(data) == 0
+
+
+def test_runs_list_json_output_with_api_error(runner):
+    """Test that runs list --json outputs valid JSON even when API call fails."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        # Simulate API error
+        mock_client.list_runs.side_effect = Exception("API Error")
+
+        result = runner.invoke(
+            cli,
+            ["--json", "runs", "list", "--project", "test-project", "--limit", "10"],
+        )
+        assert result.exit_code == 0, f"Command failed: {result.output}"
+
+        # Output should still be valid JSON - empty array (exception is caught)
+        data = json.loads(result.output)
+        assert isinstance(data, list)
+        assert len(data) == 0
+
+
+def test_runs_list_json_output_with_iterator_error(runner):
+    """Test that runs list --json outputs valid JSON even when iterator fails during iteration."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        # Create an iterator that fails when converting to list
+        def failing_iterator():
+            raise Exception("Iterator failed during iteration")
+            yield  # Never reached
+
+        mock_client.list_runs.return_value = failing_iterator()
+
+        result = runner.invoke(
+            cli,
+            ["--json", "runs", "list", "--project", "test-project", "--limit", "10"],
+        )
+        assert result.exit_code == 0, f"Command failed: {result.output}"
+
+        # Output should still be valid JSON - empty array (exception is caught)
+        data = json.loads(result.output)
+        assert isinstance(data, list)
+        assert len(data) == 0
+
+
+def test_runs_list_json_output_only_json_no_extra_text(runner):
+    """Test that runs list --json outputs ONLY JSON, no extra text before or after."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        test_run = Run(
+            id=UUID("12345678-1234-5678-1234-567812345678"),
+            name="Test Run",
+            run_type="chain",
+            start_time=datetime.now(timezone.utc),
+            status="success",
+            latency=1.5,
+        )
+        mock_client.list_runs.return_value = [test_run]
+
+        result = runner.invoke(
+            cli, ["--json", "runs", "list", "--project", "test", "--limit", "10"]
+        )
+        assert result.exit_code == 0, f"Command failed: {result.output}"
+
+        # Output should start with '[' (JSON array)
+        assert result.output.strip().startswith("["), (
+            f"Output should start with '[', got: {result.output[:50]}"
+        )
+
+        # Output should end with ']' (JSON array)
+        assert result.output.strip().endswith("]"), (
+            f"Output should end with ']', got: ...{result.output[-50:]}"
+        )
+
+        # Should be valid JSON
+        data = json.loads(result.output)
+        assert isinstance(data, list)
+        assert len(data) == 1
+
+
+def test_runs_list_with_roots_flag(runner):
+    """Test that --roots flag filters to root traces."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_runs.return_value = []
+
+        runner.invoke(cli, ["runs", "list", "--roots"])
+
+        # Verify is_root=True was passed
+        mock_client.list_runs.assert_called_once()
+        args, kwargs = mock_client.list_runs.call_args
+        assert kwargs["is_root"] is True
+
+
+def test_runs_list_table_includes_tokens_and_model(runner):
+    """Test that table output includes tokens and model columns."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        test_run = Run(
+            id=UUID("12345678-1234-5678-1234-567812345678"),
+            name="Test LLM Call",
+            run_type="llm",
+            start_time=datetime.now(timezone.utc),
+            status="success",
+            latency=1.5,
+            total_tokens=1234,
+            extra={
+                "invocation_params": {"model_name": "gpt-4"},
+            },
+        )
+        mock_client.list_runs.return_value = [test_run]
+
+        result = runner.invoke(cli, ["runs", "list", "--limit", "10"])
+        assert result.exit_code == 0
+
+        # Check that tokens are displayed (formatted with comma)
+        assert "1,234" in result.output
+
+        # Check that model name is displayed
+        assert "gpt-4" in result.output
+
+
+def test_runs_list_table_handles_missing_tokens_and_model(runner):
+    """Test that table gracefully handles missing tokens and model fields."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        test_run = Run(
+            id=UUID("12345678-1234-5678-1234-567812345678"),
+            name="Test Run",
+            run_type="chain",
+            start_time=datetime.now(timezone.utc),
+            status="success",
+            latency=1.5,
+            # No total_tokens, no extra fields
+        )
+        mock_client.list_runs.return_value = [test_run]
+
+        result = runner.invoke(cli, ["runs", "list", "--limit", "10"])
+        assert result.exit_code == 0
+
+        # Should not crash and should show "-" for missing data
+        # Name might be wrapped across lines in table, so check for "Test"
+        assert "Test" in result.output
+        # Check for the ID to confirm the run is displayed
+        assert "12345678-1234-5678-1234-567812345678" in result.output
+
+
+def test_runs_search_with_roots_flag(runner):
+    """Test that search command supports --roots flag."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_runs.return_value = []
+
+        runner.invoke(cli, ["runs", "search", "error", "--roots"])
+
+        # Verify is_root=True was passed to list_runs
+        mock_client.list_runs.assert_called_once()
+        args, kwargs = mock_client.list_runs.call_args
+        assert kwargs["is_root"] is True
+
+
 def test_runs_list_filters(runner):
     """Test runs list with filters."""
     with patch("langsmith.Client") as MockClient:
@@ -219,6 +423,46 @@ def test_runs_list_with_name_pattern(runner):
         assert "auth-service" in result.output
         assert "test-auth-check" in result.output
         assert "database-query" not in result.output
+
+
+def test_runs_list_with_name_pattern_uses_reasonable_limit(runner):
+    """Test that name pattern filtering uses a capped limit, not unlimited."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_runs.return_value = iter([])
+
+        # Test with small limit - should use minimum of 100
+        runner.invoke(cli, ["runs", "list", "--name-pattern", "*test*", "--limit", "5"])
+        args, kwargs = mock_client.list_runs.call_args
+        # Should fetch max(5*10, 100) = 100 for pattern matching, not unlimited (None)
+        assert kwargs["limit"] == 100, "Should use minimum of 100 for pattern matching"
+
+        # Test with larger limit - should use 10x
+        runner.invoke(
+            cli, ["runs", "list", "--name-pattern", "*test*", "--limit", "50"]
+        )
+        args, kwargs = mock_client.list_runs.call_args
+        # Should fetch max(50*10, 100) = 500 for pattern matching
+        assert kwargs["limit"] == 500, "Should use 10x limit for pattern matching"
+
+        # Test without explicit limit (default is 20)
+        runner.invoke(cli, ["runs", "list", "--name-pattern", "*test*"])
+        args, kwargs = mock_client.list_runs.call_args
+        # Should fetch max(20*10, 100) = 200 for pattern matching
+        assert kwargs["limit"] == 200, "Should cap at max(10x default, 100)"
+
+
+def test_runs_list_with_name_regex_uses_reasonable_limit(runner):
+    """Test that name regex filtering uses a capped limit, not unlimited."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_runs.return_value = iter([])
+
+        # Test with small limit - should use minimum of 100
+        runner.invoke(cli, ["runs", "list", "--name-regex", "^test.*", "--limit", "5"])
+        args, kwargs = mock_client.list_runs.call_args
+        # Should fetch max(5*10, 100) = 100 for regex matching, not unlimited (None)
+        assert kwargs["limit"] == 100, "Should use minimum of 100 for regex matching"
 
 
 def test_runs_list_with_smart_filters(runner):

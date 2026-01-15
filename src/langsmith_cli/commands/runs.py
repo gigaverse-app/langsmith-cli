@@ -8,8 +8,10 @@ from langsmith_cli.utils import (
     add_project_filter_options,
     apply_client_side_limit,
     determine_output_format,
+    extract_model_name,
     fields_option,
     filter_fields,
+    format_token_count,
     get_matching_items,
     get_matching_projects,
     get_or_create_client,
@@ -331,6 +333,11 @@ def compute_metrics(
     "--run-type", help="Filter by run type (llm, chain, tool, retriever, etc)."
 )
 @click.option("--is-root", type=bool, help="Filter root traces only (true/false).")
+@click.option(
+    "--roots",
+    is_flag=True,
+    help="Show only root traces (shorthand for --is-root true). Recommended for cleaner output.",
+)
 @click.option("--trace-filter", help="Filter applied to root trace.")
 @click.option("--tree-filter", help="Filter if any run in trace tree matches.")
 @click.option(
@@ -342,9 +349,17 @@ def compute_metrics(
     multiple=True,
     help="Filter by tag (can specify multiple times for AND logic).",
 )
-@click.option("--name-pattern", help="Filter run names with wildcards (e.g. '*auth*').")
 @click.option(
-    "--name-regex", help="Filter run names with regex (e.g. '^test-.*-v[0-9]+$')."
+    "--name-pattern",
+    help="Filter run names with wildcards (e.g. '*auth*'). "
+    "Uses client-side filtering - searches recent runs only. "
+    "Increase --limit to search more runs.",
+)
+@click.option(
+    "--name-regex",
+    help="Filter run names with regex (e.g. '^test-.*-v[0-9]+$'). "
+    "Uses client-side filtering - searches recent runs only. "
+    "Increase --limit to search more runs.",
 )
 @click.option("--model", help="Filter by model name (e.g. 'gpt-4', 'claude-3').")
 @click.option(
@@ -391,6 +406,7 @@ def list_runs(
     trace_id,
     run_type,
     is_root,
+    roots,
     trace_filter,
     tree_filter,
     order_by,
@@ -430,6 +446,10 @@ def list_runs(
         name_pattern=project_name_pattern,
         name_regex=project_name_regex,
     )
+
+    # Handle --roots flag (convenience for --is-root true)
+    if roots:
+        is_root = True
 
     # Handle status filtering with multiple options
     error_filter = None
@@ -519,8 +539,14 @@ def list_runs(
     # (for run name pattern/regex matching)
     needs_client_filtering = bool(name_regex or name_pattern)
 
-    # If client-side filtering needed, fetch more results
-    api_limit = None if needs_client_filtering else limit
+    # If client-side filtering needed, fetch more results (but with a reasonable cap)
+    # Fetching unlimited runs (None) causes severe performance issues for large projects
+    if needs_client_filtering:
+        # Fetch 10x the limit or at least 100 runs to find pattern matches
+        # If no limit specified, cap at 1000 to avoid downloading everything
+        api_limit = max(limit * 10, 100) if limit else 1000
+    else:
+        api_limit = limit
 
     # Fetch runs from all matching projects
     all_runs = []
@@ -587,9 +613,11 @@ def list_runs(
 
     table = Table(title=table_title)
     table.add_column("ID", style="dim", no_wrap=True)
-    table.add_column("Name")
+    table.add_column("Name", max_width=30)
     table.add_column("Status", justify="center")
-    table.add_column("Latency")
+    table.add_column("Latency", justify="right")
+    table.add_column("Tokens", justify="right")
+    table.add_column("Model", style="cyan", max_width=20)
 
     count = 0
     for r in runs:
@@ -610,8 +638,17 @@ def list_runs(
 
         latency = f"{r.latency:.2f}s" if r.latency is not None else "-"
 
+        # Format tokens and extract model name using utility functions
+        tokens = format_token_count(r.total_tokens)
+        model_name = extract_model_name(r)
+
         table.add_row(
-            r_id, r_name, f"[{status_style}]{r_status}[/{status_style}]", latency
+            r_id,
+            r_name,
+            f"[{status_style}]{r_status}[/{status_style}]",
+            latency,
+            tokens,
+            model_name,
         )
 
     if count == 0:
@@ -868,6 +905,11 @@ def watch_runs(
 @add_project_filter_options
 @click.option("--limit", default=10, help="Max results.")
 @click.option(
+    "--roots",
+    is_flag=True,
+    help="Show only root traces (cleaner output).",
+)
+@click.option(
     "--in",
     "search_in",
     type=click.Choice(["all", "inputs", "outputs", "error"]),
@@ -896,6 +938,7 @@ def search_runs(
     project_name_pattern,
     project_name_regex,
     limit,
+    roots,
     search_in,
     input_contains,
     output_contains,
@@ -944,6 +987,7 @@ def search_runs(
         trace_id=None,
         run_type=None,
         is_root=None,
+        roots=roots,  # Pass through --roots flag
         trace_filter=None,
         tree_filter=None,
         order_by="-start_time",
@@ -962,6 +1006,7 @@ def search_runs(
         since=None,
         last=None,
         sort_by=None,
+        fields=None,  # Pass through fields parameter
     )
 
 

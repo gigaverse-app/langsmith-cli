@@ -4,7 +4,10 @@ import pytest
 import json
 from unittest.mock import MagicMock
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from uuid import UUID
 import click
+from langsmith.schemas import Run
 
 from langsmith_cli.utils import (
     output_formatted_data,
@@ -22,6 +25,8 @@ from langsmith_cli.utils import (
     safe_model_dump,
     apply_client_side_limit,
     render_output,
+    extract_model_name,
+    format_token_count,
 )
 
 
@@ -937,3 +942,85 @@ class TestFilterFields:
         # In JSON mode, datetime should be serialized as string
         assert isinstance(result["created_at"], str)
         assert "2024" in result["created_at"]
+
+
+class TestExtractModelName:
+    """Tests for extract_model_name function using real Run models."""
+
+    @pytest.mark.parametrize(
+        "extra,expected_result",
+        [
+            # Standard cases
+            ({"invocation_params": {"model_name": "gpt-4"}}, "gpt-4"),
+            ({"metadata": {"ls_model_name": "claude-3"}}, "claude-3"),
+            # Priority: invocation_params over metadata
+            (
+                {
+                    "invocation_params": {"model_name": "gpt-4"},
+                    "metadata": {"ls_model_name": "claude-3"},
+                },
+                "gpt-4",
+            ),
+            # Missing/empty cases
+            (None, "-"),
+            ({}, "-"),
+            ({"invocation_params": {"other_param": "value"}}, "-"),
+            # Malformed cases
+            ({"invocation_params": "not-a-dict"}, "-"),
+            ({"metadata": "not-a-dict"}, "-"),
+        ],
+    )
+    def test_extract_model_name_scenarios(self, extra, expected_result):
+        """Test model name extraction with various extra field configurations."""
+        run = Run(
+            id=UUID("12345678-1234-5678-1234-567812345678"),
+            name="test-run",
+            run_type="llm",
+            start_time=datetime.now(timezone.utc),
+            extra=extra,
+        )
+
+        result = extract_model_name(run)
+        assert result == expected_result
+
+    @pytest.mark.parametrize(
+        "model_name,max_length,expected",
+        [
+            ("very-long-model-name-that-exceeds-limit", 20, "very-long-model-n..."),
+            ("longmodelname", 10, "longmod..."),
+            ("short", 20, "short"),
+            ("exactly-twenty-char", 20, "exactly-twenty-char"),
+        ],
+    )
+    def test_truncate_long_model_names(self, model_name, max_length, expected):
+        """Test truncation of model names with different lengths."""
+        run = Run(
+            id=UUID("12345678-1234-5678-1234-567812345678"),
+            name="test-run",
+            run_type="llm",
+            start_time=datetime.now(timezone.utc),
+            extra={"invocation_params": {"model_name": model_name}},
+        )
+
+        result = extract_model_name(run, max_length=max_length)
+        assert result == expected
+        assert len(result) <= max_length
+
+
+class TestFormatTokenCount:
+    """Tests for format_token_count function."""
+
+    @pytest.mark.parametrize(
+        "tokens,expected",
+        [
+            (1234, "1,234"),
+            (1234567, "1,234,567"),
+            (42, "42"),
+            (0, "-"),
+            (None, "-"),
+        ],
+    )
+    def test_format_token_count(self, tokens, expected):
+        """Test token count formatting with various inputs."""
+        result = format_token_count(tokens)
+        assert result == expected

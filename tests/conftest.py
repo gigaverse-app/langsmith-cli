@@ -11,8 +11,10 @@ def runner():
 
     Module-scoped for performance - CliRunner creates isolated environments
     for each invoke() call, making it safe to share across tests.
+
+    Uses wider terminal width (160 chars) to accommodate table with 6 columns.
     """
-    return CliRunner()
+    return CliRunner(env={"COLUMNS": "160"})
 
 
 def create_dataset(
