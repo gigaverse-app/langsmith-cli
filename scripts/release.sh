@@ -1,8 +1,10 @@
 #!/bin/bash
 # Release script: Bump versions, commit, tag, and push to trigger CI/CD
-# Usage: ./scripts/release.sh [patch|minor|major|VERSION]
+# Usage: ./scripts/release.sh [patch|minor|major|VERSION] [--skip-tests] [-y]
 #   Default bump type is 'patch' if not specified
 #   Or specify exact version like: ./scripts/release.sh 0.2.3
+#   Add --skip-tests to skip running tests (faster releases)
+#   Add -y to auto-confirm without prompts
 
 set -e  # Exit on error
 
@@ -20,19 +22,38 @@ fi
 
 # Parse arguments
 BUMP_TYPE="patch"
+SKIP_TESTS=false
+AUTO_CONFIRM=false
 
-if [ $# -gt 0 ]; then
-    BUMP_TYPE="$1"
-fi
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --skip-tests)
+            SKIP_TESTS=true
+            shift
+            ;;
+        -y|--yes)
+            AUTO_CONFIRM=true
+            shift
+            ;;
+        *)
+            BUMP_TYPE="$1"
+            shift
+            ;;
+    esac
+done
 
 # Validate bump type
 if [[ ! "$BUMP_TYPE" =~ ^(patch|minor|major|[0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
     echo -e "${RED}Error: Invalid argument '$BUMP_TYPE'${NC}"
-    echo "Usage: ./scripts/release.sh [patch|minor|major|VERSION]"
+    echo "Usage: ./scripts/release.sh [patch|minor|major|VERSION] [--skip-tests] [-y]"
     echo "Examples:"
-    echo "  ./scripts/release.sh          # Bump patch version"
-    echo "  ./scripts/release.sh minor    # Bump minor version"
-    echo "  ./scripts/release.sh 0.3.0    # Set specific version"
+    echo "  ./scripts/release.sh                      # Bump patch version"
+    echo "  ./scripts/release.sh minor                # Bump minor version"
+    echo "  ./scripts/release.sh 0.3.0                # Set specific version"
+    echo "  ./scripts/release.sh --skip-tests         # Bump patch, skip tests"
+    echo "  ./scripts/release.sh minor --skip-tests   # Bump minor, skip tests"
+    echo "  ./scripts/release.sh -y                   # Bump patch, auto-confirm"
+    echo "  ./scripts/release.sh minor --skip-tests -y # Fast release"
     exit 1
 fi
 
@@ -50,7 +71,7 @@ fi
 
 # Make sure we're on main branch
 CURRENT_BRANCH=$(git branch --show-current)
-if [ "$CURRENT_BRANCH" != "main" ]; then
+if [ "$CURRENT_BRANCH" != "main" ] && [ "$AUTO_CONFIRM" = false ]; then
     echo -e "${YELLOW}Warning: Not on main branch (currently on ${CURRENT_BRANCH})${NC}"
     read -p "Continue anyway? (y/N) " -n 1 -r
     echo
@@ -77,9 +98,13 @@ uv run ruff format src/
 echo -e "${GREEN}Running type checks...${NC}"
 uv run pyright src/
 
-# Run tests
-echo -e "${GREEN}Running tests...${NC}"
-uv run pytest tests/ -v
+# Run tests (unless skipped)
+if [ "$SKIP_TESTS" = false ]; then
+    echo -e "${GREEN}Running tests...${NC}"
+    uv run pytest tests/ -v
+else
+    echo -e "${YELLOW}Skipping tests (--skip-tests flag provided)${NC}"
+fi
 
 # Calculate new version
 if [[ "$BUMP_TYPE" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -107,12 +132,16 @@ fi
 
 echo -e "${GREEN}New version: ${VERSION}${NC}"
 
-# Confirm release
-read -p "Create release v${VERSION}? (y/N) " -n 1 -r
-echo
-if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-    echo -e "${YELLOW}Release cancelled${NC}"
-    exit 0
+# Confirm release (unless auto-confirm)
+if [ "$AUTO_CONFIRM" = false ]; then
+    read -p "Create release v${VERSION}? (y/N) " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        echo -e "${YELLOW}Release cancelled${NC}"
+        exit 0
+    fi
+else
+    echo -e "${GREEN}Auto-confirming release v${VERSION}${NC}"
 fi
 
 # Update version in pyproject.toml
