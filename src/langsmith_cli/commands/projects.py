@@ -118,11 +118,13 @@ def list_projects(
     api_limit = None
 
     # list_projects returns a generator
+    # include_stats=True to get run_count, error_rate, total_cost, etc.
     projects_gen = client.list_projects(
         limit=api_limit,
         name_contains=api_name_filter,
         reference_dataset_id=reference_dataset_id,
         reference_dataset_name=reference_dataset_name,
+        include_stats=True,
     )
 
     # Materialize the list to count and process
@@ -192,7 +194,12 @@ def list_projects(
             # Last run time (human-readable relative time)
             if p.last_run_start_time:
                 now = datetime.now(timezone.utc)
-                delta = now - p.last_run_start_time
+                # Handle timezone-aware and timezone-naive datetimes
+                last_run = p.last_run_start_time
+                if last_run.tzinfo is None:
+                    # Make naive datetime timezone-aware (assume UTC)
+                    last_run = last_run.replace(tzinfo=timezone.utc)
+                delta = now - last_run
                 if delta.days > 0:
                     last_run_str = f"{delta.days}d ago"
                 elif delta.seconds >= 3600:
