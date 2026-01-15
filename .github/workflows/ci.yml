@@ -3,6 +3,8 @@ name: CI
 on:
   push:
     branches: [main]
+    tags-ignore:
+      - '**'  # Skip CI on tag pushes (Publish workflow handles testing)
   pull_request:
     branches: [main]
   workflow_dispatch:
