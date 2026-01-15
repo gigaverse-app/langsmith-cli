@@ -2,7 +2,7 @@
   "name": "langsmith-cli",
   "owner": {
     "name": "Gigaverse",
-    "email": "hello@gigaverse.ai"
+    "email": "aviadr1@gmail.com"
   },
   "metadata": {
     "description": "LangSmith CLI plugin marketplace",
@@ -15,7 +15,8 @@
       "description": "A context-efficient interface for LangSmith observability and evaluations.",
       "version": "0.1.10",
       "author": {
-        "name": "Gigaverse"
+        "name": "Gigaverse",
+        "email": "aviadr1@gmail.com"
       },
       "repository": "https://github.com/gigaverse-app/langsmith-cli",
       "license": "MIT",
