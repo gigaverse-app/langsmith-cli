@@ -22,6 +22,10 @@ def run_cli(*args):
 
     This is much faster than subprocess as it avoids process spawn overhead.
 
+    Note: CliRunner combines stdout/stderr, so diagnostic messages
+    will be mixed with JSON output. Use parse_json_output() to extract
+    the JSON from the combined output.
+
     Returns:
         tuple: (exit_code, stdout, stderr)
     """
@@ -32,11 +36,38 @@ def run_cli(*args):
 
 
 def parse_json_output(stdout):
-    """Parse JSON output, returning None if invalid."""
+    """Parse JSON output from combined stdout/stderr.
+
+    When using CliRunner with --json, diagnostic messages may appear
+    before the JSON. This function tries to extract just the JSON part.
+
+    Returns None if no valid JSON is found.
+    """
+    # First try parsing the entire output
     try:
         return json.loads(stdout)
     except json.JSONDecodeError:
-        return None
+        pass
+
+    # If that fails, try parsing each line from the end
+    # (JSON should be the last output)
+    lines = stdout.strip().split("\n")
+    for i in range(len(lines) - 1, -1, -1):
+        line = lines[i].strip()
+        if not line:
+            continue
+        try:
+            return json.loads(line)
+        except json.JSONDecodeError:
+            # Try combining this line with subsequent lines
+            # (for multi-line JSON)
+            combined = "\n".join(lines[i:])
+            try:
+                return json.loads(combined)
+            except json.JSONDecodeError:
+                continue
+
+    return None
 
 
 # Mark all tests as slow and smoke tests for easy filtering

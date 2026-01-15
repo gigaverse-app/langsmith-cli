@@ -663,7 +663,6 @@ def list_runs(
         order_by=order_by,
         reference_example_id=reference_example_id,
         console=None,  # Don't auto-report warnings (we have custom diagnostics below)
-        show_warnings=False,
     )
     all_runs = result.items
     failed_projects = result.failed_sources
@@ -1614,7 +1613,6 @@ def sample_runs(
                 filter=combined_filter,
                 order_by="-start_time",
                 console=console,
-                show_warnings=False,  # Don't spam warnings in sample mode
             )
             stratum_runs = result.items[:sample_limit]
 
@@ -1663,7 +1661,6 @@ def sample_runs(
                 filter=combined_filter,
                 order_by="-start_time",
                 console=console,
-                show_warnings=False,  # Don't spam warnings in sample mode
             )
             stratum_runs = result.items[:samples_per_stratum]
 
@@ -1885,7 +1882,6 @@ def analyze_runs(
             limit=None,
             order_by="-start_time",
             console=console,
-            show_warnings=False,  # Don't spam warnings in analyze mode
         )
         all_runs = result.items
     else:
@@ -2043,7 +2039,6 @@ def discover_tags(
         order_by="-start_time",
         select=["tags"],  # Only fetch tags field
         console=console,
-        show_warnings=False,  # Don't spam warnings in tags discovery
     )
     all_runs = result.items
 
@@ -2153,7 +2148,6 @@ def discover_metadata_keys(
         order_by="-start_time",
         select=["extra"],  # Only fetch metadata (stored in extra field)
         console=console,
-        show_warnings=False,  # Don't spam warnings in metadata-keys discovery
     )
     all_runs = result.items
 
