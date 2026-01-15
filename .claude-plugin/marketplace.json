@@ -1,0 +1,26 @@
+{
+  "name": "langsmith-cli",
+  "owner": {
+    "name": "Gigaverse",
+    "email": "hello@gigaverse.ai"
+  },
+  "metadata": {
+    "description": "LangSmith CLI plugin marketplace",
+    "version": "0.1.10"
+  },
+  "plugins": [
+    {
+      "name": "langsmith-cli",
+      "source": "./",
+      "description": "A context-efficient interface for LangSmith observability and evaluations.",
+      "version": "0.1.10",
+      "author": {
+        "name": "Gigaverse"
+      },
+      "repository": "https://github.com/gigaverse-app/langsmith-cli",
+      "license": "MIT",
+      "keywords": ["langsmith", "observability", "evaluations", "tracing"],
+      "category": "productivity"
+    }
+  ]
+}

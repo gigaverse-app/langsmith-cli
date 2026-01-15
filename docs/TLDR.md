@@ -61,8 +61,9 @@
 
 *Goal: The repository is not just a script; it is a distributable product.*
 
-* **Repo as a Plugin:** The repository root will be structured as a **Claude Plugin**.
-* It must contain the `.claude-plugin/plugin.json` manifest.
+* **Repo as a Plugin Marketplace:** The repository root will be structured as a **Claude Plugin Marketplace** containing a single plugin.
+* It must contain the `.claude-plugin/marketplace.json` manifest (for installation).
+* It must contain the `.claude-plugin/plugin.json` manifest (for the plugin itself).
 * It must house the `skills/` directory containing the "Bridge Skills" (the markdown files that teach Claude how to use the CLI).
 
 

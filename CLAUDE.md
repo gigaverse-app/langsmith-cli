@@ -503,8 +503,29 @@ The plugin is defined in `skills/langsmith/SKILL.md` which teaches Claude how to
 2. Executes `langsmith-cli` via subprocess
 3. Returns stdout/stderr to Claude
 
-### Plugin Manifest
-`.claude-plugin/plugin.json` registers the plugin with Claude Code.
+### Plugin Manifests
+The repository contains two manifest files:
+- `.claude-plugin/marketplace.json` - Registers the repository as an installable marketplace
+- `.claude-plugin/plugin.json` - Defines the plugin itself
+
+### Installation
+To install this plugin in Claude Code:
+
+1. Add the marketplace:
+   ```bash
+   /plugin marketplace add gigaverse-app/langsmith-cli
+   ```
+
+2. Install the plugin:
+   ```bash
+   /plugin install langsmith-cli@langsmith-cli
+   ```
+
+Or for local development:
+```bash
+/plugin marketplace add /path/to/langsmith-cli
+/plugin install langsmith-cli@langsmith-cli
+```
 
 ## Pydantic Model Usage Pattern
 
