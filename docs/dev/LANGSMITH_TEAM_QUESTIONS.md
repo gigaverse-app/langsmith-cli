@@ -1,10 +1,10 @@
-# Questions for LangSmith Team on Stratified Sampling & Analytics Implementation
+# Questions from Partner Team on Stratified Sampling & Analytics Implementation
 
 ## Context
 
-The LangSmith team is implementing Approach A (metadata-based stratified sampling and analytics) which will be incredibly valuable for metamind and the entire LangSmith ecosystem.
+We (the langsmith-cli team) are implementing Approach A (metadata-based stratified sampling and analytics) which will be incredibly valuable for metamind and the entire LangSmith ecosystem.
 
-This document contains clarification questions about the implementation details.
+This document contains clarification questions received from the partner team about our implementation details.
 
 ## 1. Stratified Sampling Command
 
