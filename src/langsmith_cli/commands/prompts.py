@@ -98,7 +98,7 @@ def push_prompt(ctx, name, file_path, description, tags, is_public):
     """Push a local prompt file to LangSmith."""
     client = get_or_create_client(ctx)
 
-    with open(file_path, "r") as f:
+    with open(file_path, "r", encoding="utf-8") as f:
         content = f.read()
 
     # Parse tags if provided

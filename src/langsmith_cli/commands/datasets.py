@@ -160,7 +160,7 @@ def push_dataset(ctx, file_path, dataset):
         client.create_dataset(dataset_name=dataset)
 
     examples = []
-    with open(file_path, "r") as f:
+    with open(file_path, "r", encoding="utf-8") as f:
         for line in f:
             if line.strip():
                 examples.append(json.loads(line))
