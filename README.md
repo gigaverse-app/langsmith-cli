@@ -28,10 +28,16 @@
 > uv tool install langsmith-cli
 > ```
 >
-> **Step 2:** Add the skill to Claude Code
+> **Step 2:** Add the plugin to Claude Code
+>
+> **Option A: Terminal Command**
 > ```bash
-> /plugin marketplace add gigaverse-app/langsmith-cli
+> claude plugin marketplace add gigaverse-app/langsmith-cli
+> claude plugin install langsmith-cli@langsmith-cli
 > ```
+>
+> **Option B: Interactive UI**
+> Inside Claude Code, run `/plugin` (without arguments) and use the UI to add the marketplace
 >
 > This gives Claude Code instant access to all LangSmith commands via skills.
 

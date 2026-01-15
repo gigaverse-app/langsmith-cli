@@ -509,22 +509,31 @@ The repository contains two manifest files:
 - `.claude-plugin/plugin.json` - Defines the plugin itself
 
 ### Installation
-To install this plugin in Claude Code:
 
-1. Add the marketplace:
-   ```bash
-   /plugin marketplace add gigaverse-app/langsmith-cli
-   ```
-
-2. Install the plugin:
-   ```bash
-   /plugin install langsmith-cli@langsmith-cli
-   ```
-
-Or for local development:
+**Method 1: Using Terminal Commands**
 ```bash
-/plugin marketplace add /path/to/langsmith-cli
-/plugin install langsmith-cli@langsmith-cli
+# Add the marketplace
+claude plugin marketplace add gigaverse-app/langsmith-cli
+
+# Install the plugin
+claude plugin install langsmith-cli@langsmith-cli
+```
+
+**Method 2: Using Claude Code Interactive UI**
+
+Inside Claude Code, run `/plugin` (without arguments) to open the interactive plugin manager:
+1. Navigate to the "Marketplaces" tab
+2. Add marketplace: `gigaverse-app/langsmith-cli`
+3. Navigate to the "Discover" tab
+4. Install the `langsmith-cli` plugin
+
+**Local Development**
+```bash
+# Add local marketplace
+claude plugin marketplace add /home/aviadr1/projects/langsmith-cli
+
+# Install the plugin
+claude plugin install langsmith-cli@langsmith-cli
 ```
 
 ## Pydantic Model Usage Pattern
