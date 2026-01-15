@@ -2130,17 +2130,22 @@ def sample_runs_file(tmp_path):
 
 def test_runs_view_file_basic(runner, sample_runs_file):
     """Test basic view-file command with single JSONL file."""
+    from conftest import strip_ansi
+
     result = runner.invoke(cli, ["runs", "view-file", str(sample_runs_file)])
     assert result.exit_code == 0
     assert "Test Run 1" in result.output
     assert "Test Run 2" in result.output
     assert "success" in result.output
     assert "error" in result.output
-    assert "Loaded 2 runs from 1 file(s)" in result.output
+    # Strip ANSI codes from Rich output for plain text matching
+    assert "Loaded 2 runs from 1 file(s)" in strip_ansi(result.output)
 
 
 def test_runs_view_file_glob_pattern(runner, tmp_path):
     """Test view-file with glob pattern matching multiple files."""
+    from conftest import strip_ansi
+
     # Create multiple test files
     for i in range(3):
         test_file = tmp_path / f"runs_{i}.jsonl"
@@ -2159,7 +2164,8 @@ def test_runs_view_file_glob_pattern(runner, tmp_path):
     assert "Run 0" in result.output
     assert "Run 1" in result.output
     assert "Run 2" in result.output
-    assert "Loaded 3 runs from 3 file(s)" in result.output
+    # Strip ANSI codes from Rich output for plain text matching
+    assert "Loaded 3 runs from 3 file(s)" in strip_ansi(result.output)
 
 
 @pytest.mark.parametrize(

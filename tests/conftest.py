@@ -1,4 +1,5 @@
 import pytest
+from click import unstyle
 from click.testing import CliRunner
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
@@ -15,6 +16,27 @@ def runner():
     Uses wider terminal width (160 chars) to accommodate table with 6 columns.
     """
     return CliRunner(env={"COLUMNS": "160"})
+
+
+def strip_ansi(text: str) -> str:
+    """Remove ANSI escape codes from text.
+
+    Rich library outputs ANSI codes for colors and formatting. Tests need
+    to strip these codes to check for plain text content.
+
+    Uses Click's built-in unstyle() function which is robust and well-tested.
+
+    Args:
+        text: String potentially containing ANSI escape codes
+
+    Returns:
+        String with all ANSI codes removed
+
+    Example:
+        >>> strip_ansi("\\x1b[31mRed text\\x1b[0m")
+        'Red text'
+    """
+    return unstyle(text)
 
 
 def create_dataset(
