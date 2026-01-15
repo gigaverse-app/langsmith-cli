@@ -2096,3 +2096,165 @@ def test_runs_list_default_truncate_behavior(runner):
             "very-long-model-name..." in result.output
             or "very-long-model-n..." in result.output
         )
+
+
+def test_runs_view_file_basic(runner, tmp_path):
+    """Test basic view-file command with single JSONL file."""
+    # Create a test JSONL file
+    test_file = tmp_path / "test_runs.jsonl"
+    run1 = Run(
+        id=UUID("12345678-1234-5678-1234-567812345678"),
+        name="Test Run 1",
+        run_type="llm",
+        start_time=datetime.now(timezone.utc),
+        status="success",
+        latency=1.5,
+        total_tokens=1000,
+    )
+    run2 = Run(
+        id=UUID("87654321-4321-8765-4321-876543218765"),
+        name="Test Run 2",
+        run_type="chain",
+        start_time=datetime.now(timezone.utc),
+        status="error",
+        latency=2.3,
+        error="Test error",
+    )
+
+    with open(test_file, "w") as f:
+        f.write(json.dumps(run1.model_dump(mode="json")) + "\n")
+        f.write(json.dumps(run2.model_dump(mode="json")) + "\n")
+
+    result = runner.invoke(cli, ["runs", "view-file", str(test_file)])
+    assert result.exit_code == 0
+    assert "Test Run 1" in result.output
+    assert "Test Run 2" in result.output
+    assert "success" in result.output
+    assert "error" in result.output
+    assert "Loaded 2 runs from 1 file(s)" in result.output
+
+
+def test_runs_view_file_glob_pattern(runner, tmp_path):
+    """Test view-file with glob pattern matching multiple files."""
+    # Create multiple test files
+    for i in range(3):
+        test_file = tmp_path / f"runs_{i}.jsonl"
+        run = Run(
+            id=UUID(f"1234567{i}-1234-5678-1234-567812345678"),
+            name=f"Run {i}",
+            run_type="llm",
+            start_time=datetime.now(timezone.utc),
+            status="success",
+        )
+        with open(test_file, "w") as f:
+            f.write(json.dumps(run.model_dump(mode="json")) + "\n")
+
+    result = runner.invoke(cli, ["runs", "view-file", str(tmp_path / "runs_*.jsonl")])
+    assert result.exit_code == 0
+    assert "Run 0" in result.output
+    assert "Run 1" in result.output
+    assert "Run 2" in result.output
+    assert "Loaded 3 runs from 3 file(s)" in result.output
+
+
+def test_runs_view_file_json_output(runner, tmp_path):
+    """Test view-file with JSON output."""
+    test_file = tmp_path / "test_runs.jsonl"
+    run = Run(
+        id=UUID("12345678-1234-5678-1234-567812345678"),
+        name="Test Run",
+        run_type="llm",
+        start_time=datetime.now(timezone.utc),
+        status="success",
+    )
+
+    with open(test_file, "w") as f:
+        f.write(json.dumps(run.model_dump(mode="json")) + "\n")
+
+    result = runner.invoke(cli, ["--json", "runs", "view-file", str(test_file)])
+    assert result.exit_code == 0
+
+    data = json.loads(result.output)
+    assert isinstance(data, list)
+    assert len(data) == 1
+    assert data[0]["name"] == "Test Run"
+
+
+def test_runs_view_file_with_fields(runner, tmp_path):
+    """Test view-file with --fields option."""
+    test_file = tmp_path / "test_runs.jsonl"
+    run = Run(
+        id=UUID("12345678-1234-5678-1234-567812345678"),
+        name="Test Run",
+        run_type="llm",
+        start_time=datetime.now(timezone.utc),
+        status="success",
+        latency=1.5,
+    )
+
+    with open(test_file, "w") as f:
+        f.write(json.dumps(run.model_dump(mode="json")) + "\n")
+
+    result = runner.invoke(
+        cli, ["--json", "runs", "view-file", str(test_file), "--fields", "id,name"]
+    )
+    assert result.exit_code == 0
+
+    data = json.loads(result.output)
+    assert len(data) == 1
+    assert set(data[0].keys()) == {"id", "name"}
+
+
+def test_runs_view_file_no_truncate(runner, tmp_path):
+    """Test view-file with --no-truncate flag."""
+    test_file = tmp_path / "test_runs.jsonl"
+    run = Run(
+        id=UUID("12345678-1234-5678-1234-567812345678"),
+        name="Very Long Run Name That Would Normally Be Truncated In Tables",
+        run_type="llm",
+        start_time=datetime.now(timezone.utc),
+        status="success",
+        extra={
+            "invocation_params": {
+                "model_name": "very-long-model-name-that-would-be-truncated-normally"
+            }
+        },
+    )
+
+    with open(test_file, "w") as f:
+        f.write(json.dumps(run.model_dump(mode="json")) + "\n")
+
+    result = runner.invoke(cli, ["runs", "view-file", str(test_file), "--no-truncate"])
+    assert result.exit_code == 0
+    # With --no-truncate, more of the model name should appear
+    assert "very-long-model-name-that-would-be-trunca" in result.output
+
+
+def test_runs_view_file_missing_file(runner):
+    """Test view-file with non-existent file."""
+    result = runner.invoke(cli, ["runs", "view-file", "nonexistent.jsonl"])
+    assert result.exit_code != 0
+    assert "No files match pattern" in result.output
+
+
+def test_runs_view_file_invalid_json(runner, tmp_path):
+    """Test view-file handles invalid JSON gracefully."""
+    test_file = tmp_path / "invalid.jsonl"
+    with open(test_file, "w") as f:
+        f.write('{"invalid json\n')
+        f.write('{"also invalid":\n')
+
+    result = runner.invoke(cli, ["runs", "view-file", str(test_file)])
+    # Should not crash, but show warnings
+    assert result.exit_code == 0
+    assert "Warning" in result.output
+
+
+def test_runs_view_file_empty_file(runner, tmp_path):
+    """Test view-file with empty file."""
+    test_file = tmp_path / "empty.jsonl"
+    test_file.touch()
+
+    result = runner.invoke(cli, ["runs", "view-file", str(test_file)])
+    assert result.exit_code == 0
+    assert "No valid runs found" in result.output

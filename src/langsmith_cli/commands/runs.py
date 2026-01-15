@@ -704,6 +704,134 @@ def get_run(ctx, run_id, fields):
             console.print(str(v))
 
 
+@runs.command("view-file")
+@click.argument("pattern")
+@click.option(
+    "--no-truncate",
+    is_flag=True,
+    help="Don't truncate long fields in table output (shows full content in all columns).",
+)
+@fields_option()
+@click.pass_context
+def view_file(ctx, pattern, no_truncate, fields):
+    """View runs from JSONL files with table display.
+
+    Supports glob patterns to read multiple files.
+
+    Examples:
+        langsmith-cli runs view-file samples.jsonl
+        langsmith-cli runs view-file "data/*.jsonl"
+        langsmith-cli runs view-file samples.jsonl --no-truncate
+        langsmith-cli runs view-file samples.jsonl --fields id,name,status
+        langsmith-cli --json runs view-file samples.jsonl
+    """
+    import glob
+    import json
+    from langsmith.schemas import Run
+
+    # Find matching files using glob
+    file_paths = glob.glob(pattern)
+
+    if not file_paths:
+        console.print(f"[red]No files match pattern: {pattern}[/red]")
+        raise click.Abort()
+
+    # Read all runs from matching files
+    runs: list[Run] = []
+    for file_path in sorted(file_paths):
+        try:
+            with open(file_path, "r") as f:
+                for line_num, line in enumerate(f, 1):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        data = json.loads(line)
+                        # Convert dict to Run object using Pydantic validation
+                        run = Run.model_validate(data)
+                        runs.append(run)
+                    except json.JSONDecodeError as e:
+                        console.print(
+                            f"[yellow]Warning: Invalid JSON at {file_path}:{line_num} - {e}[/yellow]"
+                        )
+                    except Exception as e:
+                        console.print(
+                            f"[yellow]Warning: Failed to parse run at {file_path}:{line_num} - {e}[/yellow]"
+                        )
+        except Exception as e:
+            console.print(f"[red]Error reading {file_path}: {e}[/red]")
+            continue
+
+    if not runs:
+        console.print("[yellow]No valid runs found in files.[/yellow]")
+        return
+
+    # Handle JSON output
+    if ctx.obj.get("json"):
+        data = filter_fields(runs, fields)
+        output_formatted_data(data, "json")
+        return
+
+    # Build table using same logic as runs list
+    from rich.table import Table
+
+    # Build descriptive title
+    if len(file_paths) == 1:
+        table_title = f"Runs from {file_paths[0]}"
+    else:
+        table_title = f"Runs from {len(file_paths)} files"
+
+    table = Table(title=table_title)
+    table.add_column("ID", style="dim", no_wrap=True)
+    # Conditionally apply max_width based on --no-truncate flag
+    table.add_column("Name", max_width=None if no_truncate else 30)
+    table.add_column("Status", justify="center")
+    table.add_column("Latency", justify="right")
+    table.add_column("Tokens", justify="right")
+    table.add_column("Model", style="cyan", max_width=None if no_truncate else 20)
+
+    count = 0
+    for r in runs:
+        count += 1
+        # Access SDK model fields directly (type-safe)
+        r_id = str(r.id)
+        r_name = r.name or "Unknown"
+        r_status = r.status
+
+        # Colorize status
+        status_style = (
+            "green"
+            if r_status == "success"
+            else "red"
+            if r_status == "error"
+            else "yellow"
+        )
+
+        latency = f"{r.latency:.2f}s" if r.latency is not None else "-"
+
+        # Format tokens and extract model name using utility functions
+        tokens = format_token_count(r.total_tokens)
+        # Disable model name truncation if --no-truncate is set
+        model_name = extract_model_name(r, max_length=999 if no_truncate else 20)
+
+        table.add_row(
+            r_id,
+            r_name,
+            f"[{status_style}]{r_status}[/{status_style}]",
+            latency,
+            tokens,
+            model_name,
+        )
+
+    if count == 0:
+        console.print("[yellow]No runs found.[/yellow]")
+    else:
+        console.print(table)
+        console.print(
+            f"\n[dim]Loaded {count} runs from {len(file_paths)} file(s)[/dim]"
+        )
+
+
 @runs.command("stats")
 @add_project_filter_options
 @click.pass_context

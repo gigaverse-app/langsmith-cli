@@ -55,6 +55,14 @@ See **[Installation Guide](references/installation.md)** for all installation me
   - `--roots`: Show only root traces (recommended for cleaner output).
 - `langsmith-cli --json runs get <id> [OPTIONS]`: Get details of a single run.
   - `--fields <comma-separated>`: Only return specific fields (e.g., `inputs,outputs,error`).
+- `langsmith-cli runs view-file <pattern> [OPTIONS]`: View runs from JSONL files with table display.
+  - `<pattern>`: File path or glob pattern (e.g., `samples.jsonl`, `data/*.jsonl`).
+  - `--fields <comma-separated>`: Only show specific fields.
+  - `--no-truncate`: Show full content in table columns (for human viewing only).
+  - Supports `--json` for JSON output.
+  - Example: `langsmith-cli runs view-file samples.jsonl`
+  - Example: `langsmith-cli runs view-file "data/*.jsonl" --no-truncate`
+  - Example: `langsmith-cli --json runs view-file samples.jsonl --fields id,name,status`
 - `langsmith-cli --json runs stats --project <name>`: Get aggregate stats.
 - `langsmith-cli --json runs open <id>`: Instruct the human to open this run in their browser.
 - `langsmith-cli --json runs sample [OPTIONS]`: Stratified sampling by tags/metadata.
