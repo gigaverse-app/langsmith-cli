@@ -36,6 +36,12 @@ def prompts():
 @click.pass_context
 def list_prompts(ctx, limit, is_public, exclude, fields, count, output):
     """List available prompt repositories."""
+    logger = ctx.obj["logger"]
+    is_machine_readable = ctx.obj.get("json") or bool(output) or bool(fields)
+    logger.use_stderr = is_machine_readable
+
+    logger.debug(f"Listing prompts: limit={limit}, is_public={is_public}")
+
     client = get_or_create_client(ctx)
     # list_prompts returns ListPromptsResponse with .repos attribute
     result = client.list_prompts(limit=limit, is_public=is_public)
@@ -84,6 +90,11 @@ def list_prompts(ctx, limit, is_public, exclude, fields, count, output):
 @click.pass_context
 def get_prompt(ctx, name, commit):
     """Fetch a prompt template."""
+    logger = ctx.obj["logger"]
+    is_machine_readable = ctx.obj.get("json")
+    logger.use_stderr = is_machine_readable
+
+    logger.debug(f"Fetching prompt: name={name}, commit={commit}")
 
     client = get_or_create_client(ctx)
     # pull_prompt returns the prompt object (might be LangChain PromptTemplate)
@@ -115,6 +126,12 @@ def get_prompt(ctx, name, commit):
 @click.pass_context
 def push_prompt(ctx, name, file_path, description, tags, is_public):
     """Push a local prompt file to LangSmith."""
+    logger = ctx.obj["logger"]
+    is_machine_readable = ctx.obj.get("json")
+    logger.use_stderr = is_machine_readable
+
+    logger.debug(f"Pushing prompt: name={name}, file={file_path}")
+
     client = get_or_create_client(ctx)
 
     with open(file_path, "r", encoding="utf-8") as f:
@@ -132,4 +149,4 @@ def push_prompt(ctx, name, file_path, description, tags, is_public):
         is_public=is_public,
     )
 
-    console.print(f"[green]Successfully pushed prompt to {name}[/green]")
+    logger.success(f"Successfully pushed prompt to {name}")

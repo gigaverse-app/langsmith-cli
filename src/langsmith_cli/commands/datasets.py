@@ -53,6 +53,15 @@ def list_datasets(
     output,
 ):
     """List all available datasets."""
+    logger = ctx.obj["logger"]
+    is_machine_readable = ctx.obj.get("json") or bool(output) or bool(fields)
+    logger.use_stderr = is_machine_readable
+
+    logger.debug(
+        f"Listing datasets: limit={limit}, data_type={data_type}, "
+        f"dataset_name={dataset_name}, name_contains={name_contains}"
+    )
+
     client = get_or_create_client(ctx)
 
     # Parse comma-separated dataset IDs
@@ -118,6 +127,11 @@ def list_datasets(
 @click.pass_context
 def get_dataset(ctx, dataset_id, fields):
     """Fetch details of a single dataset."""
+    logger = ctx.obj["logger"]
+    is_machine_readable = ctx.obj.get("json") or bool(fields)
+    logger.use_stderr = is_machine_readable
+
+    logger.debug(f"Fetching dataset: dataset_id={dataset_id}")
 
     client = get_or_create_client(ctx)
     dataset = client.read_dataset(dataset_id=dataset_id)
@@ -149,6 +163,12 @@ def create_dataset(ctx, name, description, dataset_type):
     """Create a new dataset."""
     from langsmith.schemas import DataType
 
+    logger = ctx.obj["logger"]
+    is_machine_readable = ctx.obj.get("json")
+    logger.use_stderr = is_machine_readable
+
+    logger.debug(f"Creating dataset: name={name}, type={dataset_type}")
+
     client = get_or_create_client(ctx)
 
     # Convert string to DataType enum
@@ -163,7 +183,7 @@ def create_dataset(ctx, name, description, dataset_type):
         click.echo(json_dumps(data))
         return
 
-    console.print(f"[green]Created dataset {dataset.name}[/green] (ID: {dataset.id})")
+    logger.success(f"Created dataset {dataset.name} (ID: {dataset.id})")
 
 
 @datasets.command("push")
@@ -173,6 +193,12 @@ def create_dataset(ctx, name, description, dataset_type):
 def push_dataset(ctx, file_path, dataset):
     """Upload examples from a JSONL file to a dataset."""
     import json
+
+    logger = ctx.obj["logger"]
+    is_machine_readable = ctx.obj.get("json")
+    logger.use_stderr = is_machine_readable
+
+    logger.debug(f"Pushing dataset from file: {file_path}")
 
     client = get_or_create_client(ctx)
 
@@ -185,7 +211,7 @@ def push_dataset(ctx, file_path, dataset):
     try:
         client.read_dataset(dataset_name=dataset)
     except LangSmithNotFoundError:
-        console.print(f"[yellow]Dataset '{dataset}' not found. Creating it...[/yellow]")
+        logger.warning(f"Dataset '{dataset}' not found. Creating it...")
         client.create_dataset(dataset_name=dataset)
 
     examples = []
@@ -201,6 +227,6 @@ def push_dataset(ctx, file_path, dataset):
         dataset_name=dataset,
     )
 
-    console.print(
-        f"[green]Successfully pushed {len(examples)} examples to dataset '{dataset}'[/green]"
+    logger.success(
+        f"Successfully pushed {len(examples)} examples to dataset '{dataset}'"
     )

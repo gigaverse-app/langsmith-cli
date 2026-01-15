@@ -60,6 +60,14 @@ def list_examples(
     output,
 ):
     """List examples for a dataset."""
+    logger = ctx.obj["logger"]
+    is_machine_readable = ctx.obj.get("json") or bool(output) or bool(fields)
+    logger.use_stderr = is_machine_readable
+
+    logger.debug(
+        f"Listing examples: dataset={dataset}, limit={limit}, "
+        f"offset={offset}, filter={filter_}"
+    )
 
     client = get_or_create_client(ctx)
 
@@ -134,6 +142,11 @@ def list_examples(
 @click.pass_context
 def get_example(ctx, example_id, as_of, fields):
     """Fetch details of a single example."""
+    logger = ctx.obj["logger"]
+    is_machine_readable = ctx.obj.get("json") or bool(fields)
+    logger.use_stderr = is_machine_readable
+
+    logger.debug(f"Fetching example: example_id={example_id}, as_of={as_of}")
 
     client = get_or_create_client(ctx)
     example = client.read_example(example_id, as_of=as_of)
@@ -163,6 +176,11 @@ def get_example(ctx, example_id, as_of, fields):
 @click.pass_context
 def create_example(ctx, dataset, inputs, outputs, metadata, split):
     """Create a new example in a dataset."""
+    logger = ctx.obj["logger"]
+    is_machine_readable = ctx.obj.get("json")
+    logger.use_stderr = is_machine_readable
+
+    logger.debug(f"Creating example in dataset: {dataset}")
 
     client = get_or_create_client(ctx)
 
@@ -188,6 +206,4 @@ def create_example(ctx, dataset, inputs, outputs, metadata, split):
         click.echo(json_dumps(data))
         return
 
-    console.print(
-        f"[green]Created example[/green] (ID: {example.id}) in dataset {dataset}"
-    )
+    logger.success(f"Created example (ID: {example.id}) in dataset {dataset}")

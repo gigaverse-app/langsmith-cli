@@ -76,6 +76,14 @@ def list_projects(
     output,
 ):
     """List all projects."""
+    logger = ctx.obj["logger"]
+    is_machine_readable = ctx.obj.get("json") or bool(output) or bool(fields)
+    logger.use_stderr = is_machine_readable
+
+    logger.debug(
+        f"Listing projects: limit={limit}, name={name_}, "
+        f"pattern={name_pattern}, regex={name_regex}"
+    )
 
     client = get_or_create_client(ctx)
 
@@ -198,6 +206,12 @@ def create_project(ctx, name, description):
     """Create a new project."""
     from langsmith.utils import LangSmithConflictError
 
+    logger = ctx.obj["logger"]
+    is_machine_readable = ctx.obj.get("json")
+    logger.use_stderr = is_machine_readable
+
+    logger.debug(f"Creating project: name={name}")
+
     client = get_or_create_client(ctx)
     try:
         project = client.create_project(project_name=name, description=description)
@@ -207,9 +221,7 @@ def create_project(ctx, name, description):
             click.echo(json_dumps(data))
             return
 
-        console.print(
-            f"[green]Created project {project.name}[/green] (ID: {project.id})"
-        )
+        logger.success(f"Created project {project.name} (ID: {project.id})")
     except LangSmithConflictError:
         # Project already exists - handle gracefully for idempotency
-        console.print(f"[yellow]Project {name} already exists.[/yellow]")
+        logger.warning(f"Project {name} already exists.")
