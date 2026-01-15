@@ -55,11 +55,15 @@ Traditional tools are slow, verbose, and waste tokens. **LangSmith CLI** is diff
 | **Context Usage** | 96% reduction with `--fields` | Full objects always |
 | **Human UX** | Rich tables with colors | JSON only |
 | **Agent UX** | Strict `--json` mode | Mixed output |
-| **Live Updates** | `runs watch` dashboard | ❌ |
-| **Advanced Filters** | Regex, wildcards, smart presets | Basic only |
+| **Live Dashboard** | `runs watch` real-time monitoring | ❌ |
+| **Advanced Filters** | Regex, wildcards, time presets | Basic only |
+| **Stratified Sampling** | `runs sample` by tag/metadata | ❌ |
+| **Aggregate Analytics** | `runs analyze` group & metrics | ❌ |
+| **Unicode Preservation** | Hebrew, Chinese, emoji preserved | ❌ Escaped |
+| **File Operations** | View/analyze offline with globs | ❌ |
 | **Export Formats** | JSON, CSV, YAML | JSON only |
 
-**100% Feature Parity** + **Superior Quality of Life** 🚀
+**100% Feature Parity** + **10x Better QoL** 🚀
 
 ---
 
