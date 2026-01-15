@@ -284,6 +284,39 @@ langsmith-cli runs list --format csv > runs.csv
 langsmith-cli projects list --format yaml > projects.yml
 ```
 
+### 🔊 Verbosity Control
+
+Control diagnostic output with industry-standard flags (following pip, Black, etc.):
+
+```bash
+# Default: Progress messages + warnings
+langsmith-cli runs list --project production
+
+# Quiet: Warnings only, no progress
+langsmith-cli -q runs list --project production
+
+# Silent: Errors only (cleanest for scripts)
+langsmith-cli -qq runs list --project production
+
+# Debug: Show API calls and processing details
+langsmith-cli -v runs list --project production
+
+# Trace: Ultra-verbose with HTTP requests and timing
+langsmith-cli -vv runs list --project production
+```
+
+**Clean JSON piping with `-qq`:**
+```bash
+# Diagnostics on stderr, JSON on stdout
+langsmith-cli --json runs list | jq
+
+# Silent mode for cleanest piping
+langsmith-cli --json -qq runs list | jq '.[] | .name'
+
+# Suppress diagnostics with stderr redirection
+langsmith-cli --json runs list 2>/dev/null | jq
+```
+
 ---
 
 ## 🤖 AI Agent Integration

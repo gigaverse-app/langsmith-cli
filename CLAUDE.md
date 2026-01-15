@@ -70,6 +70,18 @@ uv run langsmith-cli runs list --project default
 
 # Run with JSON output (agent mode)
 uv run langsmith-cli --json runs list --limit 5
+
+# Verbosity control (following industry standards: pip, Black, etc.)
+uv run langsmith-cli runs list               # Default: INFO (progress + warnings)
+uv run langsmith-cli -q runs list            # Quiet: WARNING (warnings only)
+uv run langsmith-cli -qq runs list           # Silent: ERROR (errors only)
+uv run langsmith-cli -v runs list            # Debug: DEBUG (debug + progress + warnings)
+uv run langsmith-cli -vv runs list           # Trace: TRACE (ultra-verbose)
+
+# JSON mode with clean stdout/stderr separation
+uv run langsmith-cli --json runs list        # Progress to stderr, JSON to stdout
+uv run langsmith-cli --json -qq runs list    # Silent mode, clean JSON only
+uv run langsmith-cli --json runs list 2>/dev/null  # Suppress diagnostics
 ```
 
 ### Authentication
@@ -157,12 +169,56 @@ def get_run(ctx, run_id, fields):
         data = {k: v for k, v in run_dict.items() if k in field_list}
 ```
 
+**4. Logging and Verbosity Pattern (stdout/stderr Separation)**
+```python
+# All commands use CLILogger for diagnostic output with proper stream separation
+@runs.command("list")
+def list_runs(ctx, output_format, count, output, ...):
+    # Get logger from context
+    logger = ctx.obj["logger"]
+
+    # Determine if output is machine-readable (use stderr for diagnostics)
+    is_machine_readable = (
+        ctx.obj.get("json") or
+        output_format in ["csv", "yaml"] or
+        count or
+        output
+    )
+    logger.use_stderr = is_machine_readable
+
+    # Use logger methods for all diagnostic output
+    logger.debug("API call: POST /runs/query")  # -v: DEBUG level
+    logger.info("Fetching 100 runs...")          # Default: INFO level
+    logger.warning("Warning: Failed to fetch...")  # Always shown (unless -qq)
+    logger.error("Error reading file...")        # Always shown
+    logger.success("Wrote N items to file")      # INFO level
+
+    # Data output continues using appropriate stream
+    if ctx.obj.get("json"):
+        click.echo(json_dumps(data))  # stdout
+    else:
+        logger.data(table, mode="table")  # stdout
+```
+
+**Verbosity Levels** (following pip, Black, and Python CLI standards):
+- **Default (no flags)**: INFO level (20) - progress + warnings + errors
+- **`-q`**: WARNING level (30) - warnings + errors only, no progress
+- **`-qq`**: ERROR level (40) - only errors (cleanest for scripts)
+- **`-v`**: DEBUG level (10) - debug details + info + warnings + errors
+- **`-vv`**: TRACE level (5) - ultra-verbose (HTTP, timing, raw data)
+
+**Stream Separation:**
+- **stdout**: Data output (JSON, CSV, YAML, tables, count results)
+- **stderr**: Diagnostic messages (progress, warnings, errors) in machine-readable modes
+- **Table mode exception**: Diagnostics stay on stdout (mixing is OK for humans)
+
 ### File Organization
 
 ```
 src/langsmith_cli/
 ├── __init__.py
 ├── main.py              # Entry point, CLI group registration
+├── logging.py           # CLILogger for verbosity control and stream separation
 └── commands/            # Modular command implementations
     ├── auth.py          # Authentication (login)
     ├── projects.py      # Project management
@@ -174,9 +230,11 @@ src/langsmith_cli/
 tests/
 ├── conftest.py          # Pytest fixtures (CliRunner)
 ├── test_main.py         # Root CLI tests
+├── test_logging.py      # CLILogger tests
 ├── test_auth.py         # Auth command tests
 ├── test_projects.py     # Projects command tests
 ├── test_runs.py         # Runs command tests (largest)
+├── test_smoke.py        # Smoke tests (requires API key)
 └── test_e2e.py          # End-to-end tests (requires API key)
 
 skills/langsmith/

@@ -46,6 +46,14 @@ See **[Installation Guide](references/installation.md)** for all installation me
 6. **Universal Flags:** ALL list commands support `--count` (get count instead of data) and `--exclude` (exclude items by substring, repeatable).
    - Example: `langsmith-cli --json projects list --count` returns just the number
    - Example: `langsmith-cli --json runs list --exclude smoke-test --exclude dev-test` filters out unwanted runs
+7. **Verbosity Control:** Use `-q`/`-qq` for quieter output, `-v`/`-vv` for more verbose output (diagnostics go to stderr in JSON mode).
+   - Default: Shows progress messages + warnings (e.g., "Fetching 100 runs...")
+   - `-q`: Warnings only, no progress messages
+   - `-qq`: Silent mode (errors only) - cleanest for piping to jq/scripts
+   - `-v`: Debug mode (shows API calls and processing details)
+   - `-vv`: Trace mode (ultra-verbose with HTTP requests and timing)
+   - Example: `langsmith-cli --json -qq runs list | jq` (clean JSON, no diagnostics)
+   - Example: `langsmith-cli -v runs list` (debug info for troubleshooting)
 
 ## API Reference
 
