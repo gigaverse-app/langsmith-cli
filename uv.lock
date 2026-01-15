@@ -306,7 +306,7 @@ wheels = [
 
 [[package]]
 name = "langsmith-cli"
-version = "0.2.2"
+version = "0.2.3"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
