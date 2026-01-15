@@ -1296,7 +1296,7 @@ def sample_runs(
     if output:
         # Write to file
         try:
-            with open(output, "w") as f:
+            with open(output, "w", encoding="utf-8") as f:
                 for sample in all_samples:
                     f.write(json_dumps(sample) + "\n")
             console.print(
