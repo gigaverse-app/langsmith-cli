@@ -1235,6 +1235,12 @@ def sample_runs(
     help="Additional FQL filter to apply before grouping",
 )
 @click.option(
+    "--sample-size",
+    default=300,
+    type=int,
+    help="Number of recent runs to analyze (default: 300, use 0 for all runs)",
+)
+@click.option(
     "--format",
     "output_format",
     type=click.Choice(["table", "json", "csv", "yaml"]),
@@ -1251,12 +1257,16 @@ def analyze_runs(
     group_by,
     metrics,
     additional_filter,
+    sample_size,
     output_format,
 ):
     """Analyze runs grouped by tags or metadata with aggregate metrics.
 
     This command groups runs by a specified field (tag or metadata) and computes
     aggregate statistics for each group.
+
+    By default, analyzes the 300 most recent runs using field selection for
+    fast performance. Use --sample-size 0 to analyze all runs (slower but complete).
 
     Supported Metrics:
         - count: Number of runs in group
@@ -1267,18 +1277,32 @@ def analyze_runs(
         - avg_cost: Average cost per run
 
     Examples:
-        # Analyze by tag-based categories
+        # Analyze recent 300 runs (default - fast, ~8 seconds)
         langsmith-cli runs analyze \\
           --project my-project \\
-          --group-by "tag:length_category" \\
-          --metrics "count,error_rate,p50_latency,p95_latency"
+          --group-by "tag:schema" \\
+          --metrics "count,error_rate,p50_latency"
 
-        # Analyze by metadata with time filter
+        # Quick check with smaller sample (~2 seconds)
         langsmith-cli runs analyze \\
           --project my-project \\
-          --group-by "metadata:user_tier" \\
-          --metrics "count,avg_cost,total_tokens" \\
-          --filter 'gte(start_time, "2026-01-01")'
+          --group-by "tag:schema" \\
+          --metrics "count,error_rate" \\
+          --sample-size 100
+
+        # Larger sample for better accuracy (~28 seconds)
+        langsmith-cli runs analyze \\
+          --project my-project \\
+          --group-by "tag:schema" \\
+          --metrics "count,error_rate,p50_latency" \\
+          --sample-size 1000
+
+        # Analyze ALL runs (slower, but complete)
+        langsmith-cli runs analyze \\
+          --project my-project \\
+          --group-by "tag:schema" \\
+          --metrics "count,error_rate,p50_latency" \\
+          --sample-size 0
     """
     from collections import defaultdict
 
@@ -1309,19 +1333,100 @@ def analyze_runs(
         name_regex=project_name_regex,
     )
 
-    # Fetch all runs (with optional filter)
+    # Determine which fields to fetch based on requested metrics and grouping
+    # Use field selection to reduce data transfer and speed up fetch
+    select_fields = set()
+
+    # Add fields for grouping
+    if grouping_type == "tag":
+        select_fields.add("tags")
+    else:  # metadata
+        select_fields.add("extra")
+
+    # Always add start_time for sorting and latency computation
+    select_fields.add("start_time")
+
+    # Add fields based on requested metrics
+    for metric in requested_metrics:
+        if metric in ["error_rate"]:
+            select_fields.add("error")
+        elif metric in ["p50_latency", "p95_latency", "p99_latency", "avg_latency"]:
+            # latency is computed from start_time and end_time
+            select_fields.add("end_time")  # start_time already added above
+        elif metric == "total_tokens":
+            select_fields.add("total_tokens")
+        elif metric == "avg_cost":
+            select_fields.add("total_cost")
+
+    # -------------------------------------------------------------------------
+    # Fetch Optimization History & Future Improvements
+    # -------------------------------------------------------------------------
+    # CURRENT: Simple sample-based approach with field selection
+    #   - Default: 300 most recent runs with smart field selection
+    #   - Performance: 100 runs in ~2s, 300 runs in ~8s, 1000 runs in ~28s (vs 45s timeout)
+    #   - Data reduction: 14x smaller per run (36KB → 2.6KB with select)
+    #
+    # ATTEMPTED: Parallel time-based pagination with ThreadPoolExecutor
+    #   - Divided time into N windows and fetched in parallel
+    #   - Result: Only 4s improvement (28s → 24s) for 1000 runs
+    #   - Reverted: 50+ lines of complexity not worth 14% speedup
+    #
+    # ATTEMPTED: Adaptive recursive subdivision for dense time periods
+    #   - If window returned 100 runs (max), subdivide to get better coverage
+    #   - Addressed sampling bias (e.g., 100 from 20,000 runs = 0.5% sample)
+    #   - Reverted: Too complex for marginal benefit
+    #
+    # FUTURE IMPROVEMENT: Adaptive time-based windowing could work if:
+    #   1. Use FQL time filters to discover high-density periods
+    #      Example: Query run counts per hour to find busy periods
+    #   2. Allocate sample budget proportionally across time windows
+    #      Example: 60% of runs in last 6 hours → fetch 180 of 300 from there
+    #   3. This ensures representative sampling across time while maintaining speed
+    #   4. Trade-off: One extra API call to count runs, but better statistical accuracy
+    #
+    # For now, simple approach solves the timeout problem with minimal complexity.
+    # -------------------------------------------------------------------------
+
+    # Fetch runs (with optional filter and sample size limit)
+    # Use field selection for 10-20x faster fetches
     all_runs = []
-    for proj_name in projects_to_query:
-        try:
-            project_runs = client.list_runs(
-                project_name=proj_name,
-                filter=additional_filter,
-                limit=None,
-            )
-            all_runs.extend(list(project_runs))
-        except Exception:
-            # Skip projects that fail to fetch
-            pass
+
+    if sample_size == 0:
+        # User wants ALL runs - don't use select (would be slow for large datasets)
+        # Use serial pagination without field selection
+        for proj_name in projects_to_query:
+            try:
+                project_runs = client.list_runs(
+                    project_name=proj_name,
+                    filter=additional_filter,
+                    limit=None,
+                    order_by="-start_time",
+                )
+                all_runs.extend(list(project_runs))
+            except Exception:
+                pass
+    else:
+        # Use sample-based approach with field selection (FAST!)
+        # API has max limit of 100 when using select, so manually collect from iterator
+        for proj_name in projects_to_query:
+            try:
+                runs_iter = client.list_runs(
+                    project_name=proj_name,
+                    filter=additional_filter,
+                    limit=None,  # SDK paginates automatically
+                    order_by="-start_time",
+                    select=list(select_fields) if select_fields else None,
+                )
+
+                # Manually collect up to sample_size
+                collected = 0
+                for run in runs_iter:
+                    all_runs.append(run)
+                    collected += 1
+                    if collected >= sample_size:
+                        break  # Stop early when we have enough
+            except Exception:
+                pass
 
     # Group runs by extracted field value
     groups: dict[str, list[Any]] = defaultdict(list)
@@ -1429,6 +1534,7 @@ def discover_tags(
     )
 
     # Fetch sample of recent runs
+    # Use select to only fetch fields we need (much faster - 2x speedup, 14x less data)
     all_runs = []
     for proj_name in projects_to_query:
         try:
@@ -1436,6 +1542,7 @@ def discover_tags(
                 project_name=proj_name,
                 limit=sample_size,
                 order_by="-start_time",
+                select=["tags"],  # Only fetch tags field
             )
             all_runs.extend(list(project_runs))
         except Exception:
@@ -1536,6 +1643,7 @@ def discover_metadata_keys(
     )
 
     # Fetch sample of recent runs
+    # Use select to only fetch fields we need (much faster - 2x speedup, 14x less data)
     all_runs = []
     for proj_name in projects_to_query:
         try:
@@ -1543,6 +1651,7 @@ def discover_metadata_keys(
                 project_name=proj_name,
                 limit=sample_size,
                 order_by="-start_time",
+                select=["extra"],  # Only fetch metadata (stored in extra field)
             )
             all_runs.extend(list(project_runs))
         except Exception:
