@@ -71,9 +71,11 @@ See **[Installation Guide](references/installation.md)** for all installation me
   - `--group-by <field>`: Grouping field (e.g., `tag:length_category`, `metadata:user_tier`).
   - `--metrics <comma-separated>`: Metrics to compute (default: `count,error_rate,p50_latency,p95_latency`).
     - Available metrics: `count`, `error_rate`, `p50_latency`, `p95_latency`, `p99_latency`, `avg_latency`, `total_tokens`, `avg_cost`
+  - `--sample-size <n>`: Number of recent runs to analyze (default: 300, use 0 for all runs).
   - `--filter <string>`: Additional FQL filter to apply.
   - `--format <format>`: Output format (json/table/csv/yaml).
   - Example: `langsmith-cli --json runs analyze --group-by tag:length --metrics count,error_rate,p95_latency`
+  - Example: `langsmith-cli --json runs analyze --group-by tag:schema --metrics count,error_rate --sample-size 1000`
 - `langsmith-cli --json runs tags [OPTIONS]`: Discover structured tag patterns (key:value format).
   - `--sample-size <n>`: Number of recent runs to sample (default: 1000).
   - Returns: `{"tag_patterns": {"key1": ["val1", "val2"], ...}}`
