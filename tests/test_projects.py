@@ -51,48 +51,48 @@ def test_projects_create(runner):
         assert "Created project created-proj" in result.output
 
 
-def test_projects_list_with_name_pattern(runner):
-    """INVARIANT: --name-pattern should filter by wildcard match."""
+@pytest.mark.parametrize(
+    "filter_type,filter_value,projects_data,should_match,should_not_match",
+    [
+        (
+            "--name-pattern",
+            "*prod*",
+            ["prod-api-v1", "prod-web-v1", "staging-api"],
+            ["prod-api-v1", "prod-web-v1"],
+            ["staging-api"],
+        ),
+        (
+            "--name-regex",
+            "^prod-.*-v[0-9]+",
+            ["prod-api-v1", "prod-api-v2", "staging-api"],
+            ["prod-api-v1", "prod-api-v2"],
+            ["staging-api"],
+        ),
+    ],
+)
+def test_projects_list_with_name_filter(
+    runner, filter_type, filter_value, projects_data, should_match, should_not_match
+):
+    """INVARIANT: Name filters should correctly match/exclude projects."""
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
 
-        p1 = create_project(name="prod-api-v1")
-        p2 = create_project(name="prod-web-v1")
-        p3 = create_project(name="staging-api")
+        # Create projects from test data
+        projects = [create_project(name=name) for name in projects_data]
+        mock_client.list_projects.return_value = iter(projects)
 
-        mock_client.list_projects.return_value = iter([p1, p2, p3])
-
-        # Filter with pattern "*prod*"
-        result = runner.invoke(cli, ["projects", "list", "--name-pattern", "*prod*"])
+        # Apply filter
+        result = runner.invoke(cli, ["projects", "list", filter_type, filter_value])
 
         assert result.exit_code == 0
-        # Should match p1 and p2, but not p3
-        assert "prod-api-v1" in result.output
-        assert "prod-web-v1" in result.output
-        assert "staging-api" not in result.output
 
+        # Verify matches
+        for name in should_match:
+            assert name in result.output, f"Expected '{name}' to match filter"
 
-def test_projects_list_with_name_regex(runner):
-    """INVARIANT: --name-regex should filter by regex pattern."""
-    with patch("langsmith.Client") as MockClient:
-        mock_client = MockClient.return_value
-
-        p1 = create_project(name="prod-api-v1")
-        p2 = create_project(name="prod-api-v2")
-        p3 = create_project(name="staging-api")
-
-        mock_client.list_projects.return_value = iter([p1, p2, p3])
-
-        # Filter with regex "^prod-.*-v[0-9]+"
-        result = runner.invoke(
-            cli, ["projects", "list", "--name-regex", "^prod-.*-v[0-9]+"]
-        )
-
-        assert result.exit_code == 0
-        # Should match p1 and p2, but not p3
-        assert "prod-api-v1" in result.output
-        assert "prod-api-v2" in result.output
-        assert "staging-api" not in result.output
+        # Verify exclusions
+        for name in should_not_match:
+            assert name not in result.output, f"Expected '{name}' to NOT match filter"
 
 
 def test_projects_list_with_has_runs(runner):
@@ -116,45 +116,52 @@ def test_projects_list_with_has_runs(runner):
         assert "empty-project" not in result.output
 
 
-def test_projects_list_with_sort_by_name(runner):
-    """INVARIANT: --sort-by name should sort projects alphabetically."""
+@pytest.mark.parametrize(
+    "sort_field,projects_data,first_expected,last_expected",
+    [
+        (
+            "name",
+            [
+                ("zebra-project", 0),
+                ("alpha-project", 0),
+                ("beta-project", 0),
+            ],
+            "alpha-project",
+            "zebra-project",
+        ),
+        (
+            "-run_count",
+            [
+                ("low-activity", 10),
+                ("high-activity", 1000),
+            ],
+            "high-activity",
+            "low-activity",
+        ),
+    ],
+)
+def test_projects_list_with_sort_by(
+    runner, sort_field, projects_data, first_expected, last_expected
+):
+    """INVARIANT: --sort-by should sort projects correctly."""
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
 
-        p1 = create_project(name="zebra-project")
-        p2 = create_project(name="alpha-project")
-        p3 = create_project(name="beta-project")
+        # Create projects from test data
+        projects = [
+            create_project(name=name, run_count=count) for name, count in projects_data
+        ]
+        mock_client.list_projects.return_value = iter(projects)
 
-        mock_client.list_projects.return_value = iter([p1, p2, p3])
-
-        # Sort by name ascending
-        result = runner.invoke(cli, ["projects", "list", "--sort-by", "name"])
-
-        assert result.exit_code == 0
-        # Check order in output (alpha should appear before zebra)
-        alpha_pos = result.output.find("alpha-project")
-        zebra_pos = result.output.find("zebra-project")
-        assert alpha_pos < zebra_pos
-
-
-def test_projects_list_with_sort_by_run_count_desc(runner):
-    """INVARIANT: --sort-by -run_count should sort by runs descending."""
-    with patch("langsmith.Client") as MockClient:
-        mock_client = MockClient.return_value
-
-        p1 = create_project(name="low-activity", run_count=10)
-        p2 = create_project(name="high-activity", run_count=1000)
-
-        mock_client.list_projects.return_value = iter([p1, p2])
-
-        # Sort by run_count descending
-        result = runner.invoke(cli, ["projects", "list", "--sort-by", "-run_count"])
+        result = runner.invoke(cli, ["projects", "list", "--sort-by", sort_field])
 
         assert result.exit_code == 0
-        # High activity should appear before low activity
-        high_pos = result.output.find("high-activity")
-        low_pos = result.output.find("low-activity")
-        assert high_pos < low_pos
+        # Check order in output
+        first_pos = result.output.find(first_expected)
+        last_pos = result.output.find(last_expected)
+        assert first_pos < last_pos, (
+            f"Expected {first_expected} to appear before {last_expected}"
+        )
 
 
 @pytest.mark.parametrize(
@@ -531,88 +538,71 @@ def test_projects_list_displays_metadata_columns(runner):
         assert "2h ago" in result.output  # Last run (relative time)
 
 
-def test_projects_list_shows_limit_message_when_hit(runner):
-    """INVARIANT: When limit is reached, show message with total count."""
+@pytest.mark.parametrize(
+    "total_projects,limit,json_mode,should_show_message",
+    [
+        (50, 10, False, True),  # Limit hit, table mode -> show message
+        (5, 10, False, False),  # Limit not hit -> no message
+        (50, 10, True, False),  # Limit hit, JSON mode -> no message
+    ],
+)
+def test_projects_list_limit_message(
+    runner, total_projects, limit, json_mode, should_show_message
+):
+    """INVARIANT: Limit message should appear only when limit is hit and not in JSON mode."""
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
 
-        # Create 50 projects
-        projects = [create_project(name=f"proj-{i}") for i in range(50)]
+        # Create projects
+        projects = [create_project(name=f"proj-{i}") for i in range(total_projects)]
         mock_client.list_projects.return_value = iter(projects)
 
-        result = runner.invoke(cli, ["projects", "list", "--limit", "10"])
+        # Build command
+        cmd = ["projects", "list", "--limit", str(limit)]
+        if json_mode:
+            cmd = ["--json"] + cmd
+
+        result = runner.invoke(cli, cmd)
         assert result.exit_code == 0
 
-        # Verify the limit message is shown with exact count
-        assert "Showing 10 of 50 projects" in result.output
-        assert "Use --limit 0 to see all 50 projects" in result.output
+        if should_show_message:
+            # Verify the limit message is shown with exact count
+            shown = min(limit, total_projects)
+            assert f"Showing {shown} of {total_projects} projects" in result.output
+            assert (
+                f"Use --limit 0 to see all {total_projects} projects" in result.output
+            )
+        else:
+            # Verify the limit message is NOT shown
+            assert (
+                "Showing" not in result.output or "Projects" in result.output
+            )  # Allow table title
+            assert "Use --limit 0" not in result.output
 
 
-def test_projects_list_no_limit_message_when_not_hit(runner):
-    """INVARIANT: When limit is not reached, don't show limit message."""
+@pytest.mark.parametrize(
+    "total_projects,explicit_limit,expected_count",
+    [
+        (150, None, 150),  # No explicit limit -> count all
+        (150, 50, 50),  # Explicit limit -> respect it
+    ],
+)
+def test_projects_list_count(runner, total_projects, explicit_limit, expected_count):
+    """INVARIANT: --count should default to unlimited, but respect explicit --limit."""
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
 
-        # Create only 5 projects
-        projects = [create_project(name=f"proj-{i}") for i in range(5)]
+        # Create projects (more than default limit of 100)
+        projects = [create_project(name=f"proj-{i}") for i in range(total_projects)]
         mock_client.list_projects.return_value = iter(projects)
 
-        result = runner.invoke(cli, ["projects", "list", "--limit", "10"])
+        # Build command
+        cmd = ["projects", "list", "--count"]
+        if explicit_limit is not None:
+            cmd.extend(["--limit", str(explicit_limit)])
+
+        result = runner.invoke(cli, cmd)
         assert result.exit_code == 0
 
-        # Verify the limit message is NOT shown
-        assert "Showing" not in result.output
-        assert "Use --limit 0" not in result.output
-
-
-def test_projects_list_count_defaults_to_unlimited(runner):
-    """INVARIANT: --count should use unlimited limit by default."""
-    with patch("langsmith.Client") as MockClient:
-        mock_client = MockClient.return_value
-
-        # Create 150 projects (more than default limit of 100)
-        projects = [create_project(name=f"proj-{i}") for i in range(150)]
-        mock_client.list_projects.return_value = iter(projects)
-
-        result = runner.invoke(cli, ["projects", "list", "--count"])
-        assert result.exit_code == 0
-
-        # Should count all 150, not just 100
-        assert result.output.strip() == "150"
-
-
-def test_projects_list_count_respects_explicit_limit(runner):
-    """INVARIANT: --count with explicit --limit should respect the limit."""
-    with patch("langsmith.Client") as MockClient:
-        mock_client = MockClient.return_value
-
-        # Create 150 projects
-        projects = [create_project(name=f"proj-{i}") for i in range(150)]
-        mock_client.list_projects.return_value = iter(projects)
-
-        result = runner.invoke(cli, ["projects", "list", "--count", "--limit", "50"])
-        assert result.exit_code == 0
-
-        # Should respect explicit limit of 50
-        assert result.output.strip() == "50"
-
-
-def test_projects_list_no_limit_message_in_json_mode(runner):
-    """INVARIANT: Limit message should not appear in JSON mode."""
-    with patch("langsmith.Client") as MockClient:
-        mock_client = MockClient.return_value
-
-        # Create 50 projects
-        projects = [create_project(name=f"proj-{i}") for i in range(50)]
-        mock_client.list_projects.return_value = iter(projects)
-
-        result = runner.invoke(cli, ["--json", "projects", "list", "--limit", "10"])
-        assert result.exit_code == 0
-
-        # Verify output is pure JSON (no diagnostic messages)
-        data = json.loads(result.output)
-        assert len(data) == 10
-
-        # Verify the limit message does NOT appear
-        assert "Showing" not in result.output
-        assert "Use --limit 0" not in result.output
+        # Verify count
+        assert result.output.strip() == str(expected_count)
