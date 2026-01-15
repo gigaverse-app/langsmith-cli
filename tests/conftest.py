@@ -38,9 +38,9 @@ def create_dataset(
 def create_example(
     id_str: str = "3442bd7c-27a2-437b-a38c-f278e455d87b",
     dataset_id: str = "ae99b6fa-a6db-4f1c-8868-bc6764f4c29e",
-    inputs: dict = None,
-    outputs: dict = None,
-    metadata: dict = None,
+    inputs: dict | None = None,
+    outputs: dict | None = None,
+    metadata: dict | None = None,
     index: int = 0,
 ) -> Example:
     """Create a real Example Pydantic model instance.
@@ -109,23 +109,22 @@ def create_prompt(
 
 def create_project(
     name: str = "test-project",
-    project_type: str = "tracer",
+    project_type: str = "tracer",  # Unused, kept for backward compatibility
     run_count: int = 0,
 ) -> TracerSessionResult:
     """Create a real TracerSessionResult (project) Pydantic model instance.
 
     Args:
         name: Project name
-        project_type: Type of project (tracer, eval, etc)
+        project_type: Unused (kept for backward compatibility, SDK doesn't support this field)
         run_count: Number of runs in the project
     """
     return TracerSessionResult(
         id=UUID("f47ac10b-58cc-4372-a567-0e02b2c3d479"),
         name=name,
         description="Test project",
-        created_at=datetime(2024, 7, 3, 9, 27, 16, tzinfo=timezone.utc),
+        start_time=datetime(2024, 7, 3, 9, 27, 16, tzinfo=timezone.utc),
         run_count=run_count,
-        project_type=project_type,
         tenant_id=UUID("00000000-0000-0000-0000-000000000000"),  # required field
         reference_dataset_id=None,  # optional field
     )

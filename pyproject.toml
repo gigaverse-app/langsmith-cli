@@ -72,3 +72,9 @@ addopts = "--strict-markers"
 
 # Note: Smoke tests run much faster with parallelization
 # Usage: pytest tests/test_smoke.py -n auto
+
+[tool.pyright]
+include = ["src", "tests"]
+exclude = ["scripts"]  # Platform-specific installer scripts with Windows-only imports
+pythonVersion = "3.12"
+typeCheckingMode = "standard"
