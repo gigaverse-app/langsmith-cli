@@ -624,7 +624,8 @@ def list_runs(
             api_limit = 1000
     else:
         # No client-side filtering, fetch exactly what was requested
-        api_limit = limit
+        # Convert 0 to None for SDK (0 means "no limit" in CLI, but SDK expects None)
+        api_limit = None if limit == 0 else limit
 
     # Inform user about fetch strategy for client-side filtering
     if needs_client_filtering and api_limit != limit:
