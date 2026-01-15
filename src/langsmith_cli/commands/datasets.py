@@ -5,6 +5,8 @@ import os
 from langsmith_cli.utils import (
     parse_json_string,
     parse_comma_separated_list,
+    fields_option,
+    filter_fields,
     get_or_create_client,
     render_output,
     safe_model_dump,
@@ -26,9 +28,10 @@ def datasets():
 @click.option("--name", "dataset_name", help="Exact dataset name match.")
 @click.option("--name-contains", help="Dataset name substring search.")
 @click.option("--metadata", help="Filter by metadata (JSON string).")
+@fields_option()
 @click.pass_context
 def list_datasets(
-    ctx, dataset_ids, limit, data_type, dataset_name, name_contains, metadata
+    ctx, dataset_ids, limit, data_type, dataset_name, name_contains, metadata, fields
 ):
     """List all available datasets."""
     client = get_or_create_client(ctx)
@@ -63,40 +66,38 @@ def list_datasets(
             table.add_row(d.name, str(d.id), d.data_type)
         return table
 
+    # Determine which fields to include
+    if fields:
+        include_fields = {f.strip() for f in fields.split(",") if f.strip()}
+    else:
+        # Default fields for output
+        include_fields = None
+
     # Unified output rendering
     render_output(
         datasets_list,
         build_datasets_table,
         ctx,
-        include_fields={
-            "id",
-            "name",
-            "inputs_schema",
-            "outputs_schema",
-            "description",
-            "data_type",
-            "example_count",
-            "session_count",
-            "created_at",
-            "modified_at",
-            "last_session_start_time",
-        },
+        include_fields=include_fields,
         empty_message="No datasets found",
     )
 
 
 @datasets.command("get")
 @click.argument("dataset_id")
+@fields_option()
 @click.pass_context
-def get_dataset(ctx, dataset_id):
+def get_dataset(ctx, dataset_id, fields):
     """Fetch details of a single dataset."""
     import json
 
     client = get_or_create_client(ctx)
     dataset = client.read_dataset(dataset_id=dataset_id)
 
+    # Use shared field filtering utility
+    data = filter_fields(dataset, fields)
+
     if ctx.obj.get("json"):
-        data = safe_model_dump(dataset)
         click.echo(json.dumps(data, default=str))
         return
 

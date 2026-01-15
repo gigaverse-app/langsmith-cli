@@ -1,11 +1,13 @@
 """Utility functions shared across commands."""
 
-from typing import Any, Callable, Protocol, TypeVar
+from typing import Any, Callable, Protocol, TypeVar, overload
 import click
 import json
 import langsmith
+from pydantic import BaseModel
 
 T = TypeVar("T")
+ModelT = TypeVar("ModelT", bound=BaseModel)
 
 
 def get_or_create_client(ctx: Any) -> Any:
@@ -23,6 +25,87 @@ def get_or_create_client(ctx: Any) -> Any:
     if "client" not in ctx.obj:
         ctx.obj["client"] = langsmith.Client()
     return ctx.obj["client"]
+
+
+@overload
+def filter_fields(data: list[ModelT], fields: str | None) -> list[dict[str, Any]]: ...
+
+
+@overload
+def filter_fields(data: ModelT, fields: str | None) -> dict[str, Any]: ...
+
+
+def filter_fields(
+    data: ModelT | list[ModelT], fields: str | None
+) -> dict[str, Any] | list[dict[str, Any]]:
+    """Filter Pydantic model fields based on a comma-separated field list.
+
+    Provides universal field filtering for all list/get commands to reduce context usage.
+
+    Args:
+        data: Single Pydantic model instance or list of instances
+        fields: Comma-separated field names (e.g., "id,name,tags") or None for all fields
+
+    Returns:
+        Filtered dict or list of dicts with only the specified fields.
+        If fields is None, returns full model dump in JSON-compatible mode.
+
+    Examples:
+        >>> from langsmith.schemas import Dataset
+        >>> dataset = Dataset(id=uuid4(), name="test", ...)
+        >>> filter_fields(dataset, "id,name")
+        {"id": "...", "name": "test"}
+
+        >>> datasets = [Dataset(...), Dataset(...)]
+        >>> filter_fields(datasets, "id,name")
+        [{"id": "...", "name": "test"}, {"id": "...", "name": "test2"}]
+
+        >>> filter_fields(datasets, None)  # Return all fields
+        [{"id": "...", "name": "...", "description": "...", ...}, ...]
+    """
+    if fields is None:
+        # Return full model dump
+        if isinstance(data, list):
+            return [item.model_dump(mode="json") for item in data]
+        return data.model_dump(mode="json")
+
+    # Parse field names
+    field_set = {f.strip() for f in fields.split(",") if f.strip()}
+
+    if isinstance(data, list):
+        return [item.model_dump(include=field_set, mode="json") for item in data]
+    return data.model_dump(include=field_set, mode="json")
+
+
+def fields_option(
+    help_text: str = "Comma-separated field names to include in output (e.g., 'id,name,created_at'). Reduces context usage by omitting unnecessary fields.",
+) -> Any:
+    """Reusable Click option decorator for --fields flag.
+
+    Use this decorator on all list/get commands to provide consistent field filtering.
+
+    Args:
+        help_text: Custom help text for the option
+
+    Returns:
+        Click option decorator
+
+    Example:
+        @click.command()
+        @fields_option()
+        @click.pass_context
+        def list_items(ctx, fields):
+            client = get_or_create_client(ctx)
+            items = list(client.list_items())
+            data = filter_fields(items, fields)
+            click.echo(json.dumps(data, default=str))
+    """
+    return click.option(
+        "--fields",
+        type=str,
+        default=None,
+        help=help_text,
+    )
 
 
 class ConsoleProtocol(Protocol):

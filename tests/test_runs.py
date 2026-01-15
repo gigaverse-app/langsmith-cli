@@ -1,8 +1,11 @@
 from langsmith_cli.main import cli
 from unittest.mock import patch, MagicMock
 from langsmith.schemas import Run
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from uuid import UUID
+import pytest
+import json
+from conftest import create_run
 
 
 def test_runs_list(runner):
@@ -899,3 +902,894 @@ def test_runs_watch_keyboard_interrupt(runner):
 
         # Should exit cleanly on KeyboardInterrupt
         assert result.exit_code == 0
+
+
+# Unit tests for helper functions
+
+
+def test_parse_grouping_field_valid():
+    """Test parsing valid grouping field specifications."""
+    from langsmith_cli.commands.runs import parse_grouping_field
+
+    assert parse_grouping_field("tag:length_category") == ("tag", "length_category")
+    assert parse_grouping_field("metadata:user_tier") == ("metadata", "user_tier")
+    assert parse_grouping_field("tag:env") == ("tag", "env")
+
+
+def test_parse_grouping_field_invalid():
+    """Test parsing invalid grouping field specifications."""
+    import click
+    from langsmith_cli.commands.runs import parse_grouping_field
+
+    with pytest.raises(click.BadParameter, match="Invalid grouping format"):
+        parse_grouping_field("invalid")
+
+    with pytest.raises(click.BadParameter, match="Invalid grouping type"):
+        parse_grouping_field("unknown:field")
+
+    with pytest.raises(click.BadParameter, match="Field name cannot be empty"):
+        parse_grouping_field("tag:")
+
+
+def test_build_grouping_fql_filter_tag():
+    """Test building FQL filter for tag-based grouping."""
+    from langsmith_cli.commands.runs import build_grouping_fql_filter
+
+    filter_str = build_grouping_fql_filter("tag", "length_category", "short")
+    assert filter_str == 'has(tags, "length_category:short")'
+
+
+def test_build_grouping_fql_filter_metadata():
+    """Test building FQL filter for metadata-based grouping."""
+    from langsmith_cli.commands.runs import build_grouping_fql_filter
+
+    filter_str = build_grouping_fql_filter("metadata", "user_tier", "premium")
+    assert (
+        filter_str
+        == 'and(in(metadata_key, ["user_tier"]), eq(metadata_value, "premium"))'
+    )
+
+
+def test_extract_group_value_from_tags():
+    """Test extracting group value from run tags."""
+    from langsmith_cli.commands.runs import extract_group_value
+
+    run = Run(
+        id=UUID("00000000-0000-0000-0000-000000000001"),
+        name="test",
+        run_type="chain",
+        start_time=datetime.now(timezone.utc),
+        tags=["env:prod", "length_category:short", "user:123"],
+    )
+
+    value = extract_group_value(run, "tag", "length_category")
+    assert value == "short"
+
+    # Non-existent tag
+    value = extract_group_value(run, "tag", "nonexistent")
+    assert value is None
+
+
+def test_extract_group_value_from_metadata():
+    """Test extracting group value from run metadata."""
+    from langsmith_cli.commands.runs import extract_group_value
+
+    run = Run(
+        id=UUID("00000000-0000-0000-0000-000000000002"),
+        name="test",
+        run_type="chain",
+        start_time=datetime.now(timezone.utc),
+        extra={"metadata": {"user_tier": "premium", "region": "us-east"}},
+    )
+
+    value = extract_group_value(run, "metadata", "user_tier")
+    assert value == "premium"
+
+    # Non-existent metadata key
+    value = extract_group_value(run, "metadata", "nonexistent")
+    assert value is None
+
+
+def test_compute_metrics_count():
+    """Test computing count metric."""
+    from langsmith_cli.commands.runs import compute_metrics
+
+    runs = [
+        Run(
+            id=UUID(f"00000000-0000-0000-0000-00000000000{i}"),
+            name=f"run-{i}",
+            run_type="chain",
+            start_time=datetime.now(timezone.utc),
+        )
+        for i in range(5)
+    ]
+
+    metrics = compute_metrics(runs, ["count"])
+    assert metrics["count"] == 5
+
+
+def test_compute_metrics_error_rate():
+    """Test computing error rate metric."""
+    from langsmith_cli.commands.runs import compute_metrics
+
+    runs = [
+        Run(
+            id=UUID("00000000-0000-0000-0000-000000000001"),
+            name="success",
+            run_type="chain",
+            start_time=datetime.now(timezone.utc),
+            error=None,
+        ),
+        Run(
+            id=UUID("00000000-0000-0000-0000-000000000002"),
+            name="error",
+            run_type="chain",
+            start_time=datetime.now(timezone.utc),
+            error="Failed",
+        ),
+        Run(
+            id=UUID("00000000-0000-0000-0000-000000000003"),
+            name="success2",
+            run_type="chain",
+            start_time=datetime.now(timezone.utc),
+            error=None,
+        ),
+    ]
+
+    metrics = compute_metrics(runs, ["error_rate"])
+    assert metrics["error_rate"] == pytest.approx(1 / 3, rel=0.01)
+
+
+def test_compute_metrics_latency_percentiles():
+    """Test computing latency percentile metrics."""
+    from langsmith_cli.commands.runs import compute_metrics
+
+    start_time = datetime.now(timezone.utc)
+    runs = [
+        Run(
+            id=UUID(int=i),
+            name=f"run-{i}",
+            run_type="chain",
+            start_time=start_time,
+            end_time=start_time + timedelta(seconds=float(i)),
+        )
+        for i in range(1, 101)
+    ]
+
+    metrics = compute_metrics(runs, ["p50_latency", "p95_latency", "p99_latency"])
+    assert metrics["p50_latency"] == pytest.approx(50.5, rel=0.1)
+    assert metrics["p95_latency"] >= 95.0
+    assert metrics["p99_latency"] >= 99.0
+
+
+# Integration tests for runs sample
+
+
+def test_runs_sample_basic(runner):
+    """Test basic runs sample command."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        # Create runs with tags
+        short_run = Run(
+            id=UUID("00000000-0000-0000-0000-000000000001"),
+            name="short-run",
+            run_type="chain",
+            start_time=datetime.now(timezone.utc),
+            tags=["length_category:short"],
+            inputs={"text": "hi"},
+            outputs={"result": "ok"},
+        )
+
+        medium_run = Run(
+            id=UUID("00000000-0000-0000-0000-000000000002"),
+            name="medium-run",
+            run_type="chain",
+            start_time=datetime.now(timezone.utc),
+            tags=["length_category:medium"],
+            inputs={"text": "hello world"},
+            outputs={"result": "ok"},
+        )
+
+        # Mock list_runs to return appropriate runs based on filter
+        def list_runs_side_effect(*args, **kwargs):
+            filter_str = kwargs.get("filter", "")
+            if "length_category:short" in filter_str:
+                return [short_run]
+            elif "length_category:medium" in filter_str:
+                return [medium_run]
+            return []
+
+        mock_client.list_runs.side_effect = list_runs_side_effect
+
+        result = runner.invoke(
+            cli,
+            [
+                "runs",
+                "sample",
+                "--stratify-by",
+                "tag:length_category",
+                "--values",
+                "short,medium",
+                "--samples-per-stratum",
+                "1",
+            ],
+        )
+
+        assert result.exit_code == 0
+
+        # Parse JSONL output
+        lines = result.output.strip().split("\n")
+        assert len(lines) == 2
+
+        # Verify stratum fields
+        sample1 = json.loads(lines[0])
+        sample2 = json.loads(lines[1])
+
+        assert "stratum" in sample1
+        assert "stratum" in sample2
+        assert sample1["stratum"] in ["length_category:short", "length_category:medium"]
+
+
+def test_runs_sample_with_output_file(runner, tmp_path):
+    """Test runs sample writing to output file."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        test_run = Run(
+            id=UUID("00000000-0000-0000-0000-000000000003"),
+            name="test-run",
+            run_type="chain",
+            start_time=datetime.now(timezone.utc),
+            tags=["category:test"],
+        )
+
+        mock_client.list_runs.return_value = [test_run]
+
+        output_file = tmp_path / "sample.jsonl"
+
+        result = runner.invoke(
+            cli,
+            [
+                "runs",
+                "sample",
+                "--stratify-by",
+                "tag:category",
+                "--values",
+                "test",
+                "--samples-per-stratum",
+                "1",
+                "--output",
+                str(output_file),
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert output_file.exists()
+
+        # Verify file contents
+        with open(output_file) as f:
+            line = f.readline()
+            data = json.loads(line)
+            assert "stratum" in data
+            assert data["stratum"] == "category:test"
+
+
+def test_runs_sample_with_fields_pruning(runner):
+    """Test runs sample with field pruning."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        test_run = Run(
+            id=UUID("00000000-0000-0000-0000-000000000004"),
+            name="test-run",
+            run_type="chain",
+            start_time=datetime.now(timezone.utc),
+            tags=["category:test"],
+            inputs={"query": "test"},
+            outputs={"result": "ok"},
+            extra={"large_field": "huge_data"},
+        )
+
+        mock_client.list_runs.return_value = [test_run]
+
+        result = runner.invoke(
+            cli,
+            [
+                "runs",
+                "sample",
+                "--stratify-by",
+                "tag:category",
+                "--values",
+                "test",
+                "--samples-per-stratum",
+                "1",
+                "--fields",
+                "id,name,stratum",
+            ],
+        )
+
+        assert result.exit_code == 0
+
+        # Parse output
+        line = result.output.strip()
+        data = json.loads(line)
+
+        # Should have id, name, stratum
+        assert "id" in data
+        assert "name" in data
+        assert "stratum" in data
+
+        # Should NOT have inputs, outputs, extra
+        assert "inputs" not in data
+        assert "outputs" not in data
+        assert "huge_data" not in result.output
+
+
+def test_runs_sample_invalid_stratify_by(runner):
+    """Test runs sample with invalid stratify-by format."""
+    result = runner.invoke(
+        cli,
+        [
+            "runs",
+            "sample",
+            "--stratify-by",
+            "invalid",
+            "--values",
+            "a,b",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "Invalid grouping format" in result.output
+
+
+# Integration tests for runs analyze
+
+
+def test_runs_analyze_basic(runner):
+    """Test basic runs analyze command."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        # Create runs with tags
+        start_time = datetime.now(timezone.utc)
+        runs = [
+            Run(
+                id=UUID(int=i + 1),
+                name=f"run-{i}",
+                run_type="chain",
+                start_time=start_time,
+                end_time=start_time + timedelta(seconds=1.0 + i * 0.1),
+                tags=["length_category:short"],
+                error=None if i % 2 == 0 else "Error",
+            )
+            for i in range(10)
+        ]
+
+        mock_client.list_runs.return_value = runs
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "analyze",
+                "--group-by",
+                "tag:length_category",
+                "--metrics",
+                "count,error_rate,p50_latency",
+            ],
+        )
+
+        assert result.exit_code == 0
+
+        # Parse JSON output
+        data = json.loads(result.output)
+        assert isinstance(data, list)
+        assert len(data) == 1
+
+        group = data[0]
+        assert group["group"] == "length_category:short"
+        assert group["count"] == 10
+        assert group["error_rate"] == 0.5
+
+
+def test_runs_analyze_multiple_groups(runner):
+    """Test runs analyze with multiple groups."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        # Create runs with different groups
+        start_time = datetime.now(timezone.utc)
+        short_runs = [
+            Run(
+                id=UUID(int=i + 1),
+                name=f"short-{i}",
+                run_type="chain",
+                start_time=start_time,
+                end_time=start_time + timedelta(seconds=1.0),
+                tags=["length_category:short"],
+            )
+            for i in range(5)
+        ]
+
+        long_runs = [
+            Run(
+                id=UUID(int=i + 100),
+                name=f"long-{i}",
+                run_type="chain",
+                start_time=start_time,
+                end_time=start_time + timedelta(seconds=5.0),
+                tags=["length_category:long"],
+            )
+            for i in range(3)
+        ]
+
+        mock_client.list_runs.return_value = short_runs + long_runs
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "analyze",
+                "--group-by",
+                "tag:length_category",
+                "--metrics",
+                "count,avg_latency",
+            ],
+        )
+
+        assert result.exit_code == 0
+
+        # Parse JSON output
+        data = json.loads(result.output)
+        assert len(data) == 2
+
+        # Find groups
+        short_group = next(g for g in data if g["group"] == "length_category:short")
+        long_group = next(g for g in data if g["group"] == "length_category:long")
+
+        assert short_group["count"] == 5
+        assert long_group["count"] == 3
+        assert short_group["avg_latency"] == 1.0
+        assert long_group["avg_latency"] == 5.0
+
+
+def test_runs_analyze_table_output(runner):
+    """Test runs analyze with table output."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        start_time = datetime.now(timezone.utc)
+        runs = [
+            Run(
+                id=UUID("00000000-0000-0000-0000-000000000011"),
+                name="run",
+                run_type="chain",
+                start_time=start_time,
+                end_time=start_time + timedelta(seconds=2.5),
+                extra={"metadata": {"tier": "premium"}},
+            )
+        ]
+
+        mock_client.list_runs.return_value = runs
+
+        result = runner.invoke(
+            cli,
+            [
+                "runs",
+                "analyze",
+                "--group-by",
+                "metadata:tier",
+                "--metrics",
+                "count,p50_latency",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert "Analysis:" in result.output
+        assert "premium" in result.output
+        assert "2.5" in result.output or "2.50" in result.output
+
+
+def test_runs_analyze_with_filter(runner):
+    """Test runs analyze with additional FQL filter."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_runs.return_value = []
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "analyze",
+                "--group-by",
+                "tag:category",
+                "--metrics",
+                "count",
+                "--filter",
+                'gte(start_time, "2026-01-01")',
+            ],
+        )
+
+        assert result.exit_code == 0
+
+        # Verify filter was passed to list_runs
+        mock_client.list_runs.assert_called_once()
+        args, kwargs = mock_client.list_runs.call_args
+        assert 'gte(start_time, "2026-01-01")' in kwargs["filter"]
+
+
+def test_runs_analyze_invalid_group_by(runner):
+    """Test runs analyze with invalid group-by format."""
+    result = runner.invoke(
+        cli,
+        [
+            "runs",
+            "analyze",
+            "--group-by",
+            "unknown:field",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "Invalid grouping type" in result.output
+
+
+# =============================================================================
+# Multi-Dimensional Stratification Tests
+# =============================================================================
+
+
+def test_parse_grouping_field_single_dimension():
+    """Test parsing single dimension returns tuple."""
+    from langsmith_cli.commands.runs import parse_grouping_field
+
+    result = parse_grouping_field("tag:length")
+    assert result == ("tag", "length")
+
+    result = parse_grouping_field("metadata:user_tier")
+    assert result == ("metadata", "user_tier")
+
+
+def test_parse_grouping_field_multi_dimensional():
+    """Test parsing multiple dimensions returns list of tuples."""
+    from langsmith_cli.commands.runs import parse_grouping_field
+
+    result = parse_grouping_field("tag:length,tag:content_type")
+    assert result == [("tag", "length"), ("tag", "content_type")]
+
+    result = parse_grouping_field("tag:length,metadata:user_tier")
+    assert result == [("tag", "length"), ("metadata", "user_tier")]
+
+
+def test_build_multi_dimensional_fql_filter():
+    """Test building combined FQL filters."""
+    from langsmith_cli.commands.runs import build_multi_dimensional_fql_filter
+
+    result = build_multi_dimensional_fql_filter(
+        [("tag", "length"), ("tag", "content_type")], ["short", "news"]
+    )
+    assert result == 'and(has(tags, "length:short"), has(tags, "content_type:news"))'
+
+    # Test single dimension (should not use 'and')
+    result = build_multi_dimensional_fql_filter([("tag", "length")], ["medium"])
+    assert result == 'has(tags, "length:medium")'
+
+    # Test mixed tag and metadata
+    result = build_multi_dimensional_fql_filter(
+        [("tag", "length"), ("metadata", "user_tier")], ["short", "premium"]
+    )
+    assert (
+        'has(tags, "length:short")' in result
+        and 'in(metadata_key, ["user_tier"])' in result
+    )
+
+
+def test_build_multi_dimensional_fql_filter_validation():
+    """Test validation of dimension/value length mismatch."""
+    from langsmith_cli.commands.runs import build_multi_dimensional_fql_filter
+    import pytest
+
+    with pytest.raises(ValueError, match="Dimensions and values must have same length"):
+        build_multi_dimensional_fql_filter(
+            [("tag", "length"), ("tag", "content_type")],
+            ["short"],  # Missing value
+        )
+
+
+def test_runs_sample_multi_dimensional_cartesian_product(runner):
+    """Test multi-dimensional sampling with Cartesian product."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        # Mock runs for different combinations
+        def mock_list_runs(project_name, limit, filter, order_by):
+            # Return different runs based on filter
+            if "length:short" in filter and "content_type:news" in filter:
+                return [
+                    create_run("short-news", tags=["length:short", "content_type:news"])
+                ]
+            elif "length:long" in filter and "content_type:gaming" in filter:
+                return [
+                    create_run(
+                        "long-gaming", tags=["length:long", "content_type:gaming"]
+                    )
+                ]
+            return []
+
+        mock_client.list_runs.side_effect = mock_list_runs
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "sample",
+                "--stratify-by",
+                "tag:length,tag:content_type",
+                "--dimension-values",
+                "short|long,news|gaming",
+                "--samples-per-combination",
+                "1",
+            ],
+        )
+
+        assert result.exit_code == 0
+
+        # Parse output
+        lines = result.output.strip().split("\n")
+        samples = [json.loads(line) for line in lines]
+
+        # Should have samples from different combinations
+        strata = {s["stratum"] for s in samples}
+        # At least some combinations should be present
+        assert any("length:short" in s and "content_type:news" in s for s in strata)
+
+
+def test_runs_sample_multi_dimensional_manual_combinations(runner):
+    """Test multi-dimensional sampling with manual combinations."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_runs.return_value = [
+            create_run("run1", tags=["length:short", "content_type:news"])
+        ]
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "sample",
+                "--stratify-by",
+                "tag:length,tag:content_type",
+                "--values",
+                "short:news,medium:gaming",
+                "--samples-per-stratum",
+                "1",
+            ],
+        )
+
+        assert result.exit_code == 0
+
+        # Should call list_runs for each combination
+        assert mock_client.list_runs.call_count >= 2
+
+
+def test_runs_sample_multi_dimensional_validation(runner):
+    """Test validation of multi-dimensional parameters."""
+    # Missing both --values and --dimension-values
+    result = runner.invoke(
+        cli,
+        [
+            "runs",
+            "sample",
+            "--stratify-by",
+            "tag:length,tag:content_type",
+            "--samples-per-stratum",
+            "1",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "requires --values or --dimension-values" in result.output
+
+
+def test_runs_analyze_multi_dimensional_not_supported(runner):
+    """Test that multi-dimensional grouping is not yet supported in analyze."""
+    result = runner.invoke(
+        cli,
+        [
+            "runs",
+            "analyze",
+            "--group-by",
+            "tag:length,tag:content_type",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "not yet supported" in result.output
+
+
+# =============================================================================
+# Discovery Commands Tests
+# =============================================================================
+
+
+def test_runs_tags_discovery(runner):
+    """Test runs tags command discovers tag patterns."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_runs.return_value = [
+            create_run("run1", tags=["length:short", "env:prod"]),
+            create_run("run2", tags=["length:medium", "env:dev"]),
+            create_run("run3", tags=["length:long", "env:prod", "schema:v2"]),
+        ]
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "tags",
+            ],
+        )
+
+        assert result.exit_code == 0
+
+        data = json.loads(result.output)
+        assert "tag_patterns" in data
+
+        patterns = data["tag_patterns"]
+        assert "length" in patterns
+        assert set(patterns["length"]) == {"short", "medium", "long"}
+
+        assert "env" in patterns
+        assert set(patterns["env"]) == {"prod", "dev"}
+
+        assert "schema" in patterns
+        assert patterns["schema"] == ["v2"]
+
+
+def test_runs_tags_discovery_table_output(runner):
+    """Test runs tags command table output."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_runs.return_value = [
+            create_run("run1", tags=["length:short", "env:prod"]),
+        ]
+
+        result = runner.invoke(
+            cli,
+            [
+                "runs",
+                "tags",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert "Tag Patterns" in result.output
+        assert "length" in result.output
+        assert "short" in result.output
+
+
+def test_runs_tags_discovery_no_tags(runner):
+    """Test runs tags command with no structured tags."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_runs.return_value = [
+            create_run("run1", tags=["unstructured-tag"]),
+        ]
+
+        result = runner.invoke(
+            cli,
+            [
+                "runs",
+                "tags",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert "No structured tags found" in result.output
+
+
+def test_runs_metadata_keys_discovery(runner):
+    """Test runs metadata-keys command discovers metadata keys."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        # Create runs with different metadata
+        run1 = create_run(
+            "run1", metadata={"user_tier": "premium", "region": "us-east"}
+        )
+        run2 = create_run(
+            "run2", metadata={"user_tier": "free", "channel_id": "abc123"}
+        )
+        run3 = create_run("run3", extra={"metadata": {"session_id": "xyz789"}})
+
+        mock_client.list_runs.return_value = [run1, run2, run3]
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "metadata-keys",
+            ],
+        )
+
+        assert result.exit_code == 0
+
+        data = json.loads(result.output)
+        assert "metadata_keys" in data
+
+        keys = set(data["metadata_keys"])
+        assert "user_tier" in keys
+        assert "region" in keys
+        assert "channel_id" in keys
+        assert "session_id" in keys
+
+
+def test_runs_metadata_keys_discovery_table_output(runner):
+    """Test runs metadata-keys command table output."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        run1 = create_run("run1", metadata={"user_tier": "premium"})
+
+        mock_client.list_runs.return_value = [run1]
+
+        result = runner.invoke(
+            cli,
+            [
+                "runs",
+                "metadata-keys",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert "Metadata Keys" in result.output
+        assert "user_tier" in result.output
+
+
+def test_runs_metadata_keys_discovery_no_metadata(runner):
+    """Test runs metadata-keys command with no metadata."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_runs.return_value = [create_run("run1")]
+
+        result = runner.invoke(
+            cli,
+            [
+                "runs",
+                "metadata-keys",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert "No metadata keys found" in result.output
+
+
+def test_runs_tags_discovery_sample_size(runner):
+    """Test runs tags command respects --sample-size option."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_runs.return_value = []
+
+        runner.invoke(
+            cli,
+            [
+                "runs",
+                "tags",
+                "--sample-size",
+                "5000",
+            ],
+        )
+
+        # Verify sample-size was passed as limit
+        mock_client.list_runs.assert_called_once()
+        args, kwargs = mock_client.list_runs.call_args
+        assert kwargs["limit"] == 5000

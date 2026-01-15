@@ -8,11 +8,12 @@ from langsmith_cli.utils import (
     add_project_filter_options,
     apply_client_side_limit,
     determine_output_format,
+    fields_option,
+    filter_fields,
     get_matching_items,
     get_matching_projects,
     get_or_create_client,
     output_formatted_data,
-    safe_model_dump,
     sort_items,
 )
 
@@ -61,6 +62,261 @@ def parse_relative_time(time_str):
         raise click.BadParameter(f"Unsupported time unit: {unit}")
 
     return datetime.datetime.now(datetime.timezone.utc) - delta
+
+
+def _parse_single_grouping(grouping_str: str) -> tuple[str, str]:
+    """Helper to parse a single 'type:field' string.
+
+    Args:
+        grouping_str: String in format "tag:field_name" or "metadata:field_name"
+
+    Returns:
+        Tuple of (grouping_type, field_name)
+
+    Raises:
+        click.BadParameter: If format is invalid
+    """
+    if ":" not in grouping_str:
+        raise click.BadParameter(
+            f"Invalid grouping format: {grouping_str}. "
+            "Use 'tag:field_name' or 'metadata:field_name'"
+        )
+
+    parts = grouping_str.split(":", 1)
+    grouping_type = parts[0].strip()
+    field_name = parts[1].strip()
+
+    if grouping_type not in ["tag", "metadata"]:
+        raise click.BadParameter(
+            f"Invalid grouping type: {grouping_type}. Must be 'tag' or 'metadata'"
+        )
+
+    if not field_name:
+        raise click.BadParameter("Field name cannot be empty")
+
+    return grouping_type, field_name
+
+
+def parse_grouping_field(grouping_str: str) -> tuple[str, str] | list[tuple[str, str]]:
+    """Parse single or multiple grouping fields.
+
+    Args:
+        grouping_str: Either 'tag:field' or 'tag:f1,metadata:f2' (comma-separated)
+
+    Returns:
+        Single tuple for single dimension, or list of tuples for multi-dimensional
+
+    Raises:
+        click.BadParameter: If format is invalid
+
+    Examples:
+        >>> parse_grouping_field("tag:length_category")
+        ("tag", "length_category")
+        >>> parse_grouping_field("metadata:user_tier")
+        ("metadata", "user_tier")
+        >>> parse_grouping_field("tag:length,tag:content_type")
+        [("tag", "length"), ("tag", "content_type")]
+    """
+    # Check for multi-dimensional (comma-separated dimensions)
+    if "," in grouping_str:
+        # Multi-dimensional: parse each dimension
+        dimensions = [d.strip() for d in grouping_str.split(",")]
+        return [_parse_single_grouping(d) for d in dimensions]
+    else:
+        # Single dimension: backward compatible
+        return _parse_single_grouping(grouping_str)
+
+
+def build_grouping_fql_filter(grouping_type: str, field_name: str, value: str) -> str:
+    """Build FQL filter for a specific group value.
+
+    Args:
+        grouping_type: Either "tag" or "metadata"
+        field_name: Name of the field
+        value: Value to filter for
+
+    Returns:
+        FQL filter string
+
+    Examples:
+        >>> build_grouping_fql_filter("tag", "length_category", "short")
+        'has(tags, "length_category:short")'
+
+        >>> build_grouping_fql_filter("metadata", "user_tier", "premium")
+        'and(in(metadata_key, ["user_tier"]), eq(metadata_value, "premium"))'
+    """
+    if grouping_type == "tag":
+        # Tags are stored as "field_name:value" strings
+        return f'has(tags, "{field_name}:{value}")'
+    else:  # metadata
+        # Metadata requires matching both key and value
+        return f'and(in(metadata_key, ["{field_name}"]), eq(metadata_value, "{value}"))'
+
+
+def build_multi_dimensional_fql_filter(
+    dimensions: list[tuple[str, str]], combination_values: list[str]
+) -> str:
+    """Build FQL filter for multi-dimensional combination.
+
+    Args:
+        dimensions: List of (grouping_type, field_name) tuples
+        combination_values: List of values, one per dimension
+
+    Returns:
+        Combined FQL filter using 'and()' to match all dimensions
+
+    Raises:
+        ValueError: If dimensions and values lists have different lengths
+
+    Examples:
+        >>> build_multi_dimensional_fql_filter(
+        ...     [("tag", "length"), ("tag", "content_type")],
+        ...     ["short", "news"]
+        ... )
+        'and(has(tags, "length:short"), has(tags, "content_type:news"))'
+
+        >>> build_multi_dimensional_fql_filter(
+        ...     [("tag", "length")],
+        ...     ["medium"]
+        ... )
+        'has(tags, "length:medium")'
+    """
+    if len(dimensions) != len(combination_values):
+        raise ValueError(
+            f"Dimensions and values must have same length: "
+            f"{len(dimensions)} dimensions vs {len(combination_values)} values"
+        )
+
+    filters = []
+    for (grouping_type, field_name), value in zip(dimensions, combination_values):
+        fql = build_grouping_fql_filter(grouping_type, field_name, value)
+        filters.append(fql)
+
+    if len(filters) == 1:
+        return filters[0]
+    else:
+        return f"and({', '.join(filters)})"
+
+
+def extract_group_value(run: Any, grouping_type: str, field_name: str) -> str | None:
+    """Extract the group value from a run based on grouping configuration.
+
+    Args:
+        run: LangSmith Run instance
+        grouping_type: Either "tag" or "metadata"
+        field_name: Name of the field to extract
+
+    Returns:
+        Group value string, or None if not found
+
+    Examples:
+        Given run.tags = ["env:prod", "length_category:short", "user:123"]
+        >>> extract_group_value(run, "tag", "length_category")
+        "short"
+
+        Given run.metadata = {"user_tier": "premium", "region": "us-east"}
+        >>> extract_group_value(run, "metadata", "user_tier")
+        "premium"
+    """
+    if grouping_type == "tag":
+        # Search for tag matching "field_name:*"
+        prefix = f"{field_name}:"
+        if run.tags:
+            for tag in run.tags:
+                if tag.startswith(prefix):
+                    return tag[len(prefix) :]
+        return None
+    else:  # metadata
+        # Look up field_name in metadata dict
+        # Check both run.metadata and run.extra["metadata"]
+        if run.metadata and isinstance(run.metadata, dict):
+            value = run.metadata.get(field_name)
+            if value is not None:
+                return value
+
+        # Fallback to checking run.extra["metadata"]
+        if run.extra and isinstance(run.extra, dict):
+            metadata = run.extra.get("metadata")
+            if metadata and isinstance(metadata, dict):
+                return metadata.get(field_name)
+
+        return None
+
+
+def compute_metrics(
+    runs: list[Any], requested_metrics: list[str]
+) -> dict[str, float | int]:
+    """Compute aggregate metrics over a list of runs.
+
+    Args:
+        runs: List of Run instances
+        requested_metrics: List of metric names to compute
+
+    Returns:
+        Dictionary mapping metric names to computed values
+
+    Supported Metrics:
+        - count: Number of runs
+        - error_rate: Fraction of runs with error (0.0-1.0)
+        - p50_latency, p95_latency, p99_latency: Latency percentiles (seconds)
+        - avg_latency: Average latency (seconds)
+        - total_tokens: Sum of total_tokens
+        - avg_cost: Average cost (if available)
+    """
+    import statistics
+
+    result: dict[str, float | int] = {}
+
+    if not runs:
+        # Return 0 for all metrics if no runs
+        for metric in requested_metrics:
+            result[metric] = 0
+        return result
+
+    # Count
+    if "count" in requested_metrics:
+        result["count"] = len(runs)
+
+    # Error rate
+    if "error_rate" in requested_metrics:
+        error_count = sum(1 for r in runs if r.error is not None)
+        result["error_rate"] = error_count / len(runs)
+
+    # Latency metrics (filter out None values)
+    latencies = [r.latency for r in runs if r.latency is not None]
+
+    if latencies:
+        if "avg_latency" in requested_metrics:
+            result["avg_latency"] = statistics.mean(latencies)
+
+        if "p50_latency" in requested_metrics:
+            result["p50_latency"] = statistics.median(latencies)
+
+        if "p95_latency" in requested_metrics:
+            result["p95_latency"] = statistics.quantiles(latencies, n=20)[18]
+
+        if "p99_latency" in requested_metrics:
+            result["p99_latency"] = statistics.quantiles(latencies, n=100)[98]
+    else:
+        # No latency data available
+        for metric in ["avg_latency", "p50_latency", "p95_latency", "p99_latency"]:
+            if metric in requested_metrics:
+                result[metric] = 0.0
+
+    # Token metrics
+    if "total_tokens" in requested_metrics:
+        result["total_tokens"] = sum(r.total_tokens or 0 for r in runs)
+
+    # Cost metrics (if available in SDK)
+    if "avg_cost" in requested_metrics:
+        costs = [
+            r.total_cost
+            for r in runs
+            if hasattr(r, "total_cost") and r.total_cost is not None
+        ]
+        result["avg_cost"] = statistics.mean(costs) if costs else 0.0
+
+    return result
 
 
 @runs.command("list")
@@ -120,6 +376,7 @@ def parse_relative_time(time_str):
     type=click.Choice(["table", "json", "csv", "yaml"]),
     help="Output format (default: table, or json if --json flag used).",
 )
+@fields_option()
 @click.pass_context
 def list_runs(
     ctx,
@@ -153,6 +410,7 @@ def list_runs(
     last,
     sort_by,
     output_format,
+    fields,
 ):
     """Fetch recent runs from one or more projects.
 
@@ -316,7 +574,8 @@ def list_runs(
 
     # Handle non-table formats
     if format_type != "table":
-        data = [safe_model_dump(r) for r in runs]
+        # Use filter_fields for field filtering (runs is always a list)
+        data = filter_fields(runs, fields)
         output_formatted_data(data, format_type)
         return
 
@@ -363,8 +622,8 @@ def list_runs(
 
 @runs.command("get")
 @click.argument("run_id")
-@click.option(
-    "--fields", help="Comma-separated list of fields to include (e.g. inputs,error)."
+@fields_option(
+    "Comma-separated field names to include (e.g., 'id,name,inputs,error'). Reduces context usage."
 )
 @click.pass_context
 def get_run(ctx, run_id, fields):
@@ -372,15 +631,8 @@ def get_run(ctx, run_id, fields):
     client = get_or_create_client(ctx)
     run = client.read_run(run_id)
 
-    # Convert to dict
-    data = safe_model_dump(run)
-
-    # Apply context pruning if requested
-    if fields:
-        field_list = [f.strip() for f in fields.split(",")]
-        # Always include ID and name for context
-        field_list.extend(["id", "name"])
-        data = {k: v for k, v in data.items() if k in field_list}
+    # Use shared field filtering utility
+    data = filter_fields(run, fields)
 
     if ctx.obj.get("json"):
         import json
@@ -711,3 +963,625 @@ def search_runs(
         last=None,
         sort_by=None,
     )
+
+
+@runs.command("sample")
+@add_project_filter_options
+@click.option(
+    "--stratify-by",
+    required=True,
+    help="Grouping field(s). Single: 'tag:length', Multi: 'tag:length,tag:type'",
+)
+@click.option(
+    "--values",
+    help="Comma-separated stratum values (single dimension) or colon-separated combinations (multi-dimensional). Examples: 'short,medium,long' or 'short:news,medium:news,long:gaming'",
+)
+@click.option(
+    "--dimension-values",
+    help="Pipe-separated values per dimension for Cartesian product (multi-dimensional only). Example: 'short|medium|long,news|gaming' generates all 6 combinations",
+)
+@click.option(
+    "--samples-per-stratum",
+    default=10,
+    help="Number of samples per stratum (default: 10)",
+)
+@click.option(
+    "--samples-per-combination",
+    type=int,
+    help="Samples per combination (multi-dimensional). Overrides --samples-per-stratum if set",
+)
+@click.option(
+    "--output",
+    help="Output file path (JSONL format). If not specified, writes to stdout.",
+)
+@click.option(
+    "--filter",
+    "additional_filter",
+    help="Additional FQL filter to apply before sampling",
+)
+@fields_option()
+@click.pass_context
+def sample_runs(
+    ctx,
+    project,
+    project_name,
+    project_name_exact,
+    project_name_pattern,
+    project_name_regex,
+    stratify_by,
+    values,
+    dimension_values,
+    samples_per_stratum,
+    samples_per_combination,
+    output,
+    additional_filter,
+    fields,
+):
+    """Sample runs using stratified sampling by tags or metadata.
+
+    This command collects balanced samples from different groups (strata) to ensure
+    representative coverage across categories.
+
+    Supports both single-dimensional and multi-dimensional stratification.
+
+    Examples:
+        # Single dimension: Sample by tag-based length categories
+        langsmith-cli runs sample \\
+          --project my-project \\
+          --stratify-by "tag:length_category" \\
+          --values "short,medium,long" \\
+          --samples-per-stratum 20 \\
+          --output stratified_sample.jsonl
+
+        # Multi-dimensional: Sample by length and content type (Cartesian product)
+        langsmith-cli runs sample \\
+          --project my-project \\
+          --stratify-by "tag:length,tag:content_type" \\
+          --dimension-values "short|medium|long,news|gaming" \\
+          --samples-per-combination 5
+
+        # Multi-dimensional: Manual combinations
+        langsmith-cli runs sample \\
+          --project my-project \\
+          --stratify-by "tag:length,tag:content_type" \\
+          --values "short:news,medium:gaming,long:news" \\
+          --samples-per-stratum 10
+    """
+    import json
+    import itertools
+
+    client = get_or_create_client(ctx)
+
+    # Parse stratify-by field (can be single or multi-dimensional)
+    parsed = parse_grouping_field(stratify_by)
+    is_multi_dimensional = isinstance(parsed, list)
+
+    # Get matching projects
+    projects_to_query = get_matching_projects(
+        client,
+        project=project,
+        name=project_name,
+        name_exact=project_name_exact,
+        name_pattern=project_name_pattern,
+        name_regex=project_name_regex,
+    )
+
+    all_samples = []
+
+    if is_multi_dimensional:
+        # Multi-dimensional stratification
+        dimensions = parsed
+
+        # Determine sample limit
+        sample_limit = (
+            samples_per_combination if samples_per_combination else samples_per_stratum
+        )
+
+        # Generate combinations
+        if dimension_values:
+            # Cartesian product: parse pipe-separated values per dimension
+            dimension_value_lists = [
+                [v.strip() for v in dim_vals.split("|")]
+                for dim_vals in dimension_values.split(",")
+            ]
+            if len(dimension_value_lists) != len(dimensions):
+                raise click.BadParameter(
+                    f"Number of dimension value groups ({len(dimension_value_lists)}) "
+                    f"must match number of dimensions ({len(dimensions)})"
+                )
+            combinations = list(itertools.product(*dimension_value_lists))
+        elif values:
+            # Manual combinations: parse colon-separated values
+            combinations = [
+                tuple(v.strip() for v in combo.split(":"))
+                for combo in values.split(",")
+            ]
+            # Validate each combination has correct number of dimensions
+            for combo in combinations:
+                if len(combo) != len(dimensions):
+                    raise click.BadParameter(
+                        f"Combination {combo} has {len(combo)} values but expected {len(dimensions)}"
+                    )
+        else:
+            raise click.BadParameter(
+                "Multi-dimensional stratification requires --values or --dimension-values"
+            )
+
+        # Fetch samples for each combination
+        for combination_values in combinations:
+            # Build FQL filter for this combination
+            stratum_filter = build_multi_dimensional_fql_filter(
+                dimensions, list(combination_values)
+            )
+
+            # Combine with additional filter if provided
+            if additional_filter:
+                combined_filter = f"and({stratum_filter}, {additional_filter})"
+            else:
+                combined_filter = stratum_filter
+
+            # Fetch samples from all matching projects
+            stratum_runs = []
+            for proj_name in projects_to_query:
+                try:
+                    project_runs = client.list_runs(
+                        project_name=proj_name,
+                        limit=sample_limit,
+                        filter=combined_filter,
+                        order_by="-start_time",
+                    )
+                    stratum_runs.extend(list(project_runs))
+                except Exception:
+                    # Skip projects that fail to fetch
+                    pass
+
+            # Limit to sample_limit
+            stratum_runs = stratum_runs[:sample_limit]
+
+            # Add stratum field and convert to dicts
+            for run in stratum_runs:
+                run_dict = filter_fields(run, fields)
+                # Build stratum label with all dimensions
+                stratum_label = ",".join(
+                    f"{field_name}:{value}"
+                    for (_, field_name), value in zip(dimensions, combination_values)
+                )
+                run_dict["stratum"] = stratum_label
+                all_samples.append(run_dict)
+
+    else:
+        # Single-dimensional stratification (backward compatible)
+        grouping_type, field_name = parsed
+
+        if not values:
+            raise click.BadParameter(
+                "Single-dimensional stratification requires --values"
+            )
+
+        # Parse values
+        stratum_values = [v.strip() for v in values.split(",")]
+
+        # Collect samples for each stratum
+        for stratum_value in stratum_values:
+            # Build FQL filter for this stratum
+            stratum_filter = build_grouping_fql_filter(
+                grouping_type, field_name, stratum_value
+            )
+
+            # Combine with additional filter if provided
+            if additional_filter:
+                combined_filter = f"and({stratum_filter}, {additional_filter})"
+            else:
+                combined_filter = stratum_filter
+
+            # Fetch samples from all matching projects
+            stratum_runs = []
+            for proj_name in projects_to_query:
+                try:
+                    project_runs = client.list_runs(
+                        project_name=proj_name,
+                        limit=samples_per_stratum,
+                        filter=combined_filter,
+                        order_by="-start_time",
+                    )
+                    stratum_runs.extend(list(project_runs))
+                except Exception:
+                    # Skip projects that fail to fetch
+                    pass
+
+            # Limit to samples_per_stratum
+            stratum_runs = stratum_runs[:samples_per_stratum]
+
+            # Add stratum field and convert to dicts
+            for run in stratum_runs:
+                run_dict = filter_fields(run, fields)
+                run_dict["stratum"] = f"{field_name}:{stratum_value}"
+                all_samples.append(run_dict)
+
+    # Output as JSONL
+    if output:
+        # Write to file
+        try:
+            with open(output, "w") as f:
+                for sample in all_samples:
+                    f.write(json.dumps(sample, default=str) + "\n")
+            console.print(
+                f"[green]Wrote {len(all_samples)} samples to {output}[/green]"
+            )
+        except Exception as e:
+            console.print(f"[red]Error writing to file {output}: {e}[/red]")
+            raise click.Abort()
+    else:
+        # Write to stdout (JSONL format)
+        for sample in all_samples:
+            click.echo(json.dumps(sample, default=str))
+
+
+@runs.command("analyze")
+@add_project_filter_options
+@click.option(
+    "--group-by",
+    required=True,
+    help="Grouping field (e.g., 'tag:length_category', 'metadata:user_tier')",
+)
+@click.option(
+    "--metrics",
+    default="count,error_rate,p50_latency,p95_latency",
+    help="Comma-separated list of metrics to compute",
+)
+@click.option(
+    "--filter",
+    "additional_filter",
+    help="Additional FQL filter to apply before grouping",
+)
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["table", "json", "csv", "yaml"]),
+    help="Output format (default: table, or json if --json flag used)",
+)
+@click.pass_context
+def analyze_runs(
+    ctx,
+    project,
+    project_name,
+    project_name_exact,
+    project_name_pattern,
+    project_name_regex,
+    group_by,
+    metrics,
+    additional_filter,
+    output_format,
+):
+    """Analyze runs grouped by tags or metadata with aggregate metrics.
+
+    This command groups runs by a specified field (tag or metadata) and computes
+    aggregate statistics for each group.
+
+    Supported Metrics:
+        - count: Number of runs in group
+        - error_rate: Fraction of runs with errors (0.0-1.0)
+        - p50_latency, p95_latency, p99_latency: Latency percentiles (seconds)
+        - avg_latency: Average latency (seconds)
+        - total_tokens: Sum of total tokens
+        - avg_cost: Average cost per run
+
+    Examples:
+        # Analyze by tag-based categories
+        langsmith-cli runs analyze \\
+          --project my-project \\
+          --group-by "tag:length_category" \\
+          --metrics "count,error_rate,p50_latency,p95_latency"
+
+        # Analyze by metadata with time filter
+        langsmith-cli runs analyze \\
+          --project my-project \\
+          --group-by "metadata:user_tier" \\
+          --metrics "count,avg_cost,total_tokens" \\
+          --filter 'gte(start_time, "2026-01-01")'
+    """
+    from collections import defaultdict
+
+    client = get_or_create_client(ctx)
+
+    # Parse group-by field
+    parsed = parse_grouping_field(group_by)
+
+    # analyze command currently only supports single-dimensional grouping
+    if isinstance(parsed, list):
+        raise click.BadParameter(
+            "Multi-dimensional grouping is not yet supported in 'runs analyze'. "
+            "Use a single dimension like 'tag:field' or 'metadata:field'"
+        )
+
+    grouping_type, field_name = parsed
+
+    # Parse metrics
+    requested_metrics = [m.strip() for m in metrics.split(",")]
+
+    # Get matching projects
+    projects_to_query = get_matching_projects(
+        client,
+        project=project,
+        name=project_name,
+        name_exact=project_name_exact,
+        name_pattern=project_name_pattern,
+        name_regex=project_name_regex,
+    )
+
+    # Fetch all runs (with optional filter)
+    all_runs = []
+    for proj_name in projects_to_query:
+        try:
+            project_runs = client.list_runs(
+                project_name=proj_name,
+                filter=additional_filter,
+                limit=None,
+            )
+            all_runs.extend(list(project_runs))
+        except Exception:
+            # Skip projects that fail to fetch
+            pass
+
+    # Group runs by extracted field value
+    groups: dict[str, list[Any]] = defaultdict(list)
+    for run in all_runs:
+        group_value = extract_group_value(run, grouping_type, field_name)
+        if group_value:
+            groups[group_value].append(run)
+
+    # Compute metrics for each group
+    results = []
+    for group_value, group_runs in groups.items():
+        metrics_dict = compute_metrics(group_runs, requested_metrics)
+        result = {
+            "group": f"{field_name}:{group_value}",
+            **metrics_dict,
+        }
+        results.append(result)
+
+    # Sort by group name for consistency
+    results.sort(key=lambda r: r["group"])
+
+    # Determine output format
+    format_type = determine_output_format(output_format, ctx.obj.get("json"))
+
+    # Handle non-table formats
+    if format_type != "table":
+        output_formatted_data(results, format_type)
+        return
+
+    # Build table for human-readable output
+    table = Table(title=f"Analysis: {group_by}")
+    table.add_column("Group", style="cyan")
+
+    # Add metric columns
+    for metric in requested_metrics:
+        table.add_column(metric.replace("_", " ").title(), justify="right")
+
+    # Add rows
+    for result in results:
+        row_values = [result["group"]]
+        for metric in requested_metrics:
+            value = result.get(metric, 0)
+            # Format numbers nicely
+            if isinstance(value, float):
+                if metric == "error_rate":
+                    row_values.append(f"{value:.2%}")
+                else:
+                    row_values.append(f"{value:.2f}")
+            else:
+                row_values.append(str(value))
+        table.add_row(*row_values)
+
+    if not results:
+        console.print("[yellow]No groups found.[/yellow]")
+    else:
+        console.print(table)
+
+
+@runs.command("tags")
+@add_project_filter_options
+@click.option(
+    "--sample-size",
+    default=1000,
+    type=int,
+    help="Number of recent runs to sample for discovery (default: 1000)",
+)
+@click.pass_context
+def discover_tags(
+    ctx,
+    project,
+    project_name,
+    project_name_exact,
+    project_name_pattern,
+    project_name_regex,
+    sample_size,
+):
+    """Discover tag patterns in a project.
+
+    Analyzes recent runs to extract structured tag patterns (key:value format).
+    Useful for understanding available stratification dimensions.
+
+    Examples:
+        # Discover tags in default project
+        langsmith-cli runs tags
+
+        # Discover tags in specific project with larger sample
+        langsmith-cli --json runs tags --project my-project --sample-size 5000
+
+        # Discover tags with pattern filtering
+        langsmith-cli runs tags --project-name-pattern "prod/*"
+    """
+    from collections import defaultdict
+    import json
+
+    client = get_or_create_client(ctx)
+
+    # Get matching projects
+    projects_to_query = get_matching_projects(
+        client,
+        project=project,
+        name=project_name,
+        name_exact=project_name_exact,
+        name_pattern=project_name_pattern,
+        name_regex=project_name_regex,
+    )
+
+    # Fetch sample of recent runs
+    all_runs = []
+    for proj_name in projects_to_query:
+        try:
+            project_runs = client.list_runs(
+                project_name=proj_name,
+                limit=sample_size,
+                order_by="-start_time",
+            )
+            all_runs.extend(list(project_runs))
+        except Exception:
+            # Skip projects that fail to fetch
+            pass
+
+    # Parse tags to extract key:value patterns
+    tag_patterns: dict[str, set[str]] = defaultdict(set)
+
+    for run in all_runs:
+        if run.tags:
+            for tag in run.tags:
+                if ":" in tag:
+                    # Structured tag: key:value
+                    key, value = tag.split(":", 1)
+                    tag_patterns[key].add(value)
+
+    # Convert sets to sorted lists
+    result = {
+        "tag_patterns": {
+            key: sorted(values) for key, values in sorted(tag_patterns.items())
+        }
+    }
+
+    # Output
+    if ctx.obj.get("json"):
+        click.echo(json.dumps(result, default=str))
+    else:
+        from rich.table import Table
+
+        table = Table(title="Tag Patterns")
+        table.add_column("Tag Key", style="cyan")
+        table.add_column("Values", style="green")
+
+        for key, values in result["tag_patterns"].items():
+            # Truncate long value lists for readability
+            value_str = ", ".join(values[:10])
+            if len(values) > 10:
+                value_str += f" ... (+{len(values) - 10} more)"
+            table.add_row(key, value_str)
+
+        if not result["tag_patterns"]:
+            console.print(
+                "[yellow]No structured tags found (key:value format).[/yellow]"
+            )
+        else:
+            console.print(table)
+            console.print(
+                f"\n[dim]Analyzed {len(all_runs)} runs from {len(projects_to_query)} project(s)[/dim]"
+            )
+
+
+@runs.command("metadata-keys")
+@add_project_filter_options
+@click.option(
+    "--sample-size",
+    default=1000,
+    type=int,
+    help="Number of recent runs to sample for discovery (default: 1000)",
+)
+@click.pass_context
+def discover_metadata_keys(
+    ctx,
+    project,
+    project_name,
+    project_name_exact,
+    project_name_pattern,
+    project_name_regex,
+    sample_size,
+):
+    """Discover metadata keys used in a project.
+
+    Analyzes recent runs to extract all metadata keys.
+    Useful for understanding available metadata-based stratification dimensions.
+
+    Examples:
+        # Discover metadata keys in default project
+        langsmith-cli runs metadata-keys
+
+        # Discover in specific project
+        langsmith-cli --json runs metadata-keys --project my-project
+
+        # Discover with pattern filtering
+        langsmith-cli runs metadata-keys --project-name-pattern "prod/*"
+    """
+    import json
+
+    client = get_or_create_client(ctx)
+
+    # Get matching projects
+    projects_to_query = get_matching_projects(
+        client,
+        project=project,
+        name=project_name,
+        name_exact=project_name_exact,
+        name_pattern=project_name_pattern,
+        name_regex=project_name_regex,
+    )
+
+    # Fetch sample of recent runs
+    all_runs = []
+    for proj_name in projects_to_query:
+        try:
+            project_runs = client.list_runs(
+                project_name=proj_name,
+                limit=sample_size,
+                order_by="-start_time",
+            )
+            all_runs.extend(list(project_runs))
+        except Exception:
+            # Skip projects that fail to fetch
+            pass
+
+    # Extract all metadata keys
+    metadata_keys: set[str] = set()
+
+    for run in all_runs:
+        # Check run.metadata
+        if run.metadata and isinstance(run.metadata, dict):
+            metadata_keys.update(run.metadata.keys())
+
+        # Check run.extra["metadata"]
+        if run.extra and isinstance(run.extra, dict):
+            extra_metadata = run.extra.get("metadata")
+            if extra_metadata and isinstance(extra_metadata, dict):
+                metadata_keys.update(extra_metadata.keys())
+
+    result = {"metadata_keys": sorted(metadata_keys)}
+
+    # Output
+    if ctx.obj.get("json"):
+        click.echo(json.dumps(result, default=str))
+    else:
+        from rich.table import Table
+
+        table = Table(title="Metadata Keys")
+        table.add_column("Key", style="cyan")
+        table.add_column("Type", style="dim")
+
+        for key in result["metadata_keys"]:
+            table.add_row(key, "metadata")
+
+        if not result["metadata_keys"]:
+            console.print("[yellow]No metadata keys found.[/yellow]")
+        else:
+            console.print(table)
+            console.print(
+                f"\n[dim]Analyzed {len(all_runs)} runs from {len(projects_to_query)} project(s)[/dim]"
+            )

@@ -2,7 +2,7 @@ import pytest
 from click.testing import CliRunner
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
-from langsmith.schemas import Dataset, Example, Prompt, TracerSessionResult
+from langsmith.schemas import Dataset, Example, Prompt, TracerSessionResult, Run
 
 
 @pytest.fixture(scope="module")
@@ -127,4 +127,62 @@ def create_project(
         run_count=run_count,
         tenant_id=UUID("00000000-0000-0000-0000-000000000000"),  # required field
         reference_dataset_id=None,  # optional field
+    )
+
+
+def create_run(
+    name: str = "test-run",
+    id_str: str = "12345678-1234-5678-1234-567812345678",
+    run_type: str = "chain",
+    tags: list[str] | None = None,
+    metadata: dict | None = None,
+    inputs: dict | None = None,
+    outputs: dict | None = None,
+    error: str | None = None,
+    extra: dict | None = None,
+) -> Run:
+    """Create a real Run Pydantic model instance.
+
+    Args:
+        name: Run name
+        id_str: UUID string, or "auto" to generate random UUID
+        run_type: Type of run (chain, llm, tool, etc.)
+        tags: List of tags
+        metadata: Dictionary of metadata (will be stored in extra['metadata'])
+        inputs: Dictionary of input data
+        outputs: Dictionary of output data
+        error: Error message if run failed
+        extra: Dictionary of extra data
+    """
+    if tags is None:
+        tags = []
+    if inputs is None:
+        inputs = {}
+    if outputs is None:
+        outputs = {}
+    if extra is None:
+        extra = {}
+
+    # Handle auto-generated UUIDs
+    if id_str == "auto":
+        id_str = str(uuid4())
+
+    # Metadata is stored in extra['metadata'] in the Run model
+    # Merge provided metadata into extra['metadata']
+    if metadata:
+        if "metadata" not in extra:
+            extra["metadata"] = {}
+        extra["metadata"].update(metadata)
+
+    return Run(
+        id=UUID(id_str),
+        name=name,
+        run_type=run_type,
+        start_time=datetime(2024, 7, 3, 9, 27, 16, tzinfo=timezone.utc),
+        tags=tags,
+        inputs=inputs,
+        outputs=outputs,
+        error=error,
+        extra=extra,
+        status="success" if error is None else "error",
     )

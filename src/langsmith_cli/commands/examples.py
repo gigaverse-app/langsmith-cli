@@ -4,6 +4,8 @@ from rich.table import Table
 from langsmith_cli.utils import (
     parse_json_string,
     parse_comma_separated_list,
+    fields_option,
+    filter_fields,
     get_or_create_client,
     render_output,
     safe_model_dump,
@@ -29,6 +31,7 @@ def examples():
 @click.option("--inline-s3-urls", type=bool, help="Include S3 URLs inline.")
 @click.option("--include-attachments", type=bool, help="Include attachments.")
 @click.option("--as-of", help="Dataset version tag or ISO timestamp.")
+@fields_option()
 @click.pass_context
 def list_examples(
     ctx,
@@ -42,6 +45,7 @@ def list_examples(
     inline_s3_urls,
     include_attachments,
     as_of,
+    fields,
 ):
     """List examples for a dataset."""
     import json
@@ -85,20 +89,19 @@ def list_examples(
             table.add_row(str(e.id), inputs_str, outputs_str)
         return table
 
+    # Determine which fields to include
+    if fields:
+        include_fields = {f.strip() for f in fields.split(",") if f.strip()}
+    else:
+        # Default fields for output
+        include_fields = None
+
     # Unified output rendering
     render_output(
         examples_list,
         build_examples_table,
         ctx,
-        include_fields={
-            "id",
-            "inputs",
-            "outputs",
-            "metadata",
-            "dataset_id",
-            "created_at",
-            "modified_at",
-        },
+        include_fields=include_fields,
         empty_message="No examples found",
     )
 
@@ -106,16 +109,19 @@ def list_examples(
 @examples.command("get")
 @click.argument("example_id")
 @click.option("--as-of", help="Dataset version tag or ISO timestamp.")
+@fields_option()
 @click.pass_context
-def get_example(ctx, example_id, as_of):
+def get_example(ctx, example_id, as_of, fields):
     """Fetch details of a single example."""
     import json
 
     client = get_or_create_client(ctx)
     example = client.read_example(example_id, as_of=as_of)
 
+    # Use shared field filtering utility
+    data = filter_fields(example, fields)
+
     if ctx.obj.get("json"):
-        data = safe_model_dump(example)
         click.echo(json.dumps(data, default=str))
         return
 

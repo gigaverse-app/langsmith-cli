@@ -15,6 +15,7 @@ from langsmith_cli.utils import (
     print_empty_result_message,
     parse_json_string,
     parse_comma_separated_list,
+    filter_fields,
     get_or_create_client,
     extract_wildcard_search_term,
     extract_regex_search_term,
@@ -790,3 +791,149 @@ class TestRenderOutput:
             )
 
             mock_console.print.assert_called_once_with(mock_table)
+
+
+class TestFilterFields:
+    """Tests for filter_fields function."""
+
+    def test_filter_single_model_with_fields(self):
+        """Test filtering a single Pydantic model with specific fields."""
+        from pydantic import BaseModel
+
+        class TestModel(BaseModel):
+            id: str
+            name: str
+            description: str
+            extra: str
+
+        model = TestModel(
+            id="123", name="test", description="A test model", extra="extra_value"
+        )
+
+        result = filter_fields(model, "id,name")
+
+        assert isinstance(result, dict)
+        assert result == {"id": "123", "name": "test"}
+        assert "description" not in result
+        assert "extra" not in result
+
+    def test_filter_single_model_without_fields(self):
+        """Test that None fields returns all fields for single model."""
+        from pydantic import BaseModel
+
+        class TestModel(BaseModel):
+            id: str
+            name: str
+            value: int
+
+        model = TestModel(id="123", name="test", value=42)
+
+        result = filter_fields(model, None)
+
+        assert isinstance(result, dict)
+        assert result == {"id": "123", "name": "test", "value": 42}
+
+    def test_filter_list_of_models_with_fields(self):
+        """Test filtering a list of Pydantic models with specific fields."""
+        from pydantic import BaseModel
+
+        class TestModel(BaseModel):
+            id: str
+            name: str
+            description: str
+
+        models = [
+            TestModel(id="1", name="test1", description="desc1"),
+            TestModel(id="2", name="test2", description="desc2"),
+        ]
+
+        result = filter_fields(models, "id,name")
+
+        assert isinstance(result, list)
+        assert len(result) == 2
+        assert result[0] == {"id": "1", "name": "test1"}
+        assert result[1] == {"id": "2", "name": "test2"}
+        assert "description" not in result[0]
+
+    def test_filter_list_of_models_without_fields(self):
+        """Test that None fields returns all fields for list of models."""
+        from pydantic import BaseModel
+
+        class TestModel(BaseModel):
+            id: str
+            name: str
+
+        models = [
+            TestModel(id="1", name="test1"),
+            TestModel(id="2", name="test2"),
+        ]
+
+        result = filter_fields(models, None)
+
+        assert isinstance(result, list)
+        assert len(result) == 2
+        assert result[0] == {"id": "1", "name": "test1"}
+        assert result[1] == {"id": "2", "name": "test2"}
+
+    def test_filter_with_whitespace_in_fields(self):
+        """Test that fields with whitespace are properly trimmed."""
+        from pydantic import BaseModel
+
+        class TestModel(BaseModel):
+            id: str
+            name: str
+            extra: str
+
+        model = TestModel(id="123", name="test", extra="value")
+
+        result = filter_fields(model, "id ,  name  ")
+
+        assert result == {"id": "123", "name": "test"}
+        assert "extra" not in result
+
+    def test_filter_empty_list(self):
+        """Test filtering an empty list."""
+        result = filter_fields([], None)
+
+        assert isinstance(result, list)
+        assert result == []
+
+        result = filter_fields([], "id,name")
+
+        assert isinstance(result, list)
+        assert result == []
+
+    def test_filter_with_nonexistent_field(self):
+        """Test that requesting nonexistent fields returns empty dict."""
+        from pydantic import BaseModel
+
+        class TestModel(BaseModel):
+            id: str
+            name: str
+
+        model = TestModel(id="123", name="test")
+
+        result = filter_fields(model, "nonexistent")
+
+        # Pydantic's include parameter will just exclude fields not in the set
+        # So requesting nonexistent fields returns an empty dict
+        assert result == {}
+
+    def test_filter_preserves_json_mode(self):
+        """Test that model_dump uses mode='json' for JSON-compatible output."""
+        from pydantic import BaseModel
+        from datetime import datetime, timezone
+
+        class TestModel(BaseModel):
+            id: str
+            created_at: datetime
+
+        model = TestModel(
+            id="123", created_at=datetime(2024, 1, 14, tzinfo=timezone.utc)
+        )
+
+        result = filter_fields(model, None)
+
+        # In JSON mode, datetime should be serialized as string
+        assert isinstance(result["created_at"], str)
+        assert "2024" in result["created_at"]

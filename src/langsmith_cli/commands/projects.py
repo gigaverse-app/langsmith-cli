@@ -8,6 +8,7 @@ from langsmith_cli.utils import (
     apply_client_side_limit,
     extract_wildcard_search_term,
     extract_regex_search_term,
+    fields_option,
     render_output,
     get_or_create_client,
 )
@@ -46,6 +47,7 @@ def projects():
     type=click.Choice(["table", "json", "csv", "yaml"]),
     help="Output format (default: table, or json if --json flag used).",
 )
+@fields_option()
 @click.pass_context
 def list_projects(
     ctx,
@@ -58,6 +60,7 @@ def list_projects(
     has_runs,
     sort_by,
     output_format,
+    fields,
 ):
     """List all projects."""
 
@@ -142,12 +145,19 @@ def list_projects(
             table.add_row(p.name, str(p.id))
         return table
 
+    # Determine which fields to include
+    if fields:
+        include_fields = {f.strip() for f in fields.split(",") if f.strip()}
+    else:
+        # Default fields for output
+        include_fields = None
+
     # Unified output rendering
     render_output(
         projects_list,
         build_projects_table,
         ctx,
-        include_fields={"name", "id"},
+        include_fields=include_fields,
         empty_message="No projects found",
         output_format=output_format,
     )
