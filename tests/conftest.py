@@ -1,3 +1,9 @@
+import os
+
+# Set COLUMNS before any imports to ensure Rich Console detects correct width
+# This must happen before importing any modules that create Console instances
+os.environ["COLUMNS"] = "160"
+
 import pytest
 from click import unstyle
 from click.testing import CliRunner
@@ -7,30 +13,16 @@ from langsmith.schemas import Dataset, Example, Prompt, TracerSessionResult, Run
 
 
 @pytest.fixture(scope="module")
-def runner(monkeypatch_module):
+def runner():
     """Fixture for invoking command-line interfaces.
 
     Module-scoped for performance - CliRunner creates isolated environments
     for each invoke() call, making it safe to share across tests.
 
     Uses wider terminal width (160 chars) to accommodate table with 6 columns.
-    Sets COLUMNS in actual environment so Rich Console detects correct width.
+    COLUMNS is set at module level before imports to ensure Rich detects it.
     """
-    monkeypatch_module.setenv("COLUMNS", "160")
     return CliRunner(env={"COLUMNS": "160"})
-
-
-@pytest.fixture(scope="module")
-def monkeypatch_module():
-    """Module-scoped monkeypatch for runner fixture.
-
-    Allows setting environment variables that persist across all tests in module.
-    """
-    from _pytest.monkeypatch import MonkeyPatch
-
-    m = MonkeyPatch()
-    yield m
-    m.undo()
 
 
 def strip_ansi(text: str) -> str:
