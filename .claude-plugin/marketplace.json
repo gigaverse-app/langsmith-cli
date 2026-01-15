@@ -6,14 +6,14 @@
   },
   "metadata": {
     "description": "LangSmith CLI plugin marketplace",
-    "version": "0.1.11"
+    "version": "0.2.1"
   },
   "plugins": [
     {
       "name": "langsmith-cli",
       "source": "./",
       "description": "A context-efficient interface for LangSmith observability and evaluations.",
-      "version": "0.1.11",
+      "version": "0.2.1",
       "author": {
         "name": "Gigaverse",
         "email": "aviadr1@gmail.com"
