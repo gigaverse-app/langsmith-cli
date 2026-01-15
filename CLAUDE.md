@@ -25,11 +25,11 @@ uv run pre-commit install
 
 ### Testing
 ```bash
-# Run all tests
+# Run all tests (parallel by default with -n auto)
 uv run pytest
 
-# Run with coverage
-uv run pytest --cov=src --cov-report=term-missing
+# Run with coverage (serial is faster for coverage)
+uv run pytest --cov=src --cov-report=term-missing -n 0
 
 # Run specific test file
 uv run pytest tests/test_runs.py -v
@@ -37,13 +37,13 @@ uv run pytest tests/test_runs.py -v
 # Run specific test
 uv run pytest tests/test_runs.py::test_runs_list -v
 
+# Run serially (disable parallelization)
+uv run pytest -n 0
+
 # Run smoke tests (requires LANGSMITH_API_KEY)
 # Smoke tests use in-process CLI invocation and session fixtures for speed
 export LANGSMITH_API_KEY="lsv2_..."
 uv run pytest tests/test_smoke.py -v
-
-# Run smoke tests in parallel (much faster!)
-uv run pytest tests/test_smoke.py -n auto
 
 # Run E2E tests (requires LANGSMITH_API_KEY)
 uv run pytest tests/test_e2e.py -v
