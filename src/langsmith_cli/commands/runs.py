@@ -381,6 +381,11 @@ def compute_metrics(
     help="Comma-separated fields to search in (e.g., 'inputs,outputs,error'). Searches all fields if not specified.",
 )
 @click.option(
+    "--fetch",
+    type=int,
+    help="Number of runs to fetch when using client-side filters (--grep, --name-pattern, etc.). Overrides automatic 3x multiplier. Example: --limit 10 --fetch 500 fetches 500 runs and returns up to 10 matches.",
+)
+@click.option(
     "--sort-by",
     help="Sort by field (name, status, latency, start_time). Prefix with - for descending.",
 )
@@ -436,6 +441,7 @@ def list_runs(
     grep_ignore_case,
     grep_regex,
     grep_in,
+    fetch,
     sort_by,
     output_format,
     no_truncate,
@@ -583,9 +589,12 @@ def list_runs(
     # (for run name pattern/regex matching, exclude patterns, or grep content search)
     needs_client_filtering = bool(name_regex or name_pattern or exclude or grep)
 
-    # If client-side filtering needed, fetch more results (but with a reasonable cap)
-    # Fetching unlimited runs (None) causes severe performance issues for large projects
-    if needs_client_filtering:
+    # Determine fetch limit (how many runs to fetch from API)
+    if fetch is not None:
+        # User explicitly specified --fetch, use that value
+        api_limit = fetch
+    elif needs_client_filtering:
+        # Automatic 3x multiplier for client-side filtering
         # Fetch 3x the limit or at least 100 runs to find pattern matches
         # Cap at 500 to avoid API timeouts (10x multiplier caused 0 results for limit=20+)
         # If no limit specified, cap at 1000 to avoid downloading everything
@@ -594,6 +603,7 @@ def list_runs(
         else:
             api_limit = 1000
     else:
+        # No client-side filtering, fetch exactly what was requested
         api_limit = limit
 
     # Inform user about fetch strategy for client-side filtering
@@ -609,12 +619,19 @@ def list_runs(
             active_filters.append(f"--grep '{grep}'")
         filters_str = ", ".join(active_filters)
 
-        console.print(
-            f"[dim]Fetching {api_limit} runs to evaluate client-side filters ({filters_str})[/dim]"
-        )
+        if fetch is not None:
+            # User explicitly set --fetch
+            console.print(
+                f"[dim]Fetching {api_limit} runs (--fetch {fetch}) to evaluate client-side filters ({filters_str})[/dim]"
+            )
+        else:
+            # Automatic 3x multiplier
+            console.print(
+                f"[dim]Fetching {api_limit} runs to evaluate client-side filters ({filters_str})[/dim]"
+            )
         console.print(
             f"[dim]Will return up to {limit or 'all'} matching results. "
-            f"Adjust with --limit to fetch more/fewer runs.[/dim]\n"
+            f"Use --fetch to control how many runs to evaluate.[/dim]\n"
         )
 
     # Fetch runs from all matching projects using universal helper

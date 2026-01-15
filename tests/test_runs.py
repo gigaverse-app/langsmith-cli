@@ -466,6 +466,36 @@ def test_runs_list_with_name_regex_uses_reasonable_limit(runner):
         assert kwargs["limit"] == 100, "Should use minimum of 100 for regex matching"
 
 
+def test_runs_list_with_explicit_fetch_parameter(runner):
+    """Test that --fetch parameter overrides automatic 3x multiplier."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_runs.return_value = iter([])
+
+        # Test with --fetch explicitly set
+        runner.invoke(
+            cli,
+            ["runs", "list", "--grep", "test", "--limit", "10", "--fetch", "250"],
+        )
+        args, kwargs = mock_client.list_runs.call_args
+        # Should use explicit --fetch value, not automatic 3x multiplier
+        assert kwargs["limit"] == 250, "Should use explicit --fetch value"
+
+        # Test with --fetch overriding default multiplier logic
+        runner.invoke(
+            cli, ["runs", "list", "--name-pattern", "*test*", "--fetch", "50"]
+        )
+        args, kwargs = mock_client.list_runs.call_args
+        # Should use --fetch value even though pattern would normally trigger 100+ fetch
+        assert kwargs["limit"] == 50, "Should use --fetch even for small values"
+
+        # Test without --fetch uses automatic logic
+        runner.invoke(cli, ["runs", "list", "--grep", "test", "--limit", "10"])
+        args, kwargs = mock_client.list_runs.call_args
+        # Should use automatic 3x multiplier: min(max(10*3, 100), 500) = 100
+        assert kwargs["limit"] == 100, "Should use automatic multiplier without --fetch"
+
+
 def test_runs_list_with_smart_filters(runner):
     """Test runs list with smart filters."""
     with patch("langsmith.Client") as MockClient:
