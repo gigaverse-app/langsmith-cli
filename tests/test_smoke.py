@@ -177,7 +177,7 @@ class TestRunsSkill:
             "get",
             sample_run_id,
             "--fields",
-            "inputs,outputs,error,name",
+            "id,inputs,outputs,error,name",
         )
 
         assert exit_code == 0, f"Get command failed: {stderr}"

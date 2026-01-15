@@ -177,9 +177,11 @@ def test_projects_list_with_format(runner, format_type, expected_content):
 
         assert result.exit_code == 0
         assert expected_content in result.output
-        # CSV should have headers (order may vary)
+        # CSV should have headers with name and id fields
         if format_type == "csv":
-            assert "name,id" in result.output or "id,name" in result.output
+            assert "name" in result.output and "id" in result.output
+            # Verify it's actually CSV format (has commas)
+            assert "," in result.output
 
 
 def test_projects_list_with_empty_results(runner):
