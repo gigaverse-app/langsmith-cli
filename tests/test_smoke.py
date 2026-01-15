@@ -85,6 +85,35 @@ pytestmark = [
 
 # Session-scoped fixtures for shared test resources
 @pytest.fixture(scope="session")
+def shared_test_project():
+    """Get or create a shared 'test/smoke_test' project for all smoke tests.
+
+    This avoids polluting LangSmith with throwaway projects.
+    Returns the project data including name and id.
+    """
+    project_name = "test/smoke_test"
+
+    # Try to get existing project first
+    exit_code, stdout, _ = run_cli("--json", "projects", "list", "--name", project_name)
+
+    if exit_code == 0:
+        data = parse_json_output(stdout)
+        if data and len(data) > 0:
+            # Project exists, return it
+            return data[0]
+
+    # Project doesn't exist, create it
+    exit_code, stdout, _ = run_cli("--json", "projects", "create", project_name)
+
+    if exit_code == 0:
+        data = parse_json_output(stdout)
+        if data:
+            return data
+
+    return None
+
+
+@pytest.fixture(scope="session")
 def shared_test_dataset():
     """Create one dataset for all smoke tests to share.
 
@@ -136,26 +165,31 @@ class TestProjectsSkill:
             assert "id" in project, "Project should have 'id' field"
             assert "name" in project, "Project should have 'name' field"
 
-    def test_projects_create_and_cleanup(self):
-        """Test: langsmith-cli --json projects create <name>"""
-        project_name = f"smoke-test-{os.urandom(4).hex()}"
+    def test_projects_create_and_get(self, shared_test_project):
+        """Test: Project creation/retrieval using shared test project.
 
-        try:
-            # Create project
-            exit_code, stdout, stderr = run_cli(
-                "--json", "projects", "create", project_name
-            )
+        Uses the 'test/smoke_test' project to avoid polluting LangSmith.
+        This test verifies both create (via fixture) and get operations.
+        """
+        # Verify the shared project was created successfully
+        assert shared_test_project is not None, (
+            "Failed to get/create shared test project"
+        )
+        assert shared_test_project.get("name") == "test/smoke_test", (
+            "Project name doesn't match"
+        )
+        assert "id" in shared_test_project, "Project should have ID"
 
-            assert exit_code == 0, f"Create failed: {stderr}"
-            data = parse_json_output(stdout)
-            assert data is not None, "Output is not valid JSON"
-            assert data.get("name") == project_name, "Project name doesn't match"
-            assert "id" in data, "Created project should have ID"
+        # Test that we can fetch it again by name
+        exit_code, stdout, stderr = run_cli(
+            "--json", "projects", "list", "--name", "test/smoke_test"
+        )
 
-        finally:
-            # Note: CLI doesn't have delete command, so project remains
-            # This is acceptable for smoke tests
-            pass
+        assert exit_code == 0, f"List failed: {stderr}"
+        data = parse_json_output(stdout)
+        assert data is not None, "Output is not valid JSON"
+        assert len(data) > 0, "Should find the test project"
+        assert data[0].get("name") == "test/smoke_test", "Project name doesn't match"
 
 
 class TestRunsSkill:
