@@ -1,9 +1,14 @@
 {
-    "name": "langsmith-cli",
-    "version": "0.1.10",
-    "description": "A context-efficient interface for LangSmith observability and evaluations.",
-    "entryPoint": "langsmith-cli",
-    "skills": [
-        "skills/langsmith"
-    ]
+  "name": "langsmith-cli",
+  "version": "0.1.10",
+  "description": "A context-efficient interface for LangSmith observability and evaluations.",
+  "author": {
+    "name": "Aviad Rozenhek",
+    "email": "aviadr1@gmail.com"
+  },
+  "homepage": "https://github.com/gigaverse-app/langsmith-cli",
+  "repository": "https://github.com/gigaverse-app/langsmith-cli",
+  "license": "MIT",
+  "keywords": ["langsmith", "observability", "evaluations", "tracing"],
+  "skills": ["./skills/"]
 }
