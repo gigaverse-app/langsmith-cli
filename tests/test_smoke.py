@@ -468,8 +468,12 @@ class TestOutputFormats:
         )
 
         if exit_code == 0 and stdout.strip():
-            # Lenient: Just verify it looks like YAML (has colons)
-            assert ":" in stdout, "YAML should have colons"
+            # Lenient: Verify it's valid YAML
+            # Empty list ([]) is valid YAML and won't have colons
+            # Non-empty YAML dictionaries should have colons
+            stripped = stdout.strip()
+            if stripped != "[]":
+                assert ":" in stdout, "YAML with data should have colons"
 
 
 class TestErrorHandling:
