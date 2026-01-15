@@ -529,3 +529,90 @@ def test_projects_list_displays_metadata_columns(runner):
         assert "5.0%" in result.output  # Error rate
         assert "$0.1234" in result.output  # Cost
         assert "2h ago" in result.output  # Last run (relative time)
+
+
+def test_projects_list_shows_limit_message_when_hit(runner):
+    """INVARIANT: When limit is reached, show message with total count."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        # Create 50 projects
+        projects = [create_project(name=f"proj-{i}") for i in range(50)]
+        mock_client.list_projects.return_value = iter(projects)
+
+        result = runner.invoke(cli, ["projects", "list", "--limit", "10"])
+        assert result.exit_code == 0
+
+        # Verify the limit message is shown with exact count
+        assert "Showing 10 of 50 projects" in result.output
+        assert "Use --limit 0 to see all 50 projects" in result.output
+
+
+def test_projects_list_no_limit_message_when_not_hit(runner):
+    """INVARIANT: When limit is not reached, don't show limit message."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        # Create only 5 projects
+        projects = [create_project(name=f"proj-{i}") for i in range(5)]
+        mock_client.list_projects.return_value = iter(projects)
+
+        result = runner.invoke(cli, ["projects", "list", "--limit", "10"])
+        assert result.exit_code == 0
+
+        # Verify the limit message is NOT shown
+        assert "Showing" not in result.output
+        assert "Use --limit 0" not in result.output
+
+
+def test_projects_list_count_defaults_to_unlimited(runner):
+    """INVARIANT: --count should use unlimited limit by default."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        # Create 150 projects (more than default limit of 100)
+        projects = [create_project(name=f"proj-{i}") for i in range(150)]
+        mock_client.list_projects.return_value = iter(projects)
+
+        result = runner.invoke(cli, ["projects", "list", "--count"])
+        assert result.exit_code == 0
+
+        # Should count all 150, not just 100
+        assert result.output.strip() == "150"
+
+
+def test_projects_list_count_respects_explicit_limit(runner):
+    """INVARIANT: --count with explicit --limit should respect the limit."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        # Create 150 projects
+        projects = [create_project(name=f"proj-{i}") for i in range(150)]
+        mock_client.list_projects.return_value = iter(projects)
+
+        result = runner.invoke(cli, ["projects", "list", "--count", "--limit", "50"])
+        assert result.exit_code == 0
+
+        # Should respect explicit limit of 50
+        assert result.output.strip() == "50"
+
+
+def test_projects_list_no_limit_message_in_json_mode(runner):
+    """INVARIANT: Limit message should not appear in JSON mode."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        # Create 50 projects
+        projects = [create_project(name=f"proj-{i}") for i in range(50)]
+        mock_client.list_projects.return_value = iter(projects)
+
+        result = runner.invoke(cli, ["--json", "projects", "list", "--limit", "10"])
+        assert result.exit_code == 0
+
+        # Verify output is pure JSON (no diagnostic messages)
+        data = json.loads(result.output)
+        assert len(data) == 10
+
+        # Verify the limit message does NOT appear
+        assert "Showing" not in result.output
+        assert "Use --limit 0" not in result.output

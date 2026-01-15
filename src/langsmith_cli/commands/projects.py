@@ -84,6 +84,12 @@ def list_projects(
     is_machine_readable = ctx.obj.get("json") or bool(output) or bool(fields)
     logger.use_stderr = is_machine_readable
 
+    # When --count is used, default to unlimited (0) unless user explicitly set limit
+    # Check if limit was explicitly provided by checking if it's not the default
+    if count and limit == 100:
+        # User didn't explicitly set limit, so use 0 (unlimited) for counting
+        limit = 0
+
     logger.debug(
         f"Listing projects: limit={limit}, name={name_}, "
         f"pattern={name_pattern}, regex={name_regex}"
@@ -150,11 +156,17 @@ def list_projects(
         }
         projects_list = sort_items(projects_list, sort_by, sort_key_map, console)
 
+    # Track total count before applying limit (for showing "more may exist" message)
+    total_count = len(projects_list)
+
     # Apply user's limit AFTER all client-side filtering/sorting
     # Always apply client-side limit since we fetch all projects from API
     # Special case: limit=0 means "no limit" (fetch all)
     effective_limit = None if limit == 0 else limit
     projects_list = apply_client_side_limit(projects_list, effective_limit, True)
+
+    # Track if we hit the limit
+    hit_limit = effective_limit is not None and total_count > effective_limit
 
     # Handle file output - short circuit if writing to file
     if output:
@@ -231,6 +243,14 @@ def list_projects(
         output_format=output_format,
         count_flag=count,
     )
+
+    # Show message if we hit the limit (not in count mode or JSON mode)
+    if hit_limit and not count and not ctx.obj.get("json"):
+        # Show the exact number we know
+        logger.info(
+            f"Showing {len(projects_list)} of {total_count} projects. "
+            f"Use --limit 0 to see all {total_count} projects."
+        )
 
 
 @projects.command("create")
