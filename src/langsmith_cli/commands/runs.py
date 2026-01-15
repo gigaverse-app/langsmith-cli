@@ -483,7 +483,19 @@ def list_runs(
       # Regex search for Hebrew characters
       --grep "[\\u0590-\\u05FF]" --grep-regex --grep-in inputs
     """
+    logger = ctx.obj["logger"]
+
+    # Determine if output is machine-readable (use stderr for diagnostics)
+    is_machine_readable = (
+        ctx.obj.get("json") or output_format in ["csv", "yaml"] or count or output
+    )
+    logger.use_stderr = is_machine_readable
+
     import datetime
+
+    logger.debug(
+        f"Listing runs with filters: project={project}, status={status}, limit={limit}"
+    )
 
     client = get_or_create_client(ctx)
 
@@ -621,17 +633,17 @@ def list_runs(
 
         if fetch is not None:
             # User explicitly set --fetch
-            console.print(
-                f"[dim]Fetching {api_limit} runs (--fetch {fetch}) to evaluate client-side filters ({filters_str})[/dim]"
+            logger.info(
+                f"Fetching {api_limit} runs (--fetch {fetch}) to evaluate client-side filters ({filters_str})"
             )
         else:
             # Automatic 3x multiplier
-            console.print(
-                f"[dim]Fetching {api_limit} runs to evaluate client-side filters ({filters_str})[/dim]"
+            logger.info(
+                f"Fetching {api_limit} runs to evaluate client-side filters ({filters_str})"
             )
-        console.print(
-            f"[dim]Will return up to {limit or 'all'} matching results. "
-            f"Use --fetch to control how many runs to evaluate.[/dim]\n"
+        logger.info(
+            f"Will return up to {limit or 'all'} matching results. "
+            f"Use --fetch to control how many runs to evaluate."
         )
 
     # Fetch runs from all matching projects using universal helper
@@ -707,18 +719,18 @@ def list_runs(
 
         if limit and matches_found < limit:
             # Under-fetched: didn't find enough matches
-            console.print(
-                f"[yellow]Found {matches_found}/{limit} requested matches "
-                f"after evaluating {api_limit} runs.[/yellow]"
+            logger.warning(
+                f"Found {matches_found}/{limit} requested matches "
+                f"after evaluating {api_limit} runs."
             )
-            console.print(
-                f"[yellow]Tip: Increase --limit to fetch more runs and find more matches "
-                f"(current fetch limit: {api_limit}).[/yellow]\n"
+            logger.warning(
+                f"Tip: Increase --limit to fetch more runs and find more matches "
+                f"(current fetch limit: {api_limit})."
             )
         elif matches_found > 0:
             # Success: found enough matches
-            console.print(
-                f"[dim]Found {matches_found} matches after evaluating {len(all_runs)} runs.[/dim]\n"
+            logger.info(
+                f"Found {matches_found} matches after evaluating {len(all_runs)} runs."
             )
 
     # Handle count mode - short circuit all other output
@@ -753,7 +765,7 @@ def list_runs(
 
     if len(runs) == 0:
         # Provide helpful diagnostic message
-        console.print("[yellow]No runs found matching your criteria.[/yellow]\n")
+        logger.warning("No runs found matching your criteria.")
 
         # Build list of active filters
         active_filters = []
@@ -785,37 +797,35 @@ def list_runs(
             active_filters.append(f"--limit {limit}")
 
         if active_filters:
-            console.print("[dim]Active filters:[/dim]")
+            logger.info("Active filters:")
             for f in active_filters:
-                console.print(f"  • {f}")
-            console.print()
+                logger.info(f"  • {f}")
 
         # Show failed projects if any
         if failed_projects:
-            console.print("[yellow]Warning: Some projects failed to fetch:[/yellow]")
+            logger.warning("Some projects failed to fetch:")
             for proj, error_msg in failed_projects[:3]:  # Show first 3 errors
                 # Truncate long error messages
                 short_error = (
                     error_msg[:100] + "..." if len(error_msg) > 100 else error_msg
                 )
-                console.print(f"  • {proj}: {short_error}")
+                logger.warning(f"  • {proj}: {short_error}")
             if len(failed_projects) > 3:
-                console.print(f"  • ... and {len(failed_projects) - 3} more")
-            console.print()
+                logger.warning(f"  • ... and {len(failed_projects) - 3} more")
 
         # Provide suggestions
-        console.print("[dim]Try:[/dim]")
+        logger.info("Try:")
         if roots or is_root:
-            console.print("  • Remove --roots flag to see all runs (including nested)")
+            logger.info("  • Remove --roots flag to see all runs (including nested)")
         if limit and limit < 100:
-            console.print(f"  • Increase --limit (current: {limit})")
+            logger.info(f"  • Increase --limit (current: {limit})")
         if grep or query or filter_:
-            console.print("  • Broaden search criteria or remove filters")
+            logger.info("  • Broaden search criteria or remove filters")
         if len(projects_to_query) > 0:
-            console.print(
+            logger.info(
                 f"  • Verify project exists: langsmith-cli projects list --name-pattern {projects_to_query[0]}"
             )
-        console.print("  • Check project has runs: langsmith-cli runs list --limit 1")
+        logger.info("  • Check project has runs: langsmith-cli runs list --limit 1")
     else:
         console.print(table)
 
@@ -929,7 +939,14 @@ def get_latest_run(
         # Get latest slow run from last hour
         langsmith-cli --json runs get-latest --project my-project --slow --recent --fields name,latency
     """
+    logger = ctx.obj["logger"]
+
+    # Determine if output is machine-readable (use stderr for diagnostics)
+    is_machine_readable = ctx.obj.get("json") or fields
+    logger.use_stderr = is_machine_readable
+
     client = get_or_create_client(ctx)
+    logger.debug(f"Getting latest run with filters: project={project}, status={status}")
 
     # Get matching projects
     projects_to_query = get_matching_projects(
@@ -980,18 +997,18 @@ def get_latest_run(
             continue
 
     if not latest_run:
-        console.print("[yellow]No runs found matching the specified filters[/yellow]")
+        logger.warning("No runs found matching the specified filters")
 
         # Show failed projects if any
         if failed_projects:
-            console.print("\n[yellow]Warning: Some projects failed to fetch:[/yellow]")
+            logger.warning("Some projects failed to fetch:")
             for proj, error_msg in failed_projects[:3]:
                 short_error = (
                     error_msg[:100] + "..." if len(error_msg) > 100 else error_msg
                 )
-                console.print(f"  • {proj}: {short_error}")
+                logger.warning(f"  • {proj}: {short_error}")
             if len(failed_projects) > 3:
-                console.print(f"  • ... and {len(failed_projects) - 3} more")
+                logger.warning(f"  • ... and {len(failed_projects) - 3} more")
 
         raise click.Abort()
 
@@ -1042,6 +1059,12 @@ def view_file(ctx, pattern, no_truncate, fields):
         langsmith-cli runs view-file samples.jsonl --fields id,name,status
         langsmith-cli --json runs view-file samples.jsonl
     """
+    logger = ctx.obj["logger"]
+
+    # Determine if output is machine-readable
+    is_machine_readable = ctx.obj.get("json") or fields
+    logger.use_stderr = is_machine_readable
+
     import glob
     from langsmith.schemas import Run
 
@@ -1049,7 +1072,7 @@ def view_file(ctx, pattern, no_truncate, fields):
     file_paths = glob.glob(pattern)
 
     if not file_paths:
-        console.print(f"[red]No files match pattern: {pattern}[/red]")
+        logger.error(f"No files match pattern: {pattern}")
         raise click.Abort()
 
     # Read all runs from matching files
@@ -1067,19 +1090,17 @@ def view_file(ctx, pattern, no_truncate, fields):
                         run = Run.model_validate(data)
                         runs.append(run)
                     except json.JSONDecodeError as e:
-                        console.print(
-                            f"[yellow]Warning: Invalid JSON at {file_path}:{line_num} - {e}[/yellow]"
-                        )
+                        logger.warning(f"Invalid JSON at {file_path}:{line_num} - {e}")
                     except Exception as e:
-                        console.print(
-                            f"[yellow]Warning: Failed to parse run at {file_path}:{line_num} - {e}[/yellow]"
+                        logger.warning(
+                            f"Failed to parse run at {file_path}:{line_num} - {e}"
                         )
         except Exception as e:
-            console.print(f"[red]Error reading {file_path}: {e}[/red]")
+            logger.error(f"Error reading {file_path}: {e}")
             continue
 
     if not runs:
-        console.print("[yellow]No valid runs found in files.[/yellow]")
+        logger.warning("No valid runs found in files.")
         return
 
     # Handle JSON output
@@ -1098,12 +1119,10 @@ def view_file(ctx, pattern, no_truncate, fields):
     table = build_runs_table(runs, table_title, no_truncate)
 
     if len(runs) == 0:
-        console.print("[yellow]No runs found.[/yellow]")
+        logger.warning("No runs found.")
     else:
         console.print(table)
-        console.print(
-            f"\n[dim]Loaded {len(runs)} runs from {len(file_paths)} file(s)[/dim]"
-        )
+        logger.info(f"Loaded {len(runs)} runs from {len(file_paths)} file(s)")
 
 
 @runs.command("stats")
@@ -1506,7 +1525,15 @@ def sample_runs(
           --values "short:news,medium:gaming,long:news" \\
           --samples-per-stratum 10
     """
+    logger = ctx.obj["logger"]
+
+    # Determine if output is machine-readable
+    is_machine_readable = output is not None or fields
+    logger.use_stderr = is_machine_readable
+
     import itertools
+
+    logger.debug(f"Sampling runs with stratify_by={stratify_by}, values={values}")
 
     client = get_or_create_client(ctx)
 
@@ -1653,11 +1680,9 @@ def sample_runs(
             with open(output, "w", encoding="utf-8") as f:
                 for sample in all_samples:
                     f.write(json_dumps(sample) + "\n")
-            console.print(
-                f"[green]Wrote {len(all_samples)} samples to {output}[/green]"
-            )
+            logger.success(f"Wrote {len(all_samples)} samples to {output}")
         except Exception as e:
-            console.print(f"[red]Error writing to file {output}: {e}[/red]")
+            logger.error(f"Error writing to file {output}: {e}")
             raise click.Abort()
     else:
         # Write to stdout (JSONL format)
@@ -1752,7 +1777,17 @@ def analyze_runs(
           --metrics "count,error_rate,p50_latency" \\
           --sample-size 0
     """
+    logger = ctx.obj["logger"]
+
+    # Determine if output is machine-readable
+    is_machine_readable = ctx.obj.get("json") or output_format in ["csv", "yaml"]
+    logger.use_stderr = is_machine_readable
+
     from collections import defaultdict
+
+    logger.debug(
+        f"Analyzing runs: group_by={group_by}, metrics={metrics}, sample_size={sample_size}"
+    )
 
     client = get_or_create_client(ctx)
 
@@ -1880,12 +1915,12 @@ def analyze_runs(
         # Report failures if any (but don't spam console in analyze mode)
         if failed_projects and len(all_runs) == 0:
             # Only report if we got zero runs (might be all failures)
-            console.print("[yellow]Warning: Some projects failed to fetch:[/yellow]")
+            logger.warning("Some projects failed to fetch:")
             for proj, error_msg in failed_projects[:3]:
                 short_error = (
                     error_msg[:100] + "..." if len(error_msg) > 100 else error_msg
                 )
-                console.print(f"  • {proj}: {short_error}")
+                logger.warning(f"  • {proj}: {short_error}")
 
     # Group runs by extracted field value
     groups: dict[str, list[Any]] = defaultdict(list)
@@ -1939,7 +1974,7 @@ def analyze_runs(
         table.add_row(*row_values)
 
     if not results:
-        console.print("[yellow]No groups found.[/yellow]")
+        logger.warning("No groups found.")
     else:
         console.print(table)
 
@@ -1977,9 +2012,16 @@ def discover_tags(
         # Discover tags with pattern filtering
         langsmith-cli runs tags --project-name-pattern "prod/*"
     """
+    logger = ctx.obj["logger"]
+
+    # Determine if output is machine-readable
+    is_machine_readable = ctx.obj.get("json")
+    logger.use_stderr = is_machine_readable
+
     from collections import defaultdict
 
     client = get_or_create_client(ctx)
+    logger.debug(f"Discovering tags with sample_size={sample_size}")
 
     # Get matching projects
     projects_to_query = get_matching_projects(
@@ -2041,13 +2083,11 @@ def discover_tags(
             table.add_row(key, value_str)
 
         if not result["tag_patterns"]:
-            console.print(
-                "[yellow]No structured tags found (key:value format).[/yellow]"
-            )
+            logger.warning("No structured tags found (key:value format).")
         else:
             console.print(table)
-            console.print(
-                f"\n[dim]Analyzed {len(all_runs)} runs from {len(projects_to_query)} project(s)[/dim]"
+            logger.info(
+                f"Analyzed {len(all_runs)} runs from {len(projects_to_query)} project(s)"
             )
 
 
@@ -2084,8 +2124,14 @@ def discover_metadata_keys(
         # Discover with pattern filtering
         langsmith-cli runs metadata-keys --project-name-pattern "prod/*"
     """
+    logger = ctx.obj["logger"]
+
+    # Determine if output is machine-readable
+    is_machine_readable = ctx.obj.get("json")
+    logger.use_stderr = is_machine_readable
 
     client = get_or_create_client(ctx)
+    logger.debug(f"Discovering metadata keys with sample_size={sample_size}")
 
     # Get matching projects
     projects_to_query = get_matching_projects(
@@ -2141,9 +2187,9 @@ def discover_metadata_keys(
             table.add_row(key, "metadata")
 
         if not result["metadata_keys"]:
-            console.print("[yellow]No metadata keys found.[/yellow]")
+            logger.warning("No metadata keys found.")
         else:
             console.print(table)
-            console.print(
-                f"\n[dim]Analyzed {len(all_runs)} runs from {len(projects_to_query)} project(s)[/dim]"
+            logger.info(
+                f"Analyzed {len(all_runs)} runs from {len(projects_to_query)} project(s)"
             )

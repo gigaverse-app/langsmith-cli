@@ -2253,7 +2253,7 @@ def test_runs_view_file_no_truncate(runner, tmp_path):
     "file_content,expected_msg",
     [
         ("nonexistent.jsonl", "No files match pattern"),
-        ('{"invalid json\n', "Warning"),
+        ('{"invalid json\n', "Invalid JSON"),
         ("", "No valid runs found"),
     ],
 )
