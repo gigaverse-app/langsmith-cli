@@ -142,6 +142,9 @@ def create_project(
     name: str = "test-project",
     project_type: str = "tracer",  # Unused, kept for backward compatibility
     run_count: int = 0,
+    last_run_start_time: datetime | None = None,
+    error_rate: float | None = None,
+    total_cost: float | None = None,
 ) -> TracerSessionResult:
     """Create a real TracerSessionResult (project) Pydantic model instance.
 
@@ -149,6 +152,9 @@ def create_project(
         name: Project name
         project_type: Unused (kept for backward compatibility, SDK doesn't support this field)
         run_count: Number of runs in the project
+        last_run_start_time: Last run start time (optional)
+        error_rate: Error rate as a decimal (e.g., 0.05 for 5%)
+        total_cost: Total cost in dollars (optional)
     """
     return TracerSessionResult(
         id=UUID("f47ac10b-58cc-4372-a567-0e02b2c3d479"),
@@ -158,6 +164,9 @@ def create_project(
         run_count=run_count,
         tenant_id=UUID("00000000-0000-0000-0000-000000000000"),  # required field
         reference_dataset_id=None,  # optional field
+        last_run_start_time=last_run_start_time,
+        error_rate=error_rate,
+        total_cost=total_cost,
     )
 
 

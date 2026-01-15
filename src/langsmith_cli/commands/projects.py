@@ -164,11 +164,54 @@ def list_projects(
 
     # Define table builder function
     def build_projects_table(projects):
+        from datetime import datetime, timezone
+
         table = Table(title="Projects")
         table.add_column("Name", style="cyan")
-        table.add_column("ID", style="dim")
+        table.add_column("Runs", justify="right")
+        table.add_column("Last Run", style="dim")
+        table.add_column("Error Rate", justify="right")
+        table.add_column("Cost", justify="right", style="green")
+
         for p in projects:
-            table.add_row(p.name, str(p.id))
+            # Run count
+            run_count_str = str(p.run_count) if p.run_count else "0"
+
+            # Last run time (human-readable relative time)
+            if p.last_run_start_time:
+                now = datetime.now(timezone.utc)
+                delta = now - p.last_run_start_time
+                if delta.days > 0:
+                    last_run_str = f"{delta.days}d ago"
+                elif delta.seconds >= 3600:
+                    hours = delta.seconds // 3600
+                    last_run_str = f"{hours}h ago"
+                elif delta.seconds >= 60:
+                    minutes = delta.seconds // 60
+                    last_run_str = f"{minutes}m ago"
+                else:
+                    last_run_str = "just now"
+            else:
+                last_run_str = "-"
+
+            # Error rate (percentage)
+            if p.error_rate is not None:
+                error_rate_str = f"{p.error_rate * 100:.1f}%"
+                if p.error_rate > 0.1:  # More than 10% errors
+                    error_rate_str = f"[red]{error_rate_str}[/red]"
+                elif p.error_rate > 0:
+                    error_rate_str = f"[yellow]{error_rate_str}[/yellow]"
+            else:
+                error_rate_str = "-"
+
+            # Total cost
+            if p.total_cost is not None and p.total_cost > 0:
+                cost_str = f"${p.total_cost:.4f}"
+            else:
+                cost_str = "-"
+
+            table.add_row(p.name, run_count_str, last_run_str, error_rate_str, cost_str)
+
         return table
 
     # Determine which fields to include

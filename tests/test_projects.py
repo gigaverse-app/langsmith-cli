@@ -494,3 +494,38 @@ def test_projects_list_limit_zero_returns_all(runner):
         assert call_kwargs.get("limit") is None, (
             "API should be called with limit=None for pagination"
         )
+
+
+def test_projects_list_displays_metadata_columns(runner):
+    """INVARIANT: Projects table should display run count, last run, error rate, and cost."""
+    from datetime import datetime, timezone, timedelta
+
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        # Create project with rich metadata
+        recent_time = datetime.now(timezone.utc) - timedelta(hours=2)
+        p1 = create_project(
+            name="prod-api",
+            run_count=150,
+            last_run_start_time=recent_time,
+            error_rate=0.05,  # 5% error rate
+            total_cost=0.1234,
+        )
+
+        mock_client.list_projects.return_value = iter([p1])
+
+        result = runner.invoke(cli, ["projects", "list"])
+        assert result.exit_code == 0
+
+        # Verify metadata columns are present
+        assert "Runs" in result.output
+        assert "Last Run" in result.output
+        assert "Error Rate" in result.output
+        assert "Cost" in result.output
+
+        # Verify data is displayed
+        assert "150" in result.output  # Run count
+        assert "5.0%" in result.output  # Error rate
+        assert "$0.1234" in result.output  # Cost
+        assert "2h ago" in result.output  # Last run (relative time)
