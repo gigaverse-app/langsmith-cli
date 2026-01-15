@@ -2037,3 +2037,62 @@ def test_runs_tags_discovery_sample_size(runner):
         mock_client.list_runs.assert_called_once()
         args, kwargs = mock_client.list_runs.call_args
         assert kwargs["limit"] == 5000
+
+
+def test_runs_list_no_truncate_flag(runner):
+    """Test runs list --no-truncate flag works and shows more content."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        # Create run with very long model name
+        test_run = Run(
+            id=UUID("12345678-1234-5678-1234-567812345678"),
+            name="Very Long Run Name That Would Normally Be Truncated",
+            run_type="llm",
+            start_time=datetime.now(timezone.utc),
+            status="success",
+            latency=1.5,
+            total_tokens=1000,
+            extra={
+                "invocation_params": {
+                    "model_name": "very-long-model-name-that-would-be-truncated-normally"
+                }
+            },
+        )
+        mock_client.list_runs.return_value = [test_run]
+
+        result = runner.invoke(cli, ["runs", "list", "--no-truncate"])
+        assert result.exit_code == 0
+        # With --no-truncate, more of the model name should appear (beyond 20 chars)
+        # Rich may still truncate to fit terminal width, but we should see more than the default 20-char limit
+        assert "very-long-model-name-that-would-be-trunca" in result.output
+
+
+def test_runs_list_default_truncate_behavior(runner):
+    """Test runs list default behavior truncates long model names."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        test_run = Run(
+            id=UUID("12345678-1234-5678-1234-567812345678"),
+            name="Test Run",
+            run_type="llm",
+            start_time=datetime.now(timezone.utc),
+            status="success",
+            latency=1.5,
+            total_tokens=1000,
+            extra={
+                "invocation_params": {
+                    "model_name": "very-long-model-name-that-exceeds-twenty-characters"
+                }
+            },
+        )
+        mock_client.list_runs.return_value = [test_run]
+
+        result = runner.invoke(cli, ["runs", "list"])
+        assert result.exit_code == 0
+        # Without --no-truncate, long model names should be truncated with "..."
+        assert (
+            "very-long-model-name..." in result.output
+            or "very-long-model-n..." in result.output
+        )

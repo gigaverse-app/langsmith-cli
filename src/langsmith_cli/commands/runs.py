@@ -391,6 +391,11 @@ def compute_metrics(
     type=click.Choice(["table", "json", "csv", "yaml"]),
     help="Output format (default: table, or json if --json flag used).",
 )
+@click.option(
+    "--no-truncate",
+    is_flag=True,
+    help="Don't truncate long fields in table output (shows full content in all columns).",
+)
 @fields_option()
 @click.pass_context
 def list_runs(
@@ -426,6 +431,7 @@ def list_runs(
     last,
     sort_by,
     output_format,
+    no_truncate,
     fields,
 ):
     """Fetch recent runs from one or more projects.
@@ -613,11 +619,12 @@ def list_runs(
 
     table = Table(title=table_title)
     table.add_column("ID", style="dim", no_wrap=True)
-    table.add_column("Name", max_width=30)
+    # Conditionally apply max_width based on --no-truncate flag
+    table.add_column("Name", max_width=None if no_truncate else 30)
     table.add_column("Status", justify="center")
     table.add_column("Latency", justify="right")
     table.add_column("Tokens", justify="right")
-    table.add_column("Model", style="cyan", max_width=20)
+    table.add_column("Model", style="cyan", max_width=None if no_truncate else 20)
 
     count = 0
     for r in runs:
@@ -640,7 +647,8 @@ def list_runs(
 
         # Format tokens and extract model name using utility functions
         tokens = format_token_count(r.total_tokens)
-        model_name = extract_model_name(r)
+        # Disable model name truncation if --no-truncate is set
+        model_name = extract_model_name(r, max_length=999 if no_truncate else 20)
 
         table.add_row(
             r_id,

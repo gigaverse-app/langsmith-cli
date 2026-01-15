@@ -29,13 +29,14 @@ See **[Installation Guide](references/installation.md)** for all installation me
 ```
 
 ## ⚡ Efficient Usage Guidelines (READ THIS)
-1. **Machine Output:** ALWAYS add `--json` as the FIRST argument to `langsmith-cli` (e.g. `langsmith-cli --json runs list ...`) to get parseable output.
+1. **Machine Output:** ALWAYS add `--json` as the FIRST argument to `langsmith-cli` (e.g. `langsmith-cli --json runs list ...`) to get parseable output. Never use table output for agents.
 2. **Context Saving:** Use `--fields` on ALL list/get commands to reduce token usage (~90% reduction).
    - Works on: `runs list`, `runs get`, `projects list`, `datasets list/get`, `examples list/get`, `prompts list`
    - Example: `langsmith-cli --json runs list --fields id,name,status`
    - Example: `langsmith-cli --json runs get <id> --fields inputs,error`
 3. **Filter Fast:** Use `--status error` to find failing runs quickly.
 4. **Project Scope:** Always specify `--project` (default is "default") if you know it.
+5. **File Output:** For data extraction, use built-in file output options (e.g., `runs sample --output file.jsonl`) instead of Unix pipes (`> file.json`). Built-in file writing is more reliable and avoids potential formatting issues.
 
 ## API Reference
 
@@ -50,6 +51,8 @@ See **[Installation Guide](references/installation.md)** for all installation me
   - `--status <success|error>`: Filter by status.
   - `--filter <string>`: Advanced LangSmith query string.
   - `--fields <comma-separated>`: Reduce output size (e.g., `id,name,status,error`).
+  - `--no-truncate`: Show full content in table columns (only affects table output, not JSON).
+  - `--roots`: Show only root traces (recommended for cleaner output).
 - `langsmith-cli --json runs get <id> [OPTIONS]`: Get details of a single run.
   - `--fields <comma-separated>`: Only return specific fields (e.g., `inputs,outputs,error`).
 - `langsmith-cli --json runs stats --project <name>`: Get aggregate stats.
@@ -63,10 +66,11 @@ See **[Installation Guide](references/installation.md)** for all installation me
     - Automatically generates all combinations: (short,news), (short,gaming), (medium,news), etc.
   - `--samples-per-stratum <n>`: Number of samples per stratum (default: 10).
   - `--samples-per-combination <n>`: Alias for `--samples-per-stratum` in multi-dimensional mode.
-  - `--output <path>`: Write samples to JSONL file instead of stdout.
+  - `--output <path>`: Write samples to JSONL file instead of stdout. **Recommended for data extraction** (more reliable than piping).
   - `--fields <comma-separated>`: Reduce output size.
-  - Example (single): `langsmith-cli --json runs sample --stratify-by tag:length --values short,medium,long --samples-per-stratum 10`
-  - Example (multi): `langsmith-cli --json runs sample --stratify-by tag:length,tag:content_type --dimension-values "short|long,news|gaming" --samples-per-combination 2`
+  - Example (to file): `langsmith-cli runs sample --stratify-by tag:length --values short,medium,long --samples-per-stratum 10 --output samples.jsonl`
+  - Example (to stdout): `langsmith-cli --json runs sample --stratify-by tag:length --values short,medium,long --samples-per-stratum 10`
+  - Example (multi): `langsmith-cli runs sample --stratify-by tag:length,tag:content_type --dimension-values "short|long,news|gaming" --samples-per-combination 2 --output multi_samples.jsonl`
 - `langsmith-cli --json runs analyze [OPTIONS]`: Group runs and compute aggregate metrics.
   - `--group-by <field>`: Grouping field (e.g., `tag:length_category`, `metadata:user_tier`).
   - `--metrics <comma-separated>`: Metrics to compute (default: `count,error_rate,p50_latency,p95_latency`).
