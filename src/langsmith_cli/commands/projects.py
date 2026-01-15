@@ -30,7 +30,11 @@ def projects():
 
 
 @projects.command("list")
-@click.option("--limit", default=100, help="Limit number of projects (default 100).")
+@click.option(
+    "--limit",
+    default=100,
+    help="Limit number of projects (default 100, use 0 for no limit).",
+)
 @click.option("--name", "name_", help="Filter by project name substring.")
 @click.option("--name-pattern", help="Filter by name with wildcards (e.g. '*prod*').")
 @click.option(
@@ -87,8 +91,7 @@ def list_projects(
 
     client = get_or_create_client(ctx)
 
-    # Determine if client-side filtering is needed
-    needs_client_filtering = False
+    # Determine API name filter for optimization
     api_name_filter = name_
 
     if name_pattern and not name_:
@@ -97,28 +100,16 @@ def list_projects(
         if is_unanchored and search_term:
             # Unanchored pattern - can use API optimization
             api_name_filter = search_term
-        else:
-            # Anchored pattern - needs client-side filtering
-            needs_client_filtering = True
     elif name_regex and not name_ and not name_pattern:
-        # Regex always needs client-side filtering
-        needs_client_filtering = True
         # Try to extract search term for API optimization
         search_term = extract_regex_search_term(name_regex)
         if search_term:
             api_name_filter = search_term
 
-    # If has_runs filter is used, we need client-side filtering
-    if has_runs:
-        needs_client_filtering = True
-
-    # If exclude patterns specified, need client-side filtering
-    if exclude:
-        needs_client_filtering = True
-
-    # Determine API limit: if client-side filtering needed, fetch more results
-    # Otherwise use the user's limit directly
-    api_limit = None if needs_client_filtering else limit
+    # Always fetch all projects (no API limit) to ensure pagination works correctly
+    # The SDK's iterator handles pagination automatically via offset
+    # We'll apply the user's limit client-side after filtering/sorting
+    api_limit = None
 
     # list_projects returns a generator
     projects_gen = client.list_projects(
@@ -160,9 +151,10 @@ def list_projects(
         projects_list = sort_items(projects_list, sort_by, sort_key_map, console)
 
     # Apply user's limit AFTER all client-side filtering/sorting
-    projects_list = apply_client_side_limit(
-        projects_list, limit, needs_client_filtering
-    )
+    # Always apply client-side limit since we fetch all projects from API
+    # Special case: limit=0 means "no limit" (fetch all)
+    effective_limit = None if limit == 0 else limit
+    projects_list = apply_client_side_limit(projects_list, effective_limit, True)
 
     # Handle file output - short circuit if writing to file
     if output:

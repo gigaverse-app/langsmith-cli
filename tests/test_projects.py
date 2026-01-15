@@ -468,3 +468,29 @@ def test_projects_list_complex_regex_extracts_best_search_term(runner):
         assert call_kwargs.get("name_contains") is not None, (
             "API should be called with extracted search term for optimization"
         )
+
+
+def test_projects_list_limit_zero_returns_all(runner):
+    """INVARIANT: --limit 0 should return all projects without limit."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        # Create many projects to test pagination
+        projects = [create_project(name=f"proj-{i}") for i in range(250)]
+        mock_client.list_projects.return_value = iter(projects)
+
+        result = runner.invoke(cli, ["--json", "projects", "list", "--limit", "0"])
+        assert result.exit_code == 0
+
+        data = json.loads(result.output)
+        assert len(data) == 250, "limit=0 should return all 250 projects"
+
+        # Verify all project names are present
+        names = {p["name"] for p in data}
+        assert all(f"proj-{i}" in names for i in range(250))
+
+        # Verify API was called with limit=None (fetch all)
+        call_kwargs = mock_client.list_projects.call_args[1]
+        assert call_kwargs.get("limit") is None, (
+            "API should be called with limit=None for pagination"
+        )
