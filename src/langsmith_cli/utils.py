@@ -1,13 +1,117 @@
 """Utility functions shared across commands."""
 
-from typing import Any, Callable, Protocol, TypeVar, overload
+from typing import Any, Callable, Generic, Protocol, TypeVar, overload
 import click
 import json
 import langsmith
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 T = TypeVar("T")
 ModelT = TypeVar("ModelT", bound=BaseModel)
+
+
+class FetchResult(BaseModel, Generic[T]):
+    """Result of fetching items from multiple projects/sources.
+
+    Tracks both successful items and failed sources for proper error reporting.
+    """
+
+    model_config = {"arbitrary_types_allowed": True}
+
+    items: list[T]
+    successful_sources: list[str]
+    failed_sources: list[tuple[str, str]] = Field(
+        default_factory=list, description="(source_name, error_message)"
+    )
+
+    @property
+    def has_failures(self) -> bool:
+        """Check if any sources failed."""
+        return len(self.failed_sources) > 0
+
+    def report_failures(self, console: Any, max_show: int = 3) -> None:
+        """Report failures to console.
+
+        Args:
+            console: Console object (Rich Console or ConsoleProtocol)
+            max_show: Maximum number of failures to show (default 3)
+        """
+        if not self.has_failures:
+            return
+
+        console.print("[yellow]Warning: Some sources failed to fetch:[/yellow]")
+        for source, error_msg in self.failed_sources[:max_show]:
+            # Truncate long error messages
+            short_error = error_msg[:100] + "..." if len(error_msg) > 100 else error_msg
+            console.print(f"  • {source}: {short_error}")
+
+        if len(self.failed_sources) > max_show:
+            remaining = len(self.failed_sources) - max_show
+            console.print(f"  ... and {remaining} more")
+
+
+def fetch_from_projects(
+    client: Any,
+    project_names: list[str],
+    fetch_func: Callable[..., Any],
+    *,
+    limit: int | None = None,
+    console: Any | None = None,
+    show_warnings: bool = True,
+    **fetch_kwargs: Any,
+) -> FetchResult[Any]:
+    """Universal helper to fetch items from multiple projects with error tracking.
+
+    Args:
+        client: LangSmith client instance
+        project_names: List of project names to fetch from
+        fetch_func: Function that takes (client, project_name, **kwargs) and returns items
+        limit: Optional limit on number of items to fetch per project
+        console: Optional console for warnings
+        show_warnings: Whether to automatically show warnings (default True)
+        **fetch_kwargs: Additional kwargs passed to fetch_func
+
+    Returns:
+        FetchResult containing items, successful projects, and failed projects
+
+    Example:
+        >>> result = fetch_from_projects(
+        ...     client,
+        ...     ["proj1", "proj2"],
+        ...     lambda c, proj, **kw: c.list_runs(project_name=proj, **kw),
+        ...     limit=10,
+        ...     console=console
+        ... )
+        >>> if result.has_failures:
+        ...     result.report_failures(console)
+    """
+    all_items: list[Any] = []
+    successful: list[str] = []
+    failed: list[tuple[str, str]] = []
+
+    for proj_name in project_names:
+        try:
+            # Call fetch function with project name and all kwargs
+            items = fetch_func(client, proj_name, limit=limit, **fetch_kwargs)
+
+            # Handle iterators (like client.list_runs returns)
+            if hasattr(items, "__iter__") and not isinstance(items, (list, tuple)):
+                items = list(items)
+
+            all_items.extend(items)
+            successful.append(proj_name)
+        except Exception as e:
+            failed.append((proj_name, str(e)))
+
+    result = FetchResult(
+        items=all_items, successful_sources=successful, failed_sources=failed
+    )
+
+    # Automatically show warnings if requested
+    if show_warnings and result.has_failures and console:
+        result.report_failures(console)
+
+    return result
 
 
 def json_dumps(obj: Any, **kwargs: Any) -> str:
@@ -1014,6 +1118,175 @@ def add_project_filter_options(func: Callable[..., Any]) -> Callable[..., Any]:
         help="Project name (default fallback if no other filters specified).",
     )(func)
     return func
+
+
+def write_output_to_file(
+    data: list[dict[str, Any]],
+    output_path: str,
+    console: ConsoleProtocol,
+    *,
+    format_type: str = "jsonl",
+) -> None:
+    """Write data to a file with error handling and user feedback.
+
+    Universal helper for --output flag across all commands.
+
+    Args:
+        data: List of dictionaries to write.
+              Any is acceptable - JSON values can be str, int, bool, datetime, nested dicts, etc.
+        output_path: Path to write file to
+        console: Rich console for user feedback
+        format_type: Output format ("jsonl" for newline-delimited JSON, "json" for JSON array)
+
+    Raises:
+        click.Abort: If file writing fails
+
+    Example:
+        write_output_to_file(
+            [{"id": "123", "name": "test"}],
+            "output.jsonl",
+            console,
+            format_type="jsonl"
+        )
+    """
+    try:
+        with open(output_path, "w", encoding="utf-8") as f:
+            if format_type == "jsonl":
+                # Write as newline-delimited JSON (one object per line)
+                for item in data:
+                    f.write(json_dumps(item) + "\n")
+            elif format_type == "json":
+                # Write as JSON array
+                f.write(json_dumps(data))
+            else:
+                raise ValueError(f"Unsupported format_type: {format_type}")
+
+        console.print(f"[green]Wrote {len(data)} items to {output_path}[/green]")
+    except Exception as e:
+        console.print(f"[red]Error writing to file {output_path}: {e}[/red]")
+        raise click.Abort()
+
+
+def output_option(
+    help_text: str = "Write output to file instead of stdout. For list commands, uses JSONL format (one item per line); for single items, uses JSON format.",
+) -> Any:
+    """Reusable Click option decorator for --output flag.
+
+    Use this decorator on all bulk commands to provide consistent file output.
+
+    Args:
+        help_text: Custom help text for the option
+
+    Returns:
+        Click option decorator
+
+    Example:
+        @click.command()
+        @output_option()
+        @click.pass_context
+        def list_items(ctx, output):
+            client = get_or_create_client(ctx)
+            items = list(client.list_items())
+            data = filter_fields(items, fields)
+
+            if output:
+                from rich.console import Console
+                console = Console()
+                write_output_to_file(data, output, console, format_type="jsonl")
+            else:
+                click.echo(json_dumps(data))
+    """
+    return click.option(
+        "--output",
+        type=str,
+        default=None,
+        help=help_text,
+    )
+
+
+def apply_grep_filter(
+    items: list[T],
+    grep_pattern: str | None,
+    grep_fields: tuple[str, ...] = (),
+    ignore_case: bool = False,
+    use_regex: bool = False,
+) -> list[T]:
+    """Apply grep-style content filtering to items.
+
+    Searches through specified fields (or all fields if none specified) for pattern matches.
+    Handles nested JSON strings by parsing them before searching.
+
+    Args:
+        items: List of items (typically Run objects) to filter
+        grep_pattern: Pattern to search for (substring or regex)
+        grep_fields: Tuple of field names to search in (e.g., ('inputs', 'outputs', 'error'))
+                    If empty, searches all fields
+        ignore_case: Whether to perform case-insensitive search
+        use_regex: Whether to treat pattern as regex (otherwise substring match)
+
+    Returns:
+        Filtered list of items that match the pattern
+
+    Example:
+        # Search for "druze" in inputs field
+        filtered = apply_grep_filter(runs, "druze", grep_fields=("inputs",))
+
+        # Case-insensitive regex search for Hebrew characters
+        filtered = apply_grep_filter(runs, r"[\u0590-\u05ff]", ignore_case=True, use_regex=True)
+    """
+    if not grep_pattern:
+        return items
+
+    import re
+
+    # Compile regex pattern if needed
+    if use_regex:
+        try:
+            flags = re.IGNORECASE if ignore_case else 0
+            compiled_pattern = re.compile(grep_pattern, flags)
+        except re.error as e:
+            raise click.BadParameter(
+                f"Invalid regex pattern: {grep_pattern}. Error: {e}"
+            )
+    else:
+        # For substring search, create a simple regex
+        escaped_pattern = re.escape(grep_pattern)
+        flags = re.IGNORECASE if ignore_case else 0
+        compiled_pattern = re.compile(escaped_pattern, flags)
+
+    filtered_items = []
+    for item in items:
+        # Convert item to dict for searching
+        if hasattr(item, "model_dump"):
+            item_dict = item.model_dump(mode="json")
+        elif isinstance(item, dict):
+            item_dict = item
+        else:
+            # Skip items we can't convert to dict
+            continue
+
+        # Determine which fields to search
+        if grep_fields:
+            # Search only specified fields
+            fields_to_search = {
+                field: item_dict.get(field)
+                for field in grep_fields
+                if field in item_dict
+            }
+        else:
+            # Search all fields
+            fields_to_search = item_dict
+
+        # Convert to JSON string for searching (handles nested structures)
+        # Use ensure_ascii=False to preserve Unicode characters (Hebrew, Chinese, etc.)
+        # Note: Searches the serialized JSON, including any nested JSON strings as-is
+        content = json_dumps(fields_to_search)
+
+        # Search for pattern
+        if compiled_pattern.search(content):
+            filtered_items.append(item)
+
+    return filtered_items
 
 
 def build_runs_list_filter(

@@ -472,11 +472,18 @@ def create_dataset(name="test", example_count=10) -> Dataset:
 - **Current Status**: Mixed - some logic calls `console.print()` directly (opportunity for refactor)
 
 ### 4. Error Handling
-- ❌ Discourage broad `Exception` catching
+- ❌ **NEVER silently swallow errors** with bare `except: pass` or `except Exception: pass`
+- ❌ Discourage broad `Exception` catching without logging
 - ❌ Forbidden: Matching errors by string
 - ✅ Use specific SDK exceptions: `LangSmithConflictError`, `LangSmithNotFoundError`, `LangSmithAuthError`, etc.
 - ✅ Import exceptions from `langsmith.utils`
-- **Current Status**: Fully implemented - all commands use proper exception types
+- ✅ Choose appropriate error handling based on severity:
+  - **Errors**: Use `raise` or `click.ClickException()` for fatal issues that should stop execution
+  - **Stack traces**: Use `console.print_exception()` or `logger.exception()` for debugging unexpected failures
+  - **Warnings**: Use `console.print("[yellow]Warning:...")` for recoverable issues users should know about
+  - **Debug messages**: Use `logger.debug()` or `console.print("[dim]...")` for diagnostic information
+- ✅ When catching broad exceptions, always log what went wrong before continuing
+- **Current Status**: Fully implemented - all commands use proper exception types and log failures
 
 ### 5. Context Efficiency (Plugin Standard)
 - Default JSON output should be "sparse"

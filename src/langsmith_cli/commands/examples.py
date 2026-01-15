@@ -8,10 +8,13 @@ from langsmith_cli.utils import (
     fields_option,
     filter_fields,
     get_or_create_client,
+    output_option,
     parse_comma_separated_list,
     parse_json_string,
     render_output,
     safe_model_dump,
+    write_output_to_file,
+    json_dumps,
 )
 
 console = Console()
@@ -37,6 +40,7 @@ def examples():
 @exclude_option()
 @fields_option()
 @count_option()
+@output_option()
 @click.pass_context
 def list_examples(
     ctx,
@@ -53,9 +57,9 @@ def list_examples(
     exclude,
     fields,
     count,
+    output,
 ):
     """List examples for a dataset."""
-    import json
 
     client = get_or_create_client(ctx)
 
@@ -82,6 +86,12 @@ def list_examples(
     # Client-side exclude filtering (filter by ID string representation)
     examples_list = apply_exclude_filter(examples_list, exclude, lambda e: str(e.id))
 
+    # Handle file output - short circuit if writing to file
+    if output:
+        data = filter_fields(examples_list, fields)
+        write_output_to_file(data, output, console, format_type="jsonl")
+        return
+
     # Define table builder function
     def build_examples_table(examples):
         table = Table(title=f"Examples: {dataset}")
@@ -89,8 +99,8 @@ def list_examples(
         table.add_column("Inputs")
         table.add_column("Outputs")
         for e in examples:
-            inputs_str = json.dumps(e.inputs)
-            outputs_str = json.dumps(e.outputs)
+            inputs_str = json_dumps(e.inputs)
+            outputs_str = json_dumps(e.outputs)
             # Truncate for table
             if len(inputs_str) > 50:
                 inputs_str = inputs_str[:47] + "..."
@@ -124,7 +134,6 @@ def list_examples(
 @click.pass_context
 def get_example(ctx, example_id, as_of, fields):
     """Fetch details of a single example."""
-    import json
 
     client = get_or_create_client(ctx)
     example = client.read_example(example_id, as_of=as_of)
@@ -133,16 +142,16 @@ def get_example(ctx, example_id, as_of, fields):
     data = filter_fields(example, fields)
 
     if ctx.obj.get("json"):
-        click.echo(json.dumps(data, default=str))
+        click.echo(json_dumps(data))
         return
 
     from rich.syntax import Syntax
 
     console.print(f"[bold]Example ID:[/bold] {example.id}")
     console.print("\n[bold]Inputs:[/bold]")
-    console.print(Syntax(json.dumps(example.inputs, indent=2), "json"))
+    console.print(Syntax(json_dumps(example.inputs, indent=2), "json"))
     console.print("\n[bold]Outputs:[/bold]")
-    console.print(Syntax(json.dumps(example.outputs, indent=2), "json"))
+    console.print(Syntax(json_dumps(example.outputs, indent=2), "json"))
 
 
 @examples.command("create")
@@ -154,7 +163,6 @@ def get_example(ctx, example_id, as_of, fields):
 @click.pass_context
 def create_example(ctx, dataset, inputs, outputs, metadata, split):
     """Create a new example in a dataset."""
-    import json
 
     client = get_or_create_client(ctx)
 
@@ -177,7 +185,7 @@ def create_example(ctx, dataset, inputs, outputs, metadata, split):
 
     if ctx.obj.get("json"):
         data = safe_model_dump(example)
-        click.echo(json.dumps(data, default=str))
+        click.echo(json_dumps(data))
         return
 
     console.print(

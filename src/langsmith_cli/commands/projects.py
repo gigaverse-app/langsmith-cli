@@ -10,10 +10,14 @@ from langsmith_cli.utils import (
     extract_wildcard_search_term,
     extract_regex_search_term,
     fields_option,
+    filter_fields,
     count_option,
     exclude_option,
+    output_option,
     render_output,
     get_or_create_client,
+    write_output_to_file,
+    json_dumps,
 )
 
 console = Console()
@@ -53,6 +57,7 @@ def projects():
 )
 @fields_option()
 @count_option()
+@output_option()
 @click.pass_context
 def list_projects(
     ctx,
@@ -68,6 +73,7 @@ def list_projects(
     output_format,
     fields,
     count,
+    output,
 ):
     """List all projects."""
 
@@ -150,6 +156,12 @@ def list_projects(
         projects_list, limit, needs_client_filtering
     )
 
+    # Handle file output - short circuit if writing to file
+    if output:
+        data = filter_fields(projects_list, fields)
+        write_output_to_file(data, output, console, format_type="jsonl")
+        return
+
     # Define table builder function
     def build_projects_table(projects):
         table = Table(title="Projects")
@@ -184,7 +196,6 @@ def list_projects(
 @click.pass_context
 def create_project(ctx, name, description):
     """Create a new project."""
-    import json
     from langsmith.utils import LangSmithConflictError
 
     client = get_or_create_client(ctx)
@@ -193,7 +204,7 @@ def create_project(ctx, name, description):
         if ctx.obj.get("json"):
             # Use SDK's Pydantic model directly
             data = project.model_dump(mode="json")
-            click.echo(json.dumps(data, default=str))
+            click.echo(json_dumps(data))
             return
 
         console.print(

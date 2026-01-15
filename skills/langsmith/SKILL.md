@@ -36,7 +36,13 @@ See **[Installation Guide](references/installation.md)** for all installation me
    - Example: `langsmith-cli --json runs get <id> --fields inputs,error`
 3. **Filter Fast:** Use `--status error` to find failing runs quickly.
 4. **Project Scope:** Always specify `--project` (default is "default") if you know it.
-5. **File Output:** For data extraction, use built-in file output options (e.g., `runs sample --output file.jsonl`) instead of Unix pipes (`> file.json`). Built-in file writing is more reliable and avoids potential formatting issues.
+5. **File Output (Recommended):** ALL list commands support `--output <file>` to write directly to file (JSONL format). This is more reliable than shell redirection and provides better feedback.
+   - Works on: `runs list`, `projects list`, `datasets list`, `examples list`, `prompts list`
+   - Example: `langsmith-cli runs list --fields id,name,status --output runs.jsonl`
+   - Example: `langsmith-cli projects list --output projects.jsonl`
+   - Writes JSONL (newline-delimited JSON) format - one object per line
+   - Shows confirmation message: "Wrote N items to file.jsonl"
+   - Automatically handles Unicode (Hebrew, Chinese, etc.) correctly
 6. **Universal Flags:** ALL list commands support `--count` (get count instead of data) and `--exclude` (exclude items by substring, repeatable).
    - Example: `langsmith-cli --json projects list --count` returns just the number
    - Example: `langsmith-cli --json runs list --exclude smoke-test --exclude dev-test` filters out unwanted runs
@@ -44,7 +50,9 @@ See **[Installation Guide](references/installation.md)** for all installation me
 ## API Reference
 
 ### Projects
-- `langsmith-cli --json projects list [--fields id,name]`: List all projects.
+- `langsmith-cli --json projects list [OPTIONS]`: List all projects.
+  - `--fields <comma-separated>`: Select specific fields (e.g., `id,name`)
+  - `--output <file>`: Write to file instead of stdout
 - `langsmith-cli --json projects create <name>`: Create a new project.
 
 ### Runs (Traces)
@@ -52,8 +60,15 @@ See **[Installation Guide](references/installation.md)** for all installation me
   - `--project <name>`: Filter by project.
   - `--limit <n>`: Max results (default 10, keep it small).
   - `--status <success|error>`: Filter by status.
-  - `--filter <string>`: Advanced LangSmith query string.
+  - `--filter <string>`: Advanced FQL query string (see FQL examples below).
+  - **Content Search Options:**
+    - `--query <text>`: Server-side full-text search (fast, but only first ~250 chars indexed).
+    - `--grep <pattern>`: Client-side content search (unlimited content, supports regex).
+      - `--grep-ignore-case`: Case-insensitive search.
+      - `--grep-regex`: Treat pattern as regex (e.g., `[\u0590-\u05FF]` for Hebrew chars).
+      - `--grep-in <fields>`: Search only specific fields (e.g., `inputs,outputs,error`).
   - `--fields <comma-separated>`: Reduce output size (e.g., `id,name,status,error`).
+  - `--output <file>`: Write to file (JSONL format) instead of stdout.
   - `--no-truncate`: Show full content in table columns (only affects table output, not JSON).
   - `--roots`: Show only root traces (recommended for cleaner output).
 - `langsmith-cli --json runs get <id> [OPTIONS]`: Get details of a single run.
@@ -111,15 +126,21 @@ See **[Installation Guide](references/installation.md)** for all installation me
   - Example: `langsmith-cli --json runs metadata-keys --project my-project`
 
 ### Datasets & Examples
-- `langsmith-cli --json datasets list [--fields id,name,data_type]`: List datasets.
+- `langsmith-cli --json datasets list [OPTIONS]`: List datasets.
+  - `--fields <comma-separated>`: Select fields (e.g., `id,name,data_type`)
+  - `--output <file>`: Write to file instead of stdout
 - `langsmith-cli --json datasets get <id> [--fields id,name,description]`: Get dataset details.
 - `langsmith-cli --json datasets create <name>`: Create a dataset.
-- `langsmith-cli --json examples list --dataset <name> [--fields id,inputs,outputs]`: List examples in a dataset.
+- `langsmith-cli --json examples list --dataset <name> [OPTIONS]`: List examples in a dataset.
+  - `--fields <comma-separated>`: Select fields (e.g., `id,inputs,outputs`)
+  - `--output <file>`: Write to file instead of stdout
 - `langsmith-cli --json examples get <id> [--fields id,inputs,outputs]`: Get example details.
 - `langsmith-cli --json examples create --dataset <name> --inputs <json> --outputs <json>`: Add an example.
 
 ### Prompts
-- `langsmith-cli --json prompts list [--fields repo_handle,description]`: List prompt repositories.
+- `langsmith-cli --json prompts list [OPTIONS]`: List prompt repositories.
+  - `--fields <comma-separated>`: Select fields (e.g., `repo_handle,description`)
+  - `--output <file>`: Write to file instead of stdout
 - `langsmith-cli --json prompts get <name> [--commit <hash>]`: Fetch a prompt template.
 - `langsmith-cli --json prompts push <name> <file_path>`: Push a local file as a prompt.
 
@@ -127,7 +148,26 @@ See **[Installation Guide](references/installation.md)** for all installation me
 
 The CLI provides built-in commands that eliminate the need for Unix pipes, jq, and nested commands:
 
-### Pattern 1: Filter Projects Without Piping
+### Pattern 1: Extract Data to File (Recommended)
+```bash
+# ❌ BAD (shell redirection - no feedback, can fail silently)
+langsmith-cli --json runs list --limit 500 --fields id,inputs > data.json
+
+# ✅ GOOD (built-in file writing - shows confirmation, handles errors)
+langsmith-cli runs list --limit 500 --fields id,inputs,metadata --output data.jsonl
+
+# ✅ Also works with all list commands
+langsmith-cli projects list --output projects.jsonl
+langsmith-cli datasets list --output datasets.jsonl
+langsmith-cli examples list --dataset my-dataset --output examples.jsonl
+langsmith-cli prompts list --output prompts.jsonl
+
+# Writes JSONL format (one object per line) - easier to process line-by-line
+# Shows confirmation: "Wrote 500 items to data.jsonl"
+# Handles Unicode correctly (Hebrew, Chinese, etc.)
+```
+
+### Pattern 2: Filter Projects Without Piping
 ```bash
 # ❌ BAD (requires piping)
 langsmith-cli --json projects list | jq -r '.[].name' | grep -E "(prd|stg)/"
@@ -180,6 +220,84 @@ langsmith-cli --json runs get-latest \
   --roots \
   --fields inputs,outputs
 ```
+
+## Content Search & Filtering
+
+### When to Use --query vs --grep
+
+**Use `--query` for:**
+- ✅ Quick searches in short content (< 250 chars)
+- ✅ Simple substring matches
+- ✅ Server-side filtering (faster, less data downloaded)
+
+**Use `--grep` for:**
+- ✅ Searching long content (inputs/outputs > 250 chars)
+- ✅ Regex patterns (Hebrew Unicode, complex patterns)
+- ✅ Field-specific searches (`--grep-in inputs`)
+- ✅ Case-insensitive search (`--grep-ignore-case`)
+
+### Content Search Examples
+
+```bash
+# Server-side text search (fast, first ~250 chars)
+langsmith-cli runs list --project "prd/factcheck" --query "druze" --fields id,inputs
+
+# Client-side substring search (unlimited content)
+langsmith-cli runs list --project "prd/community_news" --grep "druze" --fields id,inputs
+
+# Case-insensitive search
+langsmith-cli runs list --project "prd/suggest_topics" --grep "druze" --grep-ignore-case
+
+# Search only in specific fields
+langsmith-cli runs list --grep "error" --grep-in error,outputs --fields id,name,error
+
+# Regex: Find Hebrew characters
+langsmith-cli runs list --grep "[\u0590-\u05FF]" --grep-regex --grep-in inputs --fields id,inputs
+
+# Combine with other filters
+langsmith-cli runs list --project "prd/*" --grep "hebrew" --succeeded --roots --output hebrew_runs.jsonl
+```
+
+### FQL (Filter Query Language) Examples
+
+```bash
+# Filter by run name
+langsmith-cli runs list --filter 'eq(name, "extractor")' --fields id,name
+
+# Filter by latency
+langsmith-cli runs list --filter 'gt(latency, "5s")' --fields id,name,latency
+
+# Filter by tags
+langsmith-cli runs list --filter 'has(tags, "production")' --fields id,tags
+
+# Combine multiple conditions
+langsmith-cli runs list --filter 'and(eq(run_type, "chain"), gt(latency, "10s"))' --fields id,name,latency
+
+# Complex: chains with high latency and token usage
+langsmith-cli runs list --filter 'and(eq(run_type, "chain"), gt(latency, "10s"), gt(total_tokens, 5000))' --fields id,name,latency,total_tokens
+
+# Filter by root trace feedback
+langsmith-cli runs list --filter 'eq(name, "extractor")' --trace-filter 'and(eq(feedback_key, "user_score"), eq(feedback_score, 1))' --fields id,name
+```
+
+### FQL Operators Reference
+
+**Comparison:**
+- `eq(field, value)` - Equal
+- `neq(field, value)` - Not equal
+- `gt(field, value)` - Greater than
+- `gte(field, value)` - Greater than or equal
+- `lt(field, value)` - Less than
+- `lte(field, value)` - Less than or equal
+
+**Logical:**
+- `and(condition1, condition2, ...)` - All conditions must be true
+- `or(condition1, condition2, ...)` - At least one condition must be true
+- `not(condition)` - Negation
+
+**Special:**
+- `has(tags, "value")` - Tag contains value
+- `search("text")` - Full-text search in run data
 
 ## Additional Resources
 

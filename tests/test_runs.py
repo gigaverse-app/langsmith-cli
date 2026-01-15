@@ -250,6 +250,7 @@ def test_runs_list_filters(runner):
         mock_client.list_runs.assert_called_with(
             project_name="prod",
             limit=5,
+            query=None,
             error=True,
             filter=None,
             trace_id=None,
@@ -434,22 +435,22 @@ def test_runs_list_with_name_pattern_uses_reasonable_limit(runner):
         # Test with small limit - should use minimum of 100
         runner.invoke(cli, ["runs", "list", "--name-pattern", "*test*", "--limit", "5"])
         args, kwargs = mock_client.list_runs.call_args
-        # Should fetch max(5*10, 100) = 100 for pattern matching, not unlimited (None)
+        # Should fetch min(max(5*3, 100), 500) = 100 for pattern matching
         assert kwargs["limit"] == 100, "Should use minimum of 100 for pattern matching"
 
-        # Test with larger limit - should use 10x
+        # Test with larger limit - should use 3x with cap at 500
         runner.invoke(
             cli, ["runs", "list", "--name-pattern", "*test*", "--limit", "50"]
         )
         args, kwargs = mock_client.list_runs.call_args
-        # Should fetch max(50*10, 100) = 500 for pattern matching
-        assert kwargs["limit"] == 500, "Should use 10x limit for pattern matching"
+        # Should fetch min(max(50*3, 100), 500) = 150 for pattern matching
+        assert kwargs["limit"] == 150, "Should use 3x limit for pattern matching"
 
         # Test without explicit limit (default is 20)
         runner.invoke(cli, ["runs", "list", "--name-pattern", "*test*"])
         args, kwargs = mock_client.list_runs.call_args
-        # Should fetch max(20*10, 100) = 200 for pattern matching
-        assert kwargs["limit"] == 200, "Should cap at max(10x default, 100)"
+        # Should fetch min(max(20*3, 100), 500) = 100 for pattern matching
+        assert kwargs["limit"] == 100, "Should cap at min(max(3x default, 100), 500)"
 
 
 def test_runs_list_with_name_regex_uses_reasonable_limit(runner):

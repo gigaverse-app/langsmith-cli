@@ -9,11 +9,13 @@ from langsmith_cli.utils import (
     add_project_filter_options,
     apply_client_side_limit,
     apply_exclude_filter,
+    apply_grep_filter,
     build_runs_list_filter,
     build_runs_table,
     count_option,
     determine_output_format,
     exclude_option,
+    fetch_from_projects,
     fields_option,
     filter_fields,
     get_matching_items,
@@ -21,9 +23,11 @@ from langsmith_cli.utils import (
     get_or_create_client,
     json_dumps,
     output_formatted_data,
+    output_option,
     parse_duration_to_seconds,
     parse_relative_time,
     sort_items,
+    write_output_to_file,
 )
 
 console = Console()
@@ -296,7 +300,11 @@ def compute_metrics(
 @click.option(
     "--status", type=click.Choice(["success", "error"]), help="Filter by status."
 )
-@click.option("--filter", "filter_", help="LangSmith filter string.")
+@click.option(
+    "--filter",
+    "filter_",
+    help='LangSmith FQL filter. Examples: eq(name, "extractor"), gt(latency, "5s"), has(tags, "prod"). See --help for full examples.',
+)
 @click.option("--trace-id", help="Get all runs in a specific trace.")
 @click.option(
     "--run-type", help="Filter by run type (llm, chain, tool, retriever, etc)."
@@ -351,6 +359,28 @@ def compute_metrics(
 )
 @click.option("--last", help="Show runs from last duration (e.g., '24h', '7d', '30m').")
 @click.option(
+    "--query",
+    help="Server-side full-text search in inputs/outputs (fast, but searches only first ~250 chars). Use --grep for unlimited content search.",
+)
+@click.option(
+    "--grep",
+    help="Client-side pattern search in run content (inputs, outputs, error). Searches ALL content, parses nested JSON. Slower but more powerful than --query.",
+)
+@click.option(
+    "--grep-ignore-case",
+    is_flag=True,
+    help="Make --grep search case-insensitive.",
+)
+@click.option(
+    "--grep-regex",
+    is_flag=True,
+    help="Treat --grep pattern as regex (e.g., --grep '[\u0590-\u05ff]' for Hebrew characters).",
+)
+@click.option(
+    "--grep-in",
+    help="Comma-separated fields to search in (e.g., 'inputs,outputs,error'). Searches all fields if not specified.",
+)
+@click.option(
     "--sort-by",
     help="Sort by field (name, status, latency, start_time). Prefix with - for descending.",
 )
@@ -368,6 +398,7 @@ def compute_metrics(
 @exclude_option()
 @fields_option()
 @count_option()
+@output_option()
 @click.pass_context
 def list_runs(
     ctx,
@@ -400,17 +431,51 @@ def list_runs(
     max_latency,
     since,
     last,
+    query,
+    grep,
+    grep_ignore_case,
+    grep_regex,
+    grep_in,
     sort_by,
     output_format,
     no_truncate,
     exclude,
     fields,
     count,
+    output,
 ):
     """Fetch recent runs from one or more projects.
 
     Use project filters (--project-name, --project-name-pattern, --project-name-regex, --project-name-exact) to match multiple projects.
     Use run name filters (--name-pattern, --name-regex) to filter specific run names.
+
+    \b
+    FQL Filter Examples:
+      # Filter by name
+      --filter 'eq(name, "extractor")'
+
+      # Filter by latency
+      --filter 'gt(latency, "5s")'
+
+      # Filter by tags
+      --filter 'has(tags, "production")'
+
+      # Combine multiple conditions
+      --filter 'and(eq(run_type, "chain"), gt(latency, "10s"))'
+
+      # Complex example: chains that took >10s and had >5000 tokens
+      --filter 'and(eq(run_type, "chain"), gt(latency, "10s"), gt(total_tokens, 5000))'
+
+    \b
+    Search Examples:
+      # Server-side text search (fast, first ~250 chars)
+      --query "error message"
+
+      # Client-side grep (slower, unlimited, regex)
+      --grep "druze" --grep-in inputs,outputs
+
+      # Regex search for Hebrew characters
+      --grep "[\\u0590-\\u05FF]" --grep-regex --grep-in inputs
     """
     import datetime
 
@@ -515,39 +580,43 @@ def list_runs(
             combined_filter = f"and({filter_str})"
 
     # Determine if client-side filtering is needed
-    # (for run name pattern/regex matching or exclude patterns)
-    needs_client_filtering = bool(name_regex or name_pattern or exclude)
+    # (for run name pattern/regex matching, exclude patterns, or grep content search)
+    needs_client_filtering = bool(name_regex or name_pattern or exclude or grep)
 
     # If client-side filtering needed, fetch more results (but with a reasonable cap)
     # Fetching unlimited runs (None) causes severe performance issues for large projects
     if needs_client_filtering:
-        # Fetch 10x the limit or at least 100 runs to find pattern matches
+        # Fetch 3x the limit or at least 100 runs to find pattern matches
+        # Cap at 500 to avoid API timeouts (10x multiplier caused 0 results for limit=20+)
         # If no limit specified, cap at 1000 to avoid downloading everything
-        api_limit = max(limit * 10, 100) if limit else 1000
+        if limit:
+            api_limit = min(max(limit * 3, 100), 500)
+        else:
+            api_limit = 1000
     else:
         api_limit = limit
 
-    # Fetch runs from all matching projects
-    all_runs = []
-    for proj_name in projects_to_query:
-        try:
-            project_runs = client.list_runs(
-                project_name=proj_name,
-                limit=api_limit,
-                error=error_filter,
-                filter=combined_filter,
-                trace_id=trace_id,
-                run_type=run_type,
-                is_root=is_root,
-                trace_filter=trace_filter,
-                tree_filter=tree_filter,
-                order_by=order_by,
-                reference_example_id=reference_example_id,
-            )
-            all_runs.extend(list(project_runs))
-        except Exception:
-            # Skip projects that fail to fetch (e.g., permissions)
-            pass
+    # Fetch runs from all matching projects using universal helper
+    result = fetch_from_projects(
+        client,
+        projects_to_query,
+        lambda c, proj, **kw: c.list_runs(project_name=proj, **kw),
+        limit=api_limit,
+        query=query,
+        error=error_filter,
+        filter=combined_filter,
+        trace_id=trace_id,
+        run_type=run_type,
+        is_root=is_root,
+        trace_filter=trace_filter,
+        tree_filter=tree_filter,
+        order_by=order_by,
+        reference_example_id=reference_example_id,
+        console=None,  # Don't auto-report warnings (we have custom diagnostics below)
+        show_warnings=False,
+    )
+    all_runs = result.items
+    failed_projects = result.failed_sources
 
     # Apply universal filtering to run names (client-side filtering)
     # FQL doesn't support full regex or complex patterns for run names
@@ -560,6 +629,23 @@ def list_runs(
 
     # Client-side exclude filtering
     runs = apply_exclude_filter(runs, exclude, lambda r: r.name or "")
+
+    # Client-side grep/content filtering
+    if grep:
+        # Parse grep-in fields if specified
+        grep_fields_tuple = ()
+        if grep_in:
+            grep_fields_tuple = tuple(
+                f.strip() for f in grep_in.split(",") if f.strip()
+            )
+
+        runs = apply_grep_filter(
+            runs,
+            grep_pattern=grep,
+            grep_fields=grep_fields_tuple,
+            ignore_case=grep_ignore_case,
+            use_regex=grep_regex,
+        )
 
     # Client-side sorting for table output
     if sort_by and not ctx.obj.get("json"):
@@ -582,6 +668,12 @@ def list_runs(
         click.echo(str(len(runs)))
         return
 
+    # Handle file output - short circuit if writing to file
+    if output:
+        data = filter_fields(runs, fields)
+        write_output_to_file(data, output, console, format_type="jsonl")
+        return
+
     # Determine output format
     format_type = determine_output_format(output_format, ctx.obj.get("json"))
 
@@ -602,7 +694,70 @@ def list_runs(
     table = build_runs_table(runs, table_title, no_truncate)
 
     if len(runs) == 0:
-        console.print("[yellow]No runs found.[/yellow]")
+        # Provide helpful diagnostic message
+        console.print("[yellow]No runs found matching your criteria.[/yellow]\n")
+
+        # Build list of active filters
+        active_filters = []
+        if len(projects_to_query) == 1:
+            active_filters.append(f"project: {projects_to_query[0]}")
+        elif len(projects_to_query) > 1:
+            active_filters.append(f"projects: {len(projects_to_query)} matched")
+        if query:
+            active_filters.append(f'--query "{query}"')
+        if grep:
+            active_filters.append(f'--grep "{grep}"')
+        if status:
+            active_filters.append(f"--status {status}")
+        if failed:
+            active_filters.append("--failed")
+        if succeeded:
+            active_filters.append("--succeeded")
+        if roots or is_root:
+            active_filters.append("--roots")
+        if run_type:
+            active_filters.append(f"--run-type {run_type}")
+        if name_pattern:
+            active_filters.append(f'--name-pattern "{name_pattern}"')
+        if name_regex:
+            active_filters.append(f'--name-regex "{name_regex}"')
+        if filter_:
+            active_filters.append("--filter (custom FQL)")
+        if limit and limit < 100:
+            active_filters.append(f"--limit {limit}")
+
+        if active_filters:
+            console.print("[dim]Active filters:[/dim]")
+            for f in active_filters:
+                console.print(f"  • {f}")
+            console.print()
+
+        # Show failed projects if any
+        if failed_projects:
+            console.print("[yellow]Warning: Some projects failed to fetch:[/yellow]")
+            for proj, error_msg in failed_projects[:3]:  # Show first 3 errors
+                # Truncate long error messages
+                short_error = (
+                    error_msg[:100] + "..." if len(error_msg) > 100 else error_msg
+                )
+                console.print(f"  • {proj}: {short_error}")
+            if len(failed_projects) > 3:
+                console.print(f"  • ... and {len(failed_projects) - 3} more")
+            console.print()
+
+        # Provide suggestions
+        console.print("[dim]Try:[/dim]")
+        if roots or is_root:
+            console.print("  • Remove --roots flag to see all runs (including nested)")
+        if limit and limit < 100:
+            console.print(f"  • Increase --limit (current: {limit})")
+        if grep or query or filter_:
+            console.print("  • Broaden search criteria or remove filters")
+        if len(projects_to_query) > 0:
+            console.print(
+                f"  • Verify project exists: langsmith-cli projects list --name-pattern {projects_to_query[0]}"
+            )
+        console.print("  • Check project has runs: langsmith-cli runs list --limit 1")
     else:
         console.print(table)
 
@@ -747,6 +902,7 @@ def get_latest_run(
 
     # Search projects in order until we find a run
     latest_run = None
+    failed_projects = []
     for proj_name in projects_to_query:
         try:
             runs_iter = client.list_runs(
@@ -760,12 +916,25 @@ def get_latest_run(
             latest_run = next(runs_iter, None)
             if latest_run:
                 break  # Found a run, stop searching
-        except Exception:
-            # Skip projects that fail
+        except Exception as e:
+            # Track failed projects for diagnostics
+            failed_projects.append((proj_name, str(e)))
             continue
 
     if not latest_run:
         console.print("[yellow]No runs found matching the specified filters[/yellow]")
+
+        # Show failed projects if any
+        if failed_projects:
+            console.print("\n[yellow]Warning: Some projects failed to fetch:[/yellow]")
+            for proj, error_msg in failed_projects[:3]:
+                short_error = (
+                    error_msg[:100] + "..." if len(error_msg) > 100 else error_msg
+                )
+                console.print(f"  • {proj}: {short_error}")
+            if len(failed_projects) > 3:
+                console.print(f"  • ... and {len(failed_projects) - 3} more")
+
         raise click.Abort()
 
     # Use shared field filtering
@@ -1024,6 +1193,7 @@ def watch_runs(
         # Collect runs from all matching projects
         # Store runs with their project names as tuples
         all_runs: list[tuple[str, Any]] = []
+        failed_count = 0
         for proj_name in projects_to_watch:
             try:
                 # Get a few runs from each project
@@ -1037,12 +1207,17 @@ def watch_runs(
                 # Store each run with its project name
                 all_runs.extend((proj_name, run) for run in runs)
             except Exception:
-                # Skip projects that fail to fetch
+                # Track failed projects but don't spam console in watch mode
+                failed_count += 1
                 pass
 
         # Sort by start time (most recent first) and limit to 10
         all_runs.sort(key=lambda item: item[1].start_time or "", reverse=True)
         all_runs = all_runs[:10]
+
+        # Add failure count to title if any projects failed
+        if failed_count > 0:
+            title += f" [yellow]({failed_count} failed)[/yellow]"
 
         for proj_name, r in all_runs:
             # Access SDK model fields directly (type-safe)
@@ -1345,23 +1520,18 @@ def sample_runs(
             else:
                 combined_filter = stratum_filter
 
-            # Fetch samples from all matching projects
-            stratum_runs = []
-            for proj_name in projects_to_query:
-                try:
-                    project_runs = client.list_runs(
-                        project_name=proj_name,
-                        limit=sample_limit,
-                        filter=combined_filter,
-                        order_by="-start_time",
-                    )
-                    stratum_runs.extend(list(project_runs))
-                except Exception:
-                    # Skip projects that fail to fetch
-                    pass
-
-            # Limit to sample_limit
-            stratum_runs = stratum_runs[:sample_limit]
+            # Fetch samples from all matching projects using universal helper
+            result = fetch_from_projects(
+                client,
+                projects_to_query,
+                lambda c, proj, **kw: c.list_runs(project_name=proj, **kw),
+                limit=sample_limit,
+                filter=combined_filter,
+                order_by="-start_time",
+                console=console,
+                show_warnings=False,  # Don't spam warnings in sample mode
+            )
+            stratum_runs = result.items[:sample_limit]
 
             # Add stratum field and convert to dicts
             for run in stratum_runs:
@@ -1399,23 +1569,18 @@ def sample_runs(
             else:
                 combined_filter = stratum_filter
 
-            # Fetch samples from all matching projects
-            stratum_runs = []
-            for proj_name in projects_to_query:
-                try:
-                    project_runs = client.list_runs(
-                        project_name=proj_name,
-                        limit=samples_per_stratum,
-                        filter=combined_filter,
-                        order_by="-start_time",
-                    )
-                    stratum_runs.extend(list(project_runs))
-                except Exception:
-                    # Skip projects that fail to fetch
-                    pass
-
-            # Limit to samples_per_stratum
-            stratum_runs = stratum_runs[:samples_per_stratum]
+            # Fetch samples from all matching projects using universal helper
+            result = fetch_from_projects(
+                client,
+                projects_to_query,
+                lambda c, proj, **kw: c.list_runs(project_name=proj, **kw),
+                limit=samples_per_stratum,
+                filter=combined_filter,
+                order_by="-start_time",
+                console=console,
+                show_warnings=False,  # Don't spam warnings in sample mode
+            )
+            stratum_runs = result.items[:samples_per_stratum]
 
             # Add stratum field and convert to dicts
             for run in stratum_runs:
@@ -1619,20 +1784,21 @@ def analyze_runs(
     if sample_size == 0:
         # User wants ALL runs - don't use select (would be slow for large datasets)
         # Use serial pagination without field selection
-        for proj_name in projects_to_query:
-            try:
-                project_runs = client.list_runs(
-                    project_name=proj_name,
-                    filter=additional_filter,
-                    limit=None,
-                    order_by="-start_time",
-                )
-                all_runs.extend(list(project_runs))
-            except Exception:
-                pass
+        result = fetch_from_projects(
+            client,
+            projects_to_query,
+            lambda c, proj, **kw: c.list_runs(project_name=proj, **kw),
+            filter=additional_filter,
+            limit=None,
+            order_by="-start_time",
+            console=console,
+            show_warnings=False,  # Don't spam warnings in analyze mode
+        )
+        all_runs = result.items
     else:
         # Use sample-based approach with field selection (FAST!)
         # API has max limit of 100 when using select, so manually collect from iterator
+        failed_projects = []
         for proj_name in projects_to_query:
             try:
                 runs_iter = client.list_runs(
@@ -1650,8 +1816,18 @@ def analyze_runs(
                     collected += 1
                     if collected >= sample_size:
                         break  # Stop early when we have enough
-            except Exception:
-                pass
+            except Exception as e:
+                failed_projects.append((proj_name, str(e)))
+
+        # Report failures if any (but don't spam console in analyze mode)
+        if failed_projects and len(all_runs) == 0:
+            # Only report if we got zero runs (might be all failures)
+            console.print("[yellow]Warning: Some projects failed to fetch:[/yellow]")
+            for proj, error_msg in failed_projects[:3]:
+                short_error = (
+                    error_msg[:100] + "..." if len(error_msg) > 100 else error_msg
+                )
+                console.print(f"  • {proj}: {short_error}")
 
     # Group runs by extracted field value
     groups: dict[str, list[Any]] = defaultdict(list)
@@ -1757,21 +1933,19 @@ def discover_tags(
         name_regex=project_name_regex,
     )
 
-    # Fetch sample of recent runs
+    # Fetch sample of recent runs using universal helper
     # Use select to only fetch fields we need (much faster - 2x speedup, 14x less data)
-    all_runs = []
-    for proj_name in projects_to_query:
-        try:
-            project_runs = client.list_runs(
-                project_name=proj_name,
-                limit=sample_size,
-                order_by="-start_time",
-                select=["tags"],  # Only fetch tags field
-            )
-            all_runs.extend(list(project_runs))
-        except Exception:
-            # Skip projects that fail to fetch
-            pass
+    result = fetch_from_projects(
+        client,
+        projects_to_query,
+        lambda c, proj, **kw: c.list_runs(project_name=proj, **kw),
+        limit=sample_size,
+        order_by="-start_time",
+        select=["tags"],  # Only fetch tags field
+        console=console,
+        show_warnings=False,  # Don't spam warnings in tags discovery
+    )
+    all_runs = result.items
 
     # Parse tags to extract key:value patterns
     tag_patterns: dict[str, set[str]] = defaultdict(set)
@@ -1865,21 +2039,19 @@ def discover_metadata_keys(
         name_regex=project_name_regex,
     )
 
-    # Fetch sample of recent runs
+    # Fetch sample of recent runs using universal helper
     # Use select to only fetch fields we need (much faster - 2x speedup, 14x less data)
-    all_runs = []
-    for proj_name in projects_to_query:
-        try:
-            project_runs = client.list_runs(
-                project_name=proj_name,
-                limit=sample_size,
-                order_by="-start_time",
-                select=["extra"],  # Only fetch metadata (stored in extra field)
-            )
-            all_runs.extend(list(project_runs))
-        except Exception:
-            # Skip projects that fail to fetch
-            pass
+    result = fetch_from_projects(
+        client,
+        projects_to_query,
+        lambda c, proj, **kw: c.list_runs(project_name=proj, **kw),
+        limit=sample_size,
+        order_by="-start_time",
+        select=["extra"],  # Only fetch metadata (stored in extra field)
+        console=console,
+        show_warnings=False,  # Don't spam warnings in metadata-keys discovery
+    )
+    all_runs = result.items
 
     # Extract all metadata keys
     metadata_keys: set[str] = set()

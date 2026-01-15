@@ -9,10 +9,13 @@ from langsmith_cli.utils import (
     fields_option,
     filter_fields,
     get_or_create_client,
+    json_dumps,
+    output_option,
     parse_comma_separated_list,
     parse_json_string,
     render_output,
     safe_model_dump,
+    write_output_to_file,
 )
 
 console = Console()
@@ -34,6 +37,7 @@ def datasets():
 @exclude_option()
 @fields_option()
 @count_option()
+@output_option()
 @click.pass_context
 def list_datasets(
     ctx,
@@ -46,6 +50,7 @@ def list_datasets(
     exclude,
     fields,
     count,
+    output,
 ):
     """List all available datasets."""
     client = get_or_create_client(ctx)
@@ -72,6 +77,12 @@ def list_datasets(
 
     # Client-side exclude filtering
     datasets_list = apply_exclude_filter(datasets_list, exclude, lambda d: d.name)
+
+    # Handle file output - short circuit if writing to file
+    if output:
+        data = filter_fields(datasets_list, fields)
+        write_output_to_file(data, output, console, format_type="jsonl")
+        return
 
     # Define table builder function
     def build_datasets_table(datasets):
@@ -107,7 +118,6 @@ def list_datasets(
 @click.pass_context
 def get_dataset(ctx, dataset_id, fields):
     """Fetch details of a single dataset."""
-    import json
 
     client = get_or_create_client(ctx)
     dataset = client.read_dataset(dataset_id=dataset_id)
@@ -116,7 +126,7 @@ def get_dataset(ctx, dataset_id, fields):
     data = filter_fields(dataset, fields)
 
     if ctx.obj.get("json"):
-        click.echo(json.dumps(data, default=str))
+        click.echo(json_dumps(data))
         return
 
     console.print(f"[bold]Name:[/bold] {dataset.name}")
@@ -137,7 +147,6 @@ def get_dataset(ctx, dataset_id, fields):
 @click.pass_context
 def create_dataset(ctx, name, description, dataset_type):
     """Create a new dataset."""
-    import json
     from langsmith.schemas import DataType
 
     client = get_or_create_client(ctx)
@@ -151,7 +160,7 @@ def create_dataset(ctx, name, description, dataset_type):
 
     if ctx.obj.get("json"):
         data = safe_model_dump(dataset)
-        click.echo(json.dumps(data, default=str))
+        click.echo(json_dumps(data))
         return
 
     console.print(f"[green]Created dataset {dataset.name}[/green] (ID: {dataset.id})")
@@ -171,9 +180,11 @@ def push_dataset(ctx, file_path, dataset):
         dataset = os.path.basename(file_path).split(".")[0]
 
     # Create dataset if not exists (simple check)
+    from langsmith.utils import LangSmithNotFoundError
+
     try:
         client.read_dataset(dataset_name=dataset)
-    except Exception:
+    except LangSmithNotFoundError:
         console.print(f"[yellow]Dataset '{dataset}' not found. Creating it...[/yellow]")
         client.create_dataset(dataset_name=dataset)
 

@@ -6,9 +6,13 @@ from langsmith_cli.utils import (
     count_option,
     exclude_option,
     fields_option,
+    filter_fields,
     get_or_create_client,
+    output_option,
     parse_comma_separated_list,
     render_output,
+    write_output_to_file,
+    json_dumps,
 )
 
 console = Console()
@@ -28,8 +32,9 @@ def prompts():
 @exclude_option()
 @fields_option()
 @count_option()
+@output_option()
 @click.pass_context
-def list_prompts(ctx, limit, is_public, exclude, fields, count):
+def list_prompts(ctx, limit, is_public, exclude, fields, count, output):
     """List available prompt repositories."""
     client = get_or_create_client(ctx)
     # list_prompts returns ListPromptsResponse with .repos attribute
@@ -38,6 +43,12 @@ def list_prompts(ctx, limit, is_public, exclude, fields, count):
 
     # Client-side exclude filtering
     prompts_list = apply_exclude_filter(prompts_list, exclude, lambda p: p.full_name)
+
+    # Handle file output - short circuit if writing to file
+    if output:
+        data = filter_fields(prompts_list, fields)
+        write_output_to_file(data, output, console, format_type="jsonl")
+        return
 
     # Define table builder function
     def build_prompts_table(prompts):
@@ -73,7 +84,6 @@ def list_prompts(ctx, limit, is_public, exclude, fields, count):
 @click.pass_context
 def get_prompt(ctx, name, commit):
     """Fetch a prompt template."""
-    import json
 
     client = get_or_create_client(ctx)
     # pull_prompt returns the prompt object (might be LangChain PromptTemplate)
@@ -88,7 +98,7 @@ def get_prompt(ctx, name, commit):
         data = {"prompt": str(prompt_obj)}
 
     if ctx.obj.get("json"):
-        click.echo(json.dumps(data, default=str))
+        click.echo(json_dumps(data))
         return
 
     console.print(f"[bold]Prompt:[/bold] {name}")
