@@ -1,4 +1,5 @@
 from typing import Any
+import json
 
 import click
 from rich.console import Console
@@ -14,6 +15,7 @@ from langsmith_cli.utils import (
     get_matching_items,
     get_matching_projects,
     get_or_create_client,
+    json_dumps,
     output_formatted_data,
     sort_items,
 )
@@ -640,14 +642,11 @@ def get_run(ctx, run_id, fields):
     data = filter_fields(run, fields)
 
     if ctx.obj.get("json"):
-        import json
-
-        click.echo(json.dumps(data, default=str))
+        click.echo(json_dumps(data))
         return
 
     # Human readable output
     from rich.syntax import Syntax
-    import json
 
     console.print(f"[bold]Run ID:[/bold] {data.get('id')}")
     console.print(f"[bold]Name:[/bold] {data.get('name')}")
@@ -658,7 +657,7 @@ def get_run(ctx, run_id, fields):
             continue
         console.print(f"\n[bold]{k}:[/bold]")
         if isinstance(v, (dict, list)):
-            formatted = json.dumps(v, indent=2, default=str)
+            formatted = json_dumps(v, indent=2)
             console.print(Syntax(formatted, "json"))
         else:
             console.print(str(v))
@@ -686,7 +685,6 @@ def view_file(ctx, pattern, no_truncate, fields):
         langsmith-cli --json runs view-file samples.jsonl
     """
     import glob
-    import json
     from langsmith.schemas import Run
 
     # Find matching files using glob
@@ -794,9 +792,7 @@ def run_stats(
     stats = client.get_run_stats(project_ids=project_ids)
 
     if ctx.obj.get("json"):
-        import json
-
-        click.echo(json.dumps(stats, default=str))
+        click.echo(json_dumps(stats))
         return
 
     # Build descriptive title
@@ -1146,7 +1142,6 @@ def sample_runs(
           --values "short:news,medium:gaming,long:news" \\
           --samples-per-stratum 10
     """
-    import json
     import itertools
 
     client = get_or_create_client(ctx)
@@ -1303,7 +1298,7 @@ def sample_runs(
         try:
             with open(output, "w") as f:
                 for sample in all_samples:
-                    f.write(json.dumps(sample, default=str) + "\n")
+                    f.write(json_dumps(sample) + "\n")
             console.print(
                 f"[green]Wrote {len(all_samples)} samples to {output}[/green]"
             )
@@ -1313,7 +1308,7 @@ def sample_runs(
     else:
         # Write to stdout (JSONL format)
         for sample in all_samples:
-            click.echo(json.dumps(sample, default=str))
+            click.echo(json_dumps(sample))
 
 
 @runs.command("analyze")
@@ -1618,7 +1613,6 @@ def discover_tags(
         langsmith-cli runs tags --project-name-pattern "prod/*"
     """
     from collections import defaultdict
-    import json
 
     client = get_or_create_client(ctx)
 
@@ -1668,7 +1662,7 @@ def discover_tags(
 
     # Output
     if ctx.obj.get("json"):
-        click.echo(json.dumps(result, default=str))
+        click.echo(json_dumps(result))
     else:
         from rich.table import Table
 
@@ -1727,7 +1721,6 @@ def discover_metadata_keys(
         # Discover with pattern filtering
         langsmith-cli runs metadata-keys --project-name-pattern "prod/*"
     """
-    import json
 
     client = get_or_create_client(ctx)
 
@@ -1775,7 +1768,7 @@ def discover_metadata_keys(
 
     # Output
     if ctx.obj.get("json"):
-        click.echo(json.dumps(result, default=str))
+        click.echo(json_dumps(result))
     else:
         from rich.table import Table
 

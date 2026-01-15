@@ -10,6 +10,25 @@ T = TypeVar("T")
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
 
+def json_dumps(obj: Any, **kwargs: Any) -> str:
+    """Dump object to JSON string with Unicode preservation.
+
+    By default, Python's json.dumps() escapes non-ASCII characters (Hebrew, Chinese, etc.)
+    as Unicode escape sequences (\u05ea). This function ensures all characters are
+    preserved in their original form.
+
+    Args:
+        obj: Object to serialize to JSON
+        **kwargs: Additional arguments passed to json.dumps()
+
+    Returns:
+        JSON string with Unicode characters preserved
+    """
+    # Set ensure_ascii=False to preserve Unicode characters
+    # Set default to allow datetime and other non-serializable types
+    return json.dumps(obj, ensure_ascii=False, default=str, **kwargs)
+
+
 def get_or_create_client(ctx: Any) -> Any:
     """Get LangSmith client from context, or create if not exists.
 
@@ -141,9 +160,7 @@ def output_formatted_data(
             click.echo(yaml.dump([], default_flow_style=False))
             return
         elif format_type == "json":
-            import json
-
-            click.echo(json.dumps([], default=str))
+            click.echo(json_dumps([]))
             return
 
     # Apply field filtering if requested
@@ -151,9 +168,7 @@ def output_formatted_data(
         data = [{k: v for k, v in item.items() if k in fields} for item in data]
 
     if format_type == "json":
-        import json
-
-        click.echo(json.dumps(data, default=str))
+        click.echo(json_dumps(data))
     elif format_type == "csv":
         import csv
         import sys

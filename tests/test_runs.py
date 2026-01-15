@@ -2234,3 +2234,247 @@ def test_runs_view_file_error_handling(runner, tmp_path, file_content, expected_
         assert result.exit_code == 0
 
     assert expected_msg in result.output
+
+
+# Hebrew/Unicode Preservation Tests
+
+
+def test_runs_list_json_preserves_hebrew(runner):
+    """Test that runs list --json preserves Hebrew characters without escaping."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        # Create run with Hebrew text
+        test_run = Run(
+            id=UUID("12345678-1234-5678-1234-567812345678"),
+            name="תופים זה החיים",  # Hebrew: "Drums is life"
+            run_type="chain",
+            start_time=datetime.now(timezone.utc),
+            status="success",
+            latency=0.5,
+            inputs={"stream_title": "תופים זה החיים", "language": "he-IL"},
+            outputs={"message": "היי, מה קורה?"},  # Hebrew: "Hi, what's up?"
+        )
+        mock_client.list_runs.return_value = [test_run]
+
+        result = runner.invoke(cli, ["--json", "runs", "list", "--limit", "1"])
+        assert result.exit_code == 0
+
+        # Parse JSON
+        data = json.loads(result.output)
+        assert len(data) == 1
+
+        # Verify Hebrew is preserved (not escaped as \u05ea etc)
+        assert data[0]["name"] == "תופים זה החיים"
+        assert data[0]["inputs"]["stream_title"] == "תופים זה החיים"
+        assert data[0]["outputs"]["message"] == "היי, מה קורה?"
+
+        # Verify it's NOT escaped Unicode
+        assert "\\u05" not in result.output
+
+
+def test_runs_get_json_preserves_hebrew(runner):
+    """Test that runs get --json preserves Hebrew characters."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        test_run = Run(
+            id=UUID("019bc1d8-ba71-7120-babf-1b41dfaeaa40"),
+            name="task-simulate-chat-chain",
+            run_type="chain",
+            start_time=datetime.now(timezone.utc),
+            status="success",
+            inputs={
+                "stream_title": "תופים זה החיים",
+                "transcripts": '- aviad: "היי, מה קורה? האם אתם יפים?"',
+            },
+            outputs={
+                "messages": [
+                    {
+                        "message": "מה הקיק שאתה משתמש בלייבים?",
+                        "user_name": "persona_alice",
+                    },
+                    {"message": "אני מת לנסות גרוב ב-7/8", "user_name": "persona_bob"},
+                ]
+            },
+        )
+        mock_client.read_run.return_value = test_run
+
+        result = runner.invoke(
+            cli, ["--json", "runs", "get", "019bc1d8-ba71-7120-babf-1b41dfaeaa40"]
+        )
+        assert result.exit_code == 0
+
+        # Parse JSON
+        data = json.loads(result.output)
+
+        # Verify Hebrew is preserved
+        assert data["inputs"]["stream_title"] == "תופים זה החיים"
+        assert "היי, מה קורה?" in data["inputs"]["transcripts"]
+        assert (
+            data["outputs"]["messages"][0]["message"] == "מה הקיק שאתה משתמש בלייבים?"
+        )
+
+        # Verify it's NOT escaped Unicode
+        assert "\\u05" not in result.output
+
+
+def test_runs_sample_file_output_preserves_hebrew(runner, tmp_path):
+    """Test that runs sample --output preserves Hebrew when writing to file."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        # Create runs with Hebrew
+        runs_with_hebrew = [
+            Run(
+                id=UUID("12345678-1234-5678-1234-567812345678"),
+                name="תופים זה החיים",
+                run_type="chain",
+                start_time=datetime.now(timezone.utc),
+                status="success",
+                tags=["length:short"],
+                inputs={"text": "היי, מה קורה?"},
+                outputs={"response": "שלום!"},
+            ),
+            Run(
+                id=UUID("12345678-1234-5678-1234-567812345679"),
+                name="רוק אנד רול",
+                run_type="chain",
+                start_time=datetime.now(timezone.utc),
+                status="success",
+                tags=["length:short"],
+                inputs={"text": "אני אוהב מוזיקה"},
+                outputs={"response": "גם אני!"},
+            ),
+        ]
+
+        mock_client.list_runs.return_value = iter(runs_with_hebrew)
+
+        output_file = tmp_path / "hebrew_samples.jsonl"
+        result = runner.invoke(
+            cli,
+            [
+                "runs",
+                "sample",
+                "--stratify-by",
+                "tag:length",
+                "--values",
+                "short",
+                "--samples-per-stratum",
+                "2",
+                "--output",
+                str(output_file),
+            ],
+        )
+        assert result.exit_code == 0
+
+        # Read file and verify Hebrew is preserved
+        with open(output_file, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+            assert len(lines) == 2
+
+            # Parse first line
+            data1 = json.loads(lines[0])
+            assert data1["name"] == "תופים זה החיים"
+            assert data1["inputs"]["text"] == "היי, מה קורה?"
+            assert data1["outputs"]["response"] == "שלום!"
+
+            # Parse second line
+            data2 = json.loads(lines[1])
+            assert data2["name"] == "רוק אנד רול"
+
+        # Verify file content doesn't have escaped Unicode
+        file_content = output_file.read_text(encoding="utf-8")
+        assert "\\u05" not in file_content
+        assert "תופים" in file_content
+
+
+def test_runs_view_file_preserves_hebrew_round_trip(runner, tmp_path):
+    """Test complete round-trip: write file with Hebrew → read with view-file → display preserves Hebrew."""
+    # Create JSONL file with Hebrew content
+    test_file = tmp_path / "hebrew_runs.jsonl"
+
+    run1 = Run(
+        id=UUID("12345678-1234-5678-1234-567812345678"),
+        name="תופים זה החיים",
+        run_type="chain",
+        start_time=datetime.now(timezone.utc),
+        status="success",
+        inputs={"text": "היי, מה קורה?"},
+        outputs={"response": "שלום מישראל!"},
+    )
+
+    run2 = Run(
+        id=UUID("12345678-1234-5678-1234-567812345679"),
+        name="רוק אנד רול",
+        run_type="chain",
+        start_time=datetime.now(timezone.utc),
+        status="error",
+        inputs={"text": "אני אוהב מוזיקה"},
+        outputs={"response": "גם אני אוהב!"},
+    )
+
+    # Write to file with Hebrew preserved (using ensure_ascii=False)
+    with open(test_file, "w", encoding="utf-8") as f:
+        f.write(
+            json.dumps(run1.model_dump(mode="json"), ensure_ascii=False, default=str)
+            + "\n"
+        )
+        f.write(
+            json.dumps(run2.model_dump(mode="json"), ensure_ascii=False, default=str)
+            + "\n"
+        )
+
+    # Test table output
+    result = runner.invoke(cli, ["runs", "view-file", str(test_file)])
+    assert result.exit_code == 0
+    assert "תופים זה החיים" in result.output
+    assert "רוק אנד רול" in result.output
+
+    # Test JSON output preserves Hebrew
+    result_json = runner.invoke(cli, ["--json", "runs", "view-file", str(test_file)])
+    assert result_json.exit_code == 0
+
+    data = json.loads(result_json.output)
+    assert len(data) == 2
+    assert data[0]["name"] == "תופים זה החיים"
+    assert data[0]["inputs"]["text"] == "היי, מה קורה?"
+    assert data[0]["outputs"]["response"] == "שלום מישראל!"
+    assert data[1]["name"] == "רוק אנד רול"
+
+    # Verify no Unicode escaping
+    assert "\\u05" not in result_json.output
+
+
+def test_runs_view_file_with_fields_preserves_hebrew(runner, tmp_path):
+    """Test that --fields selection still preserves Hebrew."""
+    test_file = tmp_path / "hebrew_runs.jsonl"
+
+    run1 = Run(
+        id=UUID("12345678-1234-5678-1234-567812345678"),
+        name="תופים זה החיים",
+        run_type="chain",
+        start_time=datetime.now(timezone.utc),
+        status="success",
+        inputs={"stream_title": "תוכנית תופים", "language": "he-IL"},
+    )
+
+    with open(test_file, "w", encoding="utf-8") as f:
+        f.write(
+            json.dumps(run1.model_dump(mode="json"), ensure_ascii=False, default=str)
+            + "\n"
+        )
+
+    result = runner.invoke(
+        cli,
+        ["--json", "runs", "view-file", str(test_file), "--fields", "id,name,inputs"],
+    )
+    assert result.exit_code == 0
+
+    data = json.loads(result.output)
+    assert len(data) == 1
+    assert data[0]["name"] == "תופים זה החיים"
+    assert data[0]["inputs"]["stream_title"] == "תוכנית תופים"
+
+    # Verify no Unicode escaping
+    assert "\\u05" not in result.output
