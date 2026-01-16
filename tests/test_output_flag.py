@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 from langsmith.schemas import Dataset, Example, Run, TracerSessionResult
 from langsmith_cli.main import cli
+from conftest import strip_ansi
 
 
 def test_runs_list_with_output(runner, tmp_path):
@@ -38,7 +39,7 @@ def test_runs_list_with_output(runner, tmp_path):
         assert output_file.exists()
         content = output_file.read_text()
         assert "test-run" in content
-        assert "Wrote 1 items" in result.output
+        assert "Wrote 1 items" in strip_ansi(result.output)
 
 
 def test_projects_list_with_output(runner, tmp_path):
@@ -61,7 +62,7 @@ def test_projects_list_with_output(runner, tmp_path):
         assert output_file.exists()
         content = output_file.read_text()
         assert "test-project" in content
-        assert "Wrote 1 items" in result.output
+        assert "Wrote 1 items" in strip_ansi(result.output)
 
 
 def test_datasets_list_with_output(runner, tmp_path):
@@ -87,7 +88,7 @@ def test_datasets_list_with_output(runner, tmp_path):
         assert output_file.exists()
         content = output_file.read_text()
         assert "test-dataset" in content
-        assert "Wrote 1 items" in result.output
+        assert "Wrote 1 items" in strip_ansi(result.output)
 
 
 def test_examples_list_with_output(runner, tmp_path):
@@ -121,7 +122,7 @@ def test_examples_list_with_output(runner, tmp_path):
         assert output_file.exists()
         content = output_file.read_text()
         assert "What is 2+2?" in content
-        assert "Wrote 1 items" in result.output
+        assert "Wrote 1 items" in strip_ansi(result.output)
 
 
 def test_output_with_fields_filter(runner, tmp_path):

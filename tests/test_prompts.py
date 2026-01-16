@@ -11,7 +11,7 @@ langsmith.schemas, ensuring compatibility with the actual SDK.
 from langsmith_cli.main import cli
 from unittest.mock import patch
 import json
-from conftest import create_prompt
+from conftest import create_prompt, strip_ansi
 from langsmith.schemas import ListPromptsResponse
 
 
@@ -271,8 +271,9 @@ def test_prompts_get_table_output(runner):
 
         result = runner.invoke(cli, ["prompts", "get", "my-prompt"])
         assert result.exit_code == 0
-        assert "my-prompt" in result.output
-        assert "Hello, {name}!" in result.output
+        output = strip_ansi(result.output)
+        assert "my-prompt" in output
+        assert "Hello, {name}!" in output
 
 
 def test_prompts_get_with_commit(runner):

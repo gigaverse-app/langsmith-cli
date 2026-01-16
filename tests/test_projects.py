@@ -1,6 +1,6 @@
 from langsmith_cli.main import cli
 from unittest.mock import patch
-from conftest import create_project
+from conftest import create_project, strip_ansi
 import json
 import pytest
 
@@ -565,19 +565,16 @@ def test_projects_list_limit_message(
         result = runner.invoke(cli, cmd)
         assert result.exit_code == 0
 
+        output = strip_ansi(result.output)
         if should_show_message:
             # Verify the limit message is shown with exact count
             shown = min(limit, total_projects)
-            assert f"Showing {shown} of {total_projects} projects" in result.output
-            assert (
-                f"Use --limit 0 to see all {total_projects} projects" in result.output
-            )
+            assert f"Showing {shown} of {total_projects} projects" in output
+            assert f"Use --limit 0 to see all {total_projects} projects" in output
         else:
             # Verify the limit message is NOT shown
-            assert (
-                "Showing" not in result.output or "Projects" in result.output
-            )  # Allow table title
-            assert "Use --limit 0" not in result.output
+            assert "Showing" not in output or "Projects" in output  # Allow table title
+            assert "Use --limit 0" not in output
 
 
 @pytest.mark.parametrize(
