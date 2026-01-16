@@ -8,6 +8,7 @@ import pytest
 from click import unstyle
 from click.testing import CliRunner
 from datetime import datetime, timezone
+from decimal import Decimal
 from uuid import UUID, uuid4
 from langsmith.schemas import Dataset, Example, Prompt, TracerSessionResult, Run
 
@@ -156,6 +157,9 @@ def create_project(
         error_rate: Error rate as a decimal (e.g., 0.05 for 5%)
         total_cost: Total cost in dollars (optional)
     """
+    # SDK expects Decimal for total_cost, convert from float
+    total_cost_decimal = Decimal(str(total_cost)) if total_cost is not None else None
+
     return TracerSessionResult(
         id=UUID("f47ac10b-58cc-4372-a567-0e02b2c3d479"),
         name=name,
@@ -166,7 +170,7 @@ def create_project(
         reference_dataset_id=None,  # optional field
         last_run_start_time=last_run_start_time,
         error_rate=error_rate,
-        total_cost=total_cost,
+        total_cost=total_cost_decimal,
     )
 
 

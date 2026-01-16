@@ -291,7 +291,7 @@ def compute_metrics(
             for r in runs
             if hasattr(r, "total_cost") and r.total_cost is not None
         ]
-        result["avg_cost"] = statistics.mean(costs) if costs else 0.0
+        result["avg_cost"] = float(statistics.mean(costs)) if costs else 0.0
 
     return result
 

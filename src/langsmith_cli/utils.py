@@ -158,7 +158,10 @@ def filter_fields(data: list[ModelT], fields: str | None) -> list[dict[str, Any]
 
 
 @overload
-def filter_fields(data: ModelT, fields: str | None) -> dict[str, Any]: ...
+def filter_fields(
+    data: ModelT,  # pyright: ignore[reportInvalidTypeVarUse]
+    fields: str | None,
+) -> dict[str, Any]: ...
 
 
 def filter_fields(
@@ -1303,7 +1306,9 @@ def apply_grep_filter(
     for item in items:
         # Convert item to dict for searching
         if hasattr(item, "model_dump"):
-            item_dict = item.model_dump(mode="json")
+            # Type-safe call: we verified the method exists
+            model_dump_method = getattr(item, "model_dump")
+            item_dict: dict[str, Any] = model_dump_method(mode="json")
         elif isinstance(item, dict):
             item_dict = item
         else:

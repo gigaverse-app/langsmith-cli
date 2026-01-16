@@ -53,7 +53,9 @@ class TestStatusFilter:
     def test_invalid_status_rejected(self):
         """Test that invalid status values are rejected."""
         with pytest.raises(ValidationError):
-            StatusFilter(status="invalid")
+            # Intentionally passing invalid value to test validation
+            invalid_status: str = "invalid"
+            StatusFilter(status=invalid_status)  # type: ignore[arg-type]
 
     def test_no_client_filtering_needed(self):
         """Test that status filtering is server-side only."""
