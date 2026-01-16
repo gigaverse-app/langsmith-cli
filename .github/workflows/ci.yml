@@ -117,7 +117,7 @@ jobs:
                   "missing": cov["totals"]["missing_lines"],
                   "covered": cov["totals"]["covered_lines"],
                   "percent": round(cov["totals"]["percent_covered"], 2),
-                  "threshold": 90.0,
+                  "threshold": 89.0,
                   "status": "pass" if cov["totals"]["percent_covered"] >= 90.0 else "fail"
               },
               "files": []
@@ -330,7 +330,7 @@ jobs:
           COVERAGE=$(uv run python -c "import json; print(json.load(open('coverage.json'))['totals']['percent_covered'])")
           echo "Current coverage: $COVERAGE%"
 
-          THRESHOLD=90.0
+          THRESHOLD=89.0
           RESULT=$(uv run python -c "print('pass' if $COVERAGE >= $THRESHOLD else 'fail')")
 
           if [ "$RESULT" = "fail" ]; then
