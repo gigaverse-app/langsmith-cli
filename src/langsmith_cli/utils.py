@@ -1298,6 +1298,31 @@ def build_time_fql_filters(
     return fql_filters
 
 
+def combine_fql_filters(filters: list[str]) -> str | None:
+    """Combine multiple FQL filter expressions into a single filter.
+
+    Args:
+        filters: List of FQL filter expressions (e.g., ['gt(start_time, "...")', 'has(tags, "...")'])
+
+    Returns:
+        Combined filter string, or None if the list is empty.
+        Single filter is returned as-is, multiple filters are wrapped in and(...).
+
+    Example:
+        >>> combine_fql_filters([])
+        None
+        >>> combine_fql_filters(['gt(start_time, "2024-01-01")'])
+        'gt(start_time, "2024-01-01")'
+        >>> combine_fql_filters(['gt(start_time, "2024-01-01")', 'has(tags, "prod")'])
+        'and(gt(start_time, "2024-01-01"), has(tags, "prod"))'
+    """
+    if not filters:
+        return None
+    if len(filters) == 1:
+        return filters[0]
+    return f"and({', '.join(filters)})"
+
+
 def add_time_filter_options(func: Callable[..., Any]) -> Callable[..., Any]:
     """Decorator to add universal time filtering options to a command.
 

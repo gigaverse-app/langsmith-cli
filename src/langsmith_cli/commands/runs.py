@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from typing import Any
 import json
 
@@ -15,6 +16,7 @@ from langsmith_cli.utils import (
     build_runs_list_filter,
     build_runs_table,
     build_time_fql_filters,
+    combine_fql_filters,
     count_option,
     determine_output_format,
     exclude_option,
@@ -2014,6 +2016,99 @@ def analyze_runs(
         console.print(table)
 
 
+# Discovery command helpers
+
+
+@dataclass
+class DiscoveryContext:
+    """Context returned by _fetch_runs_for_discovery."""
+
+    runs: list[Run]
+    projects: list[str]
+    logger: Any  # CLILogger
+
+
+def _fetch_runs_for_discovery(
+    ctx,
+    project: str | None,
+    project_name: str | None,
+    project_name_exact: str | None,
+    project_name_pattern: str | None,
+    project_name_regex: str | None,
+    since: str | None,
+    last: str | None,
+    sample_size: int,
+    select: list[str] | None = None,
+    cmd_name: str = "discovery",
+) -> DiscoveryContext:
+    """Shared setup for discovery commands (tags, metadata-keys, fields, describe).
+
+    Handles the common pattern of:
+    - Setting up logger with stderr mode
+    - Building and combining time filters
+    - Getting matching projects
+    - Fetching runs with optional field selection
+
+    Args:
+        ctx: Click context
+        project: Project ID or name
+        project_name: Substring filter for project name
+        project_name_exact: Exact project name filter
+        project_name_pattern: Glob pattern for project name
+        project_name_regex: Regex pattern for project name
+        since: Time filter (since)
+        last: Time filter (last duration)
+        sample_size: Number of runs to sample
+        select: Optional list of fields to fetch (for performance)
+        cmd_name: Command name for debug logging
+
+    Returns:
+        DiscoveryContext with runs, projects list, and logger
+    """
+    logger = ctx.obj["logger"]
+
+    # Determine if output is machine-readable (use stderr for diagnostics)
+    is_machine_readable = ctx.obj.get("json")
+    logger.use_stderr = is_machine_readable
+
+    client = get_or_create_client(ctx)
+    logger.debug(f"Running {cmd_name} with sample_size={sample_size}")
+
+    # Build and combine time filters
+    time_filters = build_time_fql_filters(since=since, last=last)
+    combined_filter = combine_fql_filters(time_filters)
+
+    # Get matching projects
+    projects_to_query = get_matching_projects(
+        client,
+        project=project,
+        name=project_name,
+        name_exact=project_name_exact,
+        name_pattern=project_name_pattern,
+        name_regex=project_name_regex,
+    )
+
+    # Fetch runs
+    logger.debug(f"Fetching {sample_size} runs for {cmd_name}...")
+
+    result = fetch_from_projects(
+        client,
+        projects_to_query,
+        lambda c, proj, **kw: c.list_runs(project_name=proj, **kw),
+        limit=sample_size,
+        order_by="-start_time",
+        select=select,
+        filter=combined_filter,
+        console=console,
+    )
+
+    return DiscoveryContext(
+        runs=result.items,
+        projects=projects_to_query,
+        logger=logger,
+    )
+
+
 @runs.command("tags")
 @add_project_filter_options
 @add_time_filter_options
@@ -2050,59 +2145,30 @@ def discover_tags(
         # Discover tags with pattern filtering
         langsmith-cli runs tags --project-name-pattern "prod/*"
     """
-    logger = ctx.obj["logger"]
-
-    # Determine if output is machine-readable
-    is_machine_readable = ctx.obj.get("json")
-    logger.use_stderr = is_machine_readable
-
     from collections import defaultdict
 
-    client = get_or_create_client(ctx)
-    logger.debug(f"Discovering tags with sample_size={sample_size}")
-
-    # Build time filters
-    time_filters = build_time_fql_filters(since=since, last=last)
-    combined_filter: str | None = None
-    if time_filters:
-        combined_filter = (
-            time_filters[0]
-            if len(time_filters) == 1
-            else f"and({', '.join(time_filters)})"
-        )
-
-    # Get matching projects
-    projects_to_query = get_matching_projects(
-        client,
+    # Fetch runs using shared discovery helper
+    discovery = _fetch_runs_for_discovery(
+        ctx=ctx,
         project=project,
-        name=project_name,
-        name_exact=project_name_exact,
-        name_pattern=project_name_pattern,
-        name_regex=project_name_regex,
+        project_name=project_name,
+        project_name_exact=project_name_exact,
+        project_name_pattern=project_name_pattern,
+        project_name_regex=project_name_regex,
+        since=since,
+        last=last,
+        sample_size=sample_size,
+        select=["tags"],
+        cmd_name="tags",
     )
-
-    # Fetch sample of recent runs using universal helper
-    # Use select to only fetch fields we need (much faster - 2x speedup, 14x less data)
-    result = fetch_from_projects(
-        client,
-        projects_to_query,
-        lambda c, proj, **kw: c.list_runs(project_name=proj, **kw),
-        limit=sample_size,
-        order_by="-start_time",
-        select=["tags"],  # Only fetch tags field
-        filter=combined_filter,
-        console=console,
-    )
-    all_runs = result.items
 
     # Parse tags to extract key:value patterns
     tag_patterns: dict[str, set[str]] = defaultdict(set)
 
-    for run in all_runs:
+    for run in discovery.runs:
         if run.tags:
             for tag in run.tags:
                 if ":" in tag:
-                    # Structured tag: key:value
                     key, value = tag.split(":", 1)
                     tag_patterns[key].add(value)
 
@@ -2124,18 +2190,17 @@ def discover_tags(
         table.add_column("Values", style="green")
 
         for key, values in result["tag_patterns"].items():
-            # Truncate long value lists for readability
             value_str = ", ".join(values[:10])
             if len(values) > 10:
                 value_str += f" ... (+{len(values) - 10} more)"
             table.add_row(key, value_str)
 
         if not result["tag_patterns"]:
-            logger.warning("No structured tags found (key:value format).")
+            discovery.logger.warning("No structured tags found (key:value format).")
         else:
             console.print(table)
-            logger.info(
-                f"Analyzed {len(all_runs)} runs from {len(projects_to_query)} project(s)"
+            discovery.logger.info(
+                f"Analyzed {len(discovery.runs)} runs from {len(discovery.projects)} project(s)"
             )
 
 
@@ -2175,53 +2240,25 @@ def discover_metadata_keys(
         # Discover with pattern filtering
         langsmith-cli runs metadata-keys --project-name-pattern "prod/*"
     """
-    logger = ctx.obj["logger"]
-
-    # Determine if output is machine-readable
-    is_machine_readable = ctx.obj.get("json")
-    logger.use_stderr = is_machine_readable
-
-    client = get_or_create_client(ctx)
-    logger.debug(f"Discovering metadata keys with sample_size={sample_size}")
-
-    # Build time filters
-    time_filters = build_time_fql_filters(since=since, last=last)
-    combined_filter: str | None = None
-    if time_filters:
-        combined_filter = (
-            time_filters[0]
-            if len(time_filters) == 1
-            else f"and({', '.join(time_filters)})"
-        )
-
-    # Get matching projects
-    projects_to_query = get_matching_projects(
-        client,
+    # Fetch runs using shared discovery helper
+    discovery = _fetch_runs_for_discovery(
+        ctx=ctx,
         project=project,
-        name=project_name,
-        name_exact=project_name_exact,
-        name_pattern=project_name_pattern,
-        name_regex=project_name_regex,
+        project_name=project_name,
+        project_name_exact=project_name_exact,
+        project_name_pattern=project_name_pattern,
+        project_name_regex=project_name_regex,
+        since=since,
+        last=last,
+        sample_size=sample_size,
+        select=["extra"],  # Metadata is stored in extra field
+        cmd_name="metadata-keys",
     )
-
-    # Fetch sample of recent runs using universal helper
-    # Use select to only fetch fields we need (much faster - 2x speedup, 14x less data)
-    result = fetch_from_projects(
-        client,
-        projects_to_query,
-        lambda c, proj, **kw: c.list_runs(project_name=proj, **kw),
-        limit=sample_size,
-        order_by="-start_time",
-        select=["extra"],  # Only fetch metadata (stored in extra field)
-        filter=combined_filter,
-        console=console,
-    )
-    all_runs = result.items
 
     # Extract all metadata keys
     metadata_keys: set[str] = set()
 
-    for run in all_runs:
+    for run in discovery.runs:
         # Check run.metadata
         if run.metadata and isinstance(run.metadata, dict):
             metadata_keys.update(run.metadata.keys())
@@ -2248,11 +2285,11 @@ def discover_metadata_keys(
             table.add_row(key, "metadata")
 
         if not result["metadata_keys"]:
-            logger.warning("No metadata keys found.")
+            discovery.logger.warning("No metadata keys found.")
         else:
             console.print(table)
-            logger.info(
-                f"Analyzed {len(all_runs)} runs from {len(projects_to_query)} project(s)"
+            discovery.logger.info(
+                f"Analyzed {len(discovery.runs)} runs from {len(discovery.projects)} project(s)"
             )
 
 
@@ -2298,60 +2335,33 @@ def _field_analysis_common(
         format_numeric_stats,
     )
 
-    logger = ctx.obj["logger"]
-
-    # Determine if output is machine-readable
-    is_machine_readable = ctx.obj.get("json")
-    logger.use_stderr = is_machine_readable
-
-    client = get_or_create_client(ctx)
     cmd_name = "describe" if show_detailed_stats else "fields"
-    logger.debug(f"Running {cmd_name} with sample_size={sample_size}")
 
-    # Build time filters
-    time_filters = build_time_fql_filters(since=since, last=last)
-    combined_filter: str | None = None
-    if time_filters:
-        combined_filter = (
-            time_filters[0]
-            if len(time_filters) == 1
-            else f"and({', '.join(time_filters)})"
-        )
-
-    # Get matching projects
-    projects_to_query = get_matching_projects(
-        client,
+    # Fetch runs using shared discovery helper (no select - need full run data)
+    discovery = _fetch_runs_for_discovery(
+        ctx=ctx,
         project=project,
-        name=project_name,
-        name_exact=project_name_exact,
-        name_pattern=project_name_pattern,
-        name_regex=project_name_regex,
+        project_name=project_name,
+        project_name_exact=project_name_exact,
+        project_name_pattern=project_name_pattern,
+        project_name_regex=project_name_regex,
+        since=since,
+        last=last,
+        sample_size=sample_size,
+        select=None,  # Need full run data for field analysis
+        cmd_name=cmd_name,
     )
 
-    # Fetch sample of recent runs
-    logger.debug(f"Fetching {sample_size} runs for field analysis...")
-
-    result = fetch_from_projects(
-        client,
-        projects_to_query,
-        lambda c, proj, **kw: c.list_runs(project_name=proj, **kw),
-        limit=sample_size,
-        order_by="-start_time",
-        filter=combined_filter,
-        console=console,
-    )
-    all_runs = result.items
-
-    if not all_runs:
+    if not discovery.runs:
         if ctx.obj.get("json"):
             click.echo(json_dumps({"fields": [], "total_runs": 0}))
         else:
-            logger.warning("No runs found.")
+            discovery.logger.warning("No runs found.")
         return
 
     # Convert runs to dicts for analysis
-    logger.debug(f"Analyzing fields across {len(all_runs)} runs...")
-    runs_data = [run.model_dump(mode="json") for run in all_runs]
+    discovery.logger.debug(f"Analyzing fields across {len(discovery.runs)} runs...")
+    runs_data = [run.model_dump(mode="json") for run in discovery.runs]
 
     # Analyze fields
     stats_list = analyze_runs_fields(runs_data, detect_languages=not no_language)
@@ -2365,7 +2375,7 @@ def _field_analysis_common(
     if ctx.obj.get("json"):
         output = {
             "fields": [s.to_dict() for s in stats_list],
-            "total_runs": len(all_runs),
+            "total_runs": len(discovery.runs),
             "meta": {
                 "lang_detect_enabled": not no_language,
                 "lang_detect_sample_size": 500,
@@ -2403,7 +2413,7 @@ def _field_analysis_common(
         )
 
     if show_detailed_stats:
-        table = Table(title=f"Field Statistics ({len(all_runs)} runs analyzed)")
+        table = Table(title=f"Field Statistics ({len(discovery.runs)} runs analyzed)")
         table.add_column("Field Path", style="cyan", no_wrap=True)
         table.add_column("Type", style="dim")
         table.add_column("Present", justify="right")
@@ -2412,7 +2422,7 @@ def _field_analysis_common(
         for stats in stats_list:
             table.add_row(*render_describe_row(stats))
     else:
-        table = Table(title=f"Fields ({len(all_runs)} runs analyzed)")
+        table = Table(title=f"Fields ({len(discovery.runs)} runs analyzed)")
         table.add_column("Field Path", style="cyan", no_wrap=True)
         table.add_column("Type", style="dim")
         table.add_column("Present", justify="right")
@@ -2422,8 +2432,8 @@ def _field_analysis_common(
             table.add_row(*render_fields_row(stats))
 
     console.print(table)
-    logger.info(
-        f"Analyzed {len(all_runs)} runs from {len(projects_to_query)} project(s)"
+    discovery.logger.info(
+        f"Analyzed {len(discovery.runs)} runs from {len(discovery.projects)} project(s)"
     )
 
 

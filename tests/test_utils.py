@@ -29,6 +29,7 @@ from langsmith_cli.utils import (
     format_token_count,
     parse_time_input,
     build_time_fql_filters,
+    combine_fql_filters,
 )
 
 
@@ -1192,3 +1193,36 @@ class TestBuildTimeFqlFilters:
         """Test that invalid --last raises BadParameter."""
         with pytest.raises(click.BadParameter):
             build_time_fql_filters(last="invalid")
+
+
+class TestCombineFqlFilters:
+    """Tests for combine_fql_filters function."""
+
+    def test_empty_list_returns_none(self):
+        """Test that empty list returns None."""
+        result = combine_fql_filters([])
+        assert result is None
+
+    def test_single_filter_returned_as_is(self):
+        """Test that single filter is returned without wrapping."""
+        filter_str = 'gt(start_time, "2024-01-01T00:00:00+00:00")'
+        result = combine_fql_filters([filter_str])
+        assert result == filter_str
+
+    def test_two_filters_combined_with_and(self):
+        """Test that two filters are combined with and()."""
+        filters = [
+            'gt(start_time, "2024-01-01T00:00:00+00:00")',
+            'has(tags, "prod")',
+        ]
+        result = combine_fql_filters(filters)
+        assert (
+            result
+            == 'and(gt(start_time, "2024-01-01T00:00:00+00:00"), has(tags, "prod"))'
+        )
+
+    def test_multiple_filters_combined(self):
+        """Test that multiple filters are all combined."""
+        filters = ["filter1", "filter2", "filter3"]
+        result = combine_fql_filters(filters)
+        assert result == "and(filter1, filter2, filter3)"
