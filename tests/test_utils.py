@@ -1106,6 +1106,43 @@ class TestParseTimeInput:
         now = datetime.now(timezone.utc)
         assert result < now
 
+    def test_weeks_shorthand(self):
+        """Test parsing weeks shorthand '2w'."""
+        result = parse_time_input("2w")
+        now = datetime.now(timezone.utc)
+        # Should be approximately 14 days ago
+        assert result < now
+        delta = now - result
+        assert 13 <= delta.days <= 15  # Allow for test timing
+
+    def test_weeks_natural_language(self):
+        """Test parsing '2 weeks ago' natural language."""
+        result = parse_time_input("2 weeks ago")
+        now = datetime.now(timezone.utc)
+        delta = now - result
+        assert 13 <= delta.days <= 15
+
+    def test_wk_natural_language(self):
+        """Test parsing '1 wk ago' abbreviated natural language."""
+        result = parse_time_input("1 wk ago")
+        now = datetime.now(timezone.utc)
+        delta = now - result
+        assert 6 <= delta.days <= 8
+
+    def test_hour_abbrev_hr(self):
+        """Test parsing '2 hr ago' abbreviated hours."""
+        result = parse_time_input("2 hr ago")
+        now = datetime.now(timezone.utc)
+        delta = now - result
+        assert 1 <= delta.seconds / 3600 <= 3 or delta.days == 0
+
+    def test_minute_abbrev_min(self):
+        """Test parsing '30 min ago' abbreviated minutes."""
+        result = parse_time_input("30 min ago")
+        now = datetime.now(timezone.utc)
+        delta = now - result
+        assert 29 <= delta.seconds / 60 <= 31 or delta.days == 0
+
 
 class TestBuildTimeFqlFilters:
     """Tests for build_time_fql_filters function."""

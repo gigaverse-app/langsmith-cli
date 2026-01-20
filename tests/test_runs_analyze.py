@@ -182,6 +182,125 @@ class TestComputeMetrics:
         assert metrics["p95_latency"] >= 95.0
         assert metrics["p99_latency"] >= 99.0
 
+    def test_compute_metrics_empty_runs(self):
+        """Compute metrics returns 0 for all metrics when runs list is empty."""
+        from langsmith_cli.commands.runs import compute_metrics
+
+        metrics = compute_metrics(
+            [], ["count", "error_rate", "avg_latency", "p50_latency", "total_tokens"]
+        )
+        assert metrics["count"] == 0
+        assert metrics["error_rate"] == 0
+        assert metrics["avg_latency"] == 0
+        assert metrics["p50_latency"] == 0
+        assert metrics["total_tokens"] == 0
+
+    def test_compute_metrics_no_latency_data(self):
+        """Compute metrics returns 0 for latency metrics when runs have no latency."""
+        from langsmith_cli.commands.runs import compute_metrics
+
+        # Runs without end_time have no latency
+        runs = [
+            Run(
+                id=UUID(make_run_id(i)),
+                name=f"run-{i}",
+                run_type="chain",
+                start_time=datetime.now(timezone.utc),
+                # No end_time means latency is None
+            )
+            for i in range(3)
+        ]
+
+        metrics = compute_metrics(
+            runs, ["avg_latency", "p50_latency", "p95_latency", "p99_latency"]
+        )
+        assert metrics["avg_latency"] == 0.0
+        assert metrics["p50_latency"] == 0.0
+        assert metrics["p95_latency"] == 0.0
+        assert metrics["p99_latency"] == 0.0
+
+    def test_compute_total_tokens(self):
+        """Compute total_tokens metric sums up all tokens."""
+        from langsmith_cli.commands.runs import compute_metrics
+
+        start_time = datetime.now(timezone.utc)
+        runs = [
+            Run(
+                id=UUID(make_run_id(1)),
+                name="run-1",
+                run_type="llm",
+                start_time=start_time,
+                total_tokens=100,
+            ),
+            Run(
+                id=UUID(make_run_id(2)),
+                name="run-2",
+                run_type="llm",
+                start_time=start_time,
+                total_tokens=250,
+            ),
+            Run(
+                id=UUID(make_run_id(3)),
+                name="run-3",
+                run_type="llm",
+                start_time=start_time,
+                total_tokens=None,  # Should be treated as 0
+            ),
+        ]
+
+        metrics = compute_metrics(runs, ["total_tokens"])
+        assert metrics["total_tokens"] == 350
+
+    def test_compute_avg_cost(self):
+        """Compute avg_cost metric when runs have cost data."""
+        from langsmith_cli.commands.runs import compute_metrics
+
+        start_time = datetime.now(timezone.utc)
+        runs = [
+            Run(
+                id=UUID(make_run_id(1)),
+                name="run-1",
+                run_type="llm",
+                start_time=start_time,
+                total_cost=0.01,
+            ),
+            Run(
+                id=UUID(make_run_id(2)),
+                name="run-2",
+                run_type="llm",
+                start_time=start_time,
+                total_cost=0.03,
+            ),
+            Run(
+                id=UUID(make_run_id(3)),
+                name="run-3",
+                run_type="llm",
+                start_time=start_time,
+                total_cost=0.02,
+            ),
+        ]
+
+        metrics = compute_metrics(runs, ["avg_cost"])
+        assert metrics["avg_cost"] == pytest.approx(0.02, rel=0.01)
+
+    def test_compute_avg_cost_no_cost_data(self):
+        """Compute avg_cost returns 0 when no runs have cost data."""
+        from langsmith_cli.commands.runs import compute_metrics
+
+        runs = [
+            Run(
+                id=UUID(make_run_id(i)),
+                name=f"run-{i}",
+                run_type="chain",
+                start_time=datetime.now(timezone.utc),
+                # No total_cost field
+            )
+            for i in range(3)
+        ]
+
+        metrics = compute_metrics(runs, ["avg_cost"])
+        assert metrics["avg_cost"] == 0.0
+
 
 class TestRunsAnalyze:
     """Tests for runs analyze command."""

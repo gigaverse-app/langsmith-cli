@@ -114,6 +114,76 @@ class TestFetchResult:
         calls = [str(call) for call in console.print.call_args_list]
         assert any("7 more" in call for call in calls)
 
+    def test_report_failures_to_logger_partial_failures(self):
+        """Test report_failures_to_logger shows 'Some sources failed' when not all failed.
+
+        When some projects succeed and some fail, the message should say
+        'Some sources failed' (warning) not 'All sources failed' (error).
+        """
+        result = FetchResult(
+            items=[1, 2],  # Some items retrieved
+            successful_sources=["proj1"],  # At least one success
+            failed_sources=[("proj2", "Connection error")],  # But also failures
+        )
+        logger = MagicMock()
+        result.report_failures_to_logger(logger)
+
+        # Should call warning (not error) for partial failures
+        logger.warning.assert_called()
+        calls = [str(call) for call in logger.warning.call_args_list]
+        assert any("Some sources failed" in call for call in calls)
+        # Should NOT call error
+        logger.error.assert_not_called()
+
+    def test_report_failures_to_logger_all_failed_uses_error(self):
+        """Test report_failures_to_logger uses error() when all sources failed."""
+        result = FetchResult(
+            items=[],
+            successful_sources=[],  # No successes
+            failed_sources=[
+                ("proj1", "Error 1"),
+                ("proj2", "Error 2"),
+            ],
+        )
+        logger = MagicMock()
+        result.report_failures_to_logger(logger)
+
+        # Should call error (not warning) for all failures header
+        logger.error.assert_called_once()
+        calls = [str(call) for call in logger.error.call_args_list]
+        assert any("All sources failed" in call for call in calls)
+
+    def test_report_failures_to_logger_no_failures(self):
+        """Test report_failures_to_logger early return when no failures."""
+        result = FetchResult(
+            items=[1, 2],
+            successful_sources=["proj1"],
+            failed_sources=[],  # No failures
+        )
+        logger = MagicMock()
+        result.report_failures_to_logger(logger)
+
+        # Should not call any logger methods
+        logger.warning.assert_not_called()
+        logger.error.assert_not_called()
+
+    def test_report_failures_to_logger_limits_shown(self):
+        """Test report_failures_to_logger respects max_show limit."""
+        failures = [(f"proj{i}", "Error") for i in range(10)]
+        result = FetchResult(
+            items=[],
+            successful_sources=[],
+            failed_sources=failures,
+        )
+        logger = MagicMock()
+        result.report_failures_to_logger(logger, max_show=3)
+
+        # Should show: error header + 3 warnings + "... and N more"
+        assert logger.error.call_count == 1  # "All sources failed"
+        assert logger.warning.call_count == 4  # 3 failures + "... and 7 more"
+        calls = [str(call) for call in logger.warning.call_args_list]
+        assert any("7 more" in call for call in calls)
+
     def test_default_empty_failed_sources(self):
         """Test that failed_sources defaults to empty list."""
         result = FetchResult(
