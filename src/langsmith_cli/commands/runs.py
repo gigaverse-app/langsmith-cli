@@ -172,10 +172,8 @@ def build_multi_dimensional_fql_filter(
         fql = build_grouping_fql_filter(grouping_type, field_name, value)
         filters.append(fql)
 
-    if len(filters) == 1:
-        return filters[0]
-    else:
-        return f"and({', '.join(filters)})"
+    # combine_fql_filters returns None for empty list, but we always have at least one
+    return combine_fql_filters(filters) or filters[0]
 
 
 def extract_group_value(run: Run, grouping_type: str, field_name: str) -> str | None:
@@ -587,14 +585,7 @@ def list_runs(
     fql_filters.extend(time_filters)
 
     # Combine all filters with AND logic
-    combined_filter = None
-    if fql_filters:
-        if len(fql_filters) == 1:
-            combined_filter = fql_filters[0]
-        else:
-            # Wrap in and() for multiple filters
-            filter_str = ", ".join(fql_filters)
-            combined_filter = f"and({filter_str})"
+    combined_filter = combine_fql_filters(fql_filters)
 
     # Determine if client-side filtering is needed
     # (for run name pattern/regex matching, exclude patterns, or grep content search)
@@ -1399,8 +1390,8 @@ def search_runs(
     if output_contains:
         filters.append(f'search("{output_contains}")')
 
-    # Combine filters with AND
-    combined_filter = filters[0] if len(filters) == 1 else f"and({', '.join(filters)})"
+    # Combine filters with AND (filters always has at least one element from query)
+    combined_filter = combine_fql_filters(filters) or filters[0]
 
     # Invoke list_runs with the filter and project filters
     return ctx.invoke(
@@ -1551,12 +1542,7 @@ def sample_runs(
         base_filters.append(additional_filter)
 
     # Combine base filters into a single filter
-    if len(base_filters) == 0:
-        base_filter: str | None = None
-    elif len(base_filters) == 1:
-        base_filter = base_filters[0]
-    else:
-        base_filter = f"and({', '.join(base_filters)})"
+    base_filter = combine_fql_filters(base_filters)
 
     client = get_or_create_client(ctx)
 
@@ -1622,11 +1608,11 @@ def sample_runs(
                 dimensions, list(combination_values)
             )
 
-            # Combine with base filter (time + additional filters)
+            # Combine stratum filter with base filter (time + additional filters)
+            filters_to_combine = [stratum_filter]
             if base_filter:
-                combined_filter = f"and({stratum_filter}, {base_filter})"
-            else:
-                combined_filter = stratum_filter
+                filters_to_combine.append(base_filter)
+            combined_filter = combine_fql_filters(filters_to_combine)
 
             # Fetch samples from all matching projects using universal helper
             result = fetch_from_projects(
@@ -1670,11 +1656,11 @@ def sample_runs(
                 grouping_type, field_name, stratum_value
             )
 
-            # Combine with base filter (time + additional filters)
+            # Combine stratum filter with base filter (time + additional filters)
+            filters_to_combine = [stratum_filter]
             if base_filter:
-                combined_filter = f"and({stratum_filter}, {base_filter})"
-            else:
-                combined_filter = stratum_filter
+                filters_to_combine.append(base_filter)
+            combined_filter = combine_fql_filters(filters_to_combine)
 
             # Fetch samples from all matching projects using universal helper
             result = fetch_from_projects(
@@ -1820,12 +1806,7 @@ def analyze_runs(
         base_filters.append(additional_filter)
 
     # Combine base filters into a single filter
-    if len(base_filters) == 0:
-        combined_filter: str | None = None
-    elif len(base_filters) == 1:
-        combined_filter = base_filters[0]
-    else:
-        combined_filter = f"and({', '.join(base_filters)})"
+    combined_filter = combine_fql_filters(base_filters)
 
     client = get_or_create_client(ctx)
 

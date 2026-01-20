@@ -1684,12 +1684,6 @@ def build_runs_list_filter(
     fql_filters.extend(time_filters)
 
     # Combine all filters with AND logic
-    combined_filter = None
-    if fql_filters:
-        if len(fql_filters) == 1:
-            combined_filter = fql_filters[0]
-        else:
-            filter_str = ", ".join(fql_filters)
-            combined_filter = f"and({filter_str})"
+    combined_filter = combine_fql_filters(fql_filters)
 
     return combined_filter, error_filter

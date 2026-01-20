@@ -16,6 +16,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from langsmith_cli.utils import combine_fql_filters
+
 
 class StatusFilter(BaseModel):
     """Filter by run status (success/error/running)."""
@@ -301,18 +303,12 @@ class RunsFilterConfig(BaseModel):
             fql_filters.extend(tag_params["_fql_filters"])
 
         # Combine all FQL filters with custom filter
-        if fql_filters:
-            if self.custom_filter:
-                # Combine custom filter with generated FQL
-                combined = f"and({self.custom_filter}, {', '.join(fql_filters)})"
-                params["filter"] = combined
-            elif len(fql_filters) == 1:
-                params["filter"] = fql_filters[0]
-            else:
-                # Combine multiple FQL filters with AND
-                params["filter"] = f"and({', '.join(fql_filters)})"
-        elif self.custom_filter:
-            params["filter"] = self.custom_filter
+        all_filters = fql_filters.copy()
+        if self.custom_filter:
+            all_filters.insert(0, self.custom_filter)
+        combined = combine_fql_filters(all_filters)
+        if combined:
+            params["filter"] = combined
 
         # Add other SDK parameters
         if self.trace_filter:
