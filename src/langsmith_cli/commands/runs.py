@@ -665,6 +665,17 @@ def list_runs(
     all_runs = result.items
     failed_projects = result.failed_sources
 
+    # CRITICAL: Fail fast if ALL sources failed (prevents silent failures)
+    # In JSON mode, output empty array before failing for parseable output
+    if result.all_failed and (ctx.obj.get("json") or output_format in ["csv", "yaml"]):
+        format_type = determine_output_format(output_format, ctx.obj.get("json"))
+        output_formatted_data([], format_type)
+    result.raise_if_all_failed(logger, "runs")
+
+    # Report partial failures (some succeeded, some failed)
+    if result.has_failures:
+        result.report_failures_to_logger(logger)
+
     # Apply universal filtering to run names (client-side filtering)
     # FQL doesn't support full regex or complex patterns for run names
     runs = get_matching_items(

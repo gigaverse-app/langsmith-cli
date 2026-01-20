@@ -32,6 +32,20 @@ class FetchResult(BaseModel, Generic[T]):
         """Check if any sources failed."""
         return len(self.failed_sources) > 0
 
+    @property
+    def all_failed(self) -> bool:
+        """Check if ALL sources failed (no successful sources).
+
+        This indicates a complete failure - the user should be notified
+        and the CLI should return a non-zero exit code.
+        """
+        return len(self.successful_sources) == 0 and len(self.failed_sources) > 0
+
+    @property
+    def total_sources(self) -> int:
+        """Total number of sources attempted."""
+        return len(self.successful_sources) + len(self.failed_sources)
+
     def report_failures(self, console: Any, max_show: int = 3) -> None:
         """Report failures to console.
 
@@ -51,6 +65,68 @@ class FetchResult(BaseModel, Generic[T]):
         if len(self.failed_sources) > max_show:
             remaining = len(self.failed_sources) - max_show
             console.print(f"  ... and {remaining} more")
+
+    def report_failures_to_logger(self, logger: Any, max_show: int = 3) -> None:
+        """Report failures using the CLI logger.
+
+        Use this instead of report_failures() when you need proper
+        stdout/stderr separation (e.g., in JSON mode).
+
+        Args:
+            logger: CLILogger instance
+            max_show: Maximum number of failures to show (default 3)
+        """
+        if not self.has_failures:
+            return
+
+        if self.all_failed:
+            logger.error("All sources failed to fetch:")
+        else:
+            logger.warning("Some sources failed to fetch:")
+
+        for source, error_msg in self.failed_sources[:max_show]:
+            # Truncate long error messages
+            short_error = error_msg[:100] + "..." if len(error_msg) > 100 else error_msg
+            logger.warning(f"  • {source}: {short_error}")
+
+        if len(self.failed_sources) > max_show:
+            remaining = len(self.failed_sources) - max_show
+            logger.warning(f"  ... and {remaining} more")
+
+    def raise_if_all_failed(
+        self,
+        logger: Any | None = None,
+        entity_name: str = "runs",
+    ) -> None:
+        """Raise ClickException if all sources failed.
+
+        Use this for consistent error handling across commands. This method:
+        1. Reports failures to logger (if provided)
+        2. Raises ClickException with clear error message
+
+        Args:
+            logger: Optional CLILogger for reporting (uses proper stderr in JSON mode)
+            entity_name: What we were trying to fetch (e.g., "runs", "datasets")
+
+        Raises:
+            click.ClickException: If all sources failed to fetch
+
+        Example:
+            result = fetch_from_projects(client, projects, fetch_func)
+            result.raise_if_all_failed(logger, "runs")  # Raises if all failed
+            # ... continue processing result.items ...
+        """
+        if not self.all_failed:
+            return
+
+        # Report failures if logger provided
+        if logger:
+            self.report_failures_to_logger(logger)
+
+        raise click.ClickException(
+            f"Failed to fetch {entity_name} from all {self.total_sources} source(s). "
+            "Check the error messages above."
+        )
 
 
 def fetch_from_projects(

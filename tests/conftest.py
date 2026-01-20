@@ -184,6 +184,11 @@ def create_run(
     outputs: dict | None = None,
     error: str | None = None,
     extra: dict | None = None,
+    parent_run_id: str | None = None,
+    trace_id: str | None = None,
+    latency: float | None = None,
+    total_tokens: int | None = None,
+    status: str | None = None,
 ) -> Run:
     """Create a real Run Pydantic model instance.
 
@@ -197,6 +202,11 @@ def create_run(
         outputs: Dictionary of output data
         error: Error message if run failed
         extra: Dictionary of extra data
+        parent_run_id: UUID string of parent run (None for root runs)
+        trace_id: UUID string of the trace (defaults to run id for root runs)
+        latency: Run latency in seconds
+        total_tokens: Total tokens used
+        status: Override status (defaults based on error)
     """
     if tags is None:
         tags = []
@@ -212,11 +222,25 @@ def create_run(
         id_str = str(uuid4())
 
     # Metadata is stored in extra['metadata'] in the Run model
-    # Merge provided metadata into extra['metadata']
     if metadata:
         if "metadata" not in extra:
             extra["metadata"] = {}
         extra["metadata"].update(metadata)
+
+    # Convert parent_run_id to UUID if provided
+    parent_uuid = UUID(parent_run_id) if parent_run_id else None
+
+    # trace_id defaults to run id for root runs
+    if trace_id is None and parent_run_id is None:
+        trace_uuid = UUID(id_str)
+    elif trace_id:
+        trace_uuid = UUID(trace_id)
+    else:
+        trace_uuid = None
+
+    # Determine status
+    if status is None:
+        status = "success" if error is None else "error"
 
     return Run(
         id=UUID(id_str),
@@ -228,5 +252,67 @@ def create_run(
         outputs=outputs,
         error=error,
         extra=extra,
-        status="success" if error is None else "error",
+        status=status,
+        parent_run_id=parent_uuid,
+        trace_id=trace_uuid,
+        latency=latency,
+        total_tokens=total_tokens,
     )
+
+
+def make_run_id(n: int) -> str:
+    """Generate a sequential UUID string for testing.
+
+    Args:
+        n: Sequence number (0-999999)
+
+    Returns:
+        UUID string like "00000000-0000-0000-0000-000000000001"
+    """
+    return f"00000000-0000-0000-0000-{n:012d}"
+
+
+@pytest.fixture
+def mock_client():
+    """Fixture providing a mocked LangSmith client.
+
+    Usage:
+        def test_example(mock_client):
+            mock_client.list_runs.return_value = [create_run()]
+            # ... invoke CLI ...
+    """
+    from unittest.mock import patch, MagicMock
+
+    with patch("langsmith.Client") as MockClient:
+        client = MagicMock()
+        MockClient.return_value = client
+        yield client
+
+
+@pytest.fixture
+def sample_runs_file(tmp_path):
+    """Create a JSONL file with sample runs for testing view-file command."""
+    import json
+
+    test_file = tmp_path / "test_runs.jsonl"
+    run1 = create_run(
+        name="Test Run 1",
+        id_str="12345678-1234-5678-1234-567812345678",
+        run_type="llm",
+        status="success",
+        latency=1.5,
+        total_tokens=1000,
+    )
+    run2 = create_run(
+        name="Test Run 2",
+        id_str="87654321-4321-8765-4321-876543218765",
+        run_type="chain",
+        error="Test error",
+        latency=2.3,
+    )
+
+    with open(test_file, "w") as f:
+        f.write(json.dumps(run1.model_dump(mode="json")) + "\n")
+        f.write(json.dumps(run2.model_dump(mode="json")) + "\n")
+
+    return test_file

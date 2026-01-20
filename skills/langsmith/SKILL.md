@@ -28,6 +28,45 @@ See **[Installation Guide](references/installation.md)** for all installation me
 /plugin marketplace add gigaverse-app/langsmith-cli
 ```
 
+## 🚨 CRITICAL: How AI Agents Should Call This CLI
+
+**Problem:** Shell redirection `> file.json` silently loses errors! You get an empty file with no explanation.
+
+**Solution:** ALWAYS use the `--output` flag for data extraction:
+
+```bash
+# ✅ CORRECT - Use --output flag (ALWAYS do this for data extraction)
+langsmith-cli runs list --project my-project --fields id,name,status --output runs.jsonl
+
+# Why this is correct:
+# - Writes data to file (JSONL format)
+# - Shows errors/warnings on screen (you will see them!)
+# - Returns non-zero exit code on failure (you can detect it)
+# - Shows confirmation: "Wrote N items to runs.jsonl"
+```
+
+```bash
+# ❌ WRONG - Never use shell redirection for data extraction
+langsmith-cli --json runs list --project my-project > runs.json
+# If API fails: you get empty [], no error message, exit code 0
+# You won't know anything went wrong!
+```
+
+```bash
+# ✅ OK for quick queries (not data extraction) - use 2>&1 to see errors
+langsmith-cli --json runs list --project my-project --limit 5 2>&1
+# Errors will be visible in the output (mixed with JSON)
+# Check exit code: 0 = success, non-zero = failure
+```
+
+**Quick Reference:**
+| Use Case | Command Pattern |
+|----------|-----------------|
+| Extract data to file | `langsmith-cli runs list --output data.jsonl` |
+| Quick query (see results) | `langsmith-cli --json runs list 2>&1` |
+| Count items | `langsmith-cli --json runs list --count` |
+| Debug issues | `langsmith-cli -v runs list 2>&1` |
+
 ## ⚡ Efficient Usage Guidelines (READ THIS)
 1. **Machine Output:** ALWAYS add `--json` as the FIRST argument to `langsmith-cli` (e.g. `langsmith-cli --json runs list ...`) to get parseable output. Never use table output for agents.
 2. **Context Saving:** Use `--fields` on ALL list/get commands to reduce token usage (~90% reduction).
@@ -54,6 +93,7 @@ See **[Installation Guide](references/installation.md)** for all installation me
    - `-vv`: Trace mode (ultra-verbose with HTTP requests and timing)
    - Example: `langsmith-cli --json -qq runs list | jq` (clean JSON, no diagnostics)
    - Example: `langsmith-cli -v runs list` (debug info for troubleshooting)
+8. **Error Handling:** See the "🚨 CRITICAL" section above. Use `--output` flag for data extraction, or `2>&1` for quick queries.
 
 ## API Reference
 
@@ -158,10 +198,10 @@ The CLI provides built-in commands that eliminate the need for Unix pipes, jq, a
 
 ### Pattern 1: Extract Data to File (Recommended)
 ```bash
-# ❌ BAD (shell redirection - no feedback, can fail silently)
+# ❌ BAD (shell redirection - no feedback, can fail silently, errors go to stderr)
 langsmith-cli --json runs list --limit 500 --fields id,inputs > data.json
 
-# ✅ GOOD (built-in file writing - shows confirmation, handles errors)
+# ✅ GOOD (built-in file writing - shows confirmation, handles errors gracefully)
 langsmith-cli runs list --limit 500 --fields id,inputs,metadata --output data.jsonl
 
 # ✅ Also works with all list commands
@@ -173,6 +213,7 @@ langsmith-cli prompts list --output prompts.jsonl
 # Writes JSONL format (one object per line) - easier to process line-by-line
 # Shows confirmation: "Wrote 500 items to data.jsonl"
 # Handles Unicode correctly (Hebrew, Chinese, etc.)
+# Returns non-zero exit code on failure (so you can detect errors!)
 ```
 
 ### Pattern 2: Filter Projects Without Piping
