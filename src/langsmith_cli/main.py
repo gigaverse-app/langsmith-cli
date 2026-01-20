@@ -148,6 +148,10 @@ class LangSmithCLIGroup(click.Group):
             else:
                 # Unexpected error - re-raise for debugging
                 raise
+        finally:
+            # Flush stdout to prevent data loss when piping to other processes
+            # This fixes race conditions where buffered output may not reach the pipe
+            sys.stdout.flush()
 
 
 @click.group(cls=LangSmithCLIGroup)
