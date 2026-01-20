@@ -175,6 +175,22 @@ langsmith-cli --json runs list --project my-project --limit 5 2>&1
   - `--sample-size <n>`: Number of recent runs to sample (default: 1000).
   - Returns: `{"metadata_keys": ["key1", "key2", ...]}`
   - Example: `langsmith-cli --json runs metadata-keys --project my-project`
+- `langsmith-cli --json runs fields [OPTIONS]`: Discover all field paths, types, presence rates, and language distribution.
+  - `--sample-size <n>`: Number of recent runs to sample (default: 100).
+  - `--include <paths>`: Only include fields starting with these paths (comma-separated, e.g., `inputs,outputs`).
+  - `--exclude <paths>`: Exclude fields starting with these paths (comma-separated, e.g., `extra,events`).
+  - `--no-language`: Skip language detection (faster).
+  - Returns: `{"fields": [{"path": "inputs.query", "type": "string", "present_pct": 98.0, "languages": {"en": 80.0, "he": 15.0}, "sample": "..."}, ...], "total_runs": 100}`
+  - Example: `langsmith-cli --json runs fields --project my-project --include inputs,outputs`
+  - Example: `langsmith-cli --json runs fields --no-language --sample-size 50`
+- `langsmith-cli --json runs describe [OPTIONS]`: Detailed field statistics with length/numeric stats.
+  - `--sample-size <n>`: Number of recent runs to sample (default: 100).
+  - `--include <paths>`: Only include fields starting with these paths (comma-separated).
+  - `--exclude <paths>`: Exclude fields starting with these paths (comma-separated).
+  - `--no-language`: Skip language detection (faster).
+  - Returns: `{"fields": [{"path": "inputs.query", "type": "string", "present_pct": 98.0, "length": {"min": 5, "max": 500, "avg": 89}, "languages": {"en": 80.0}}, ...], "total_runs": 100}`
+  - Example: `langsmith-cli --json runs describe --include inputs,outputs`
+  - Example: `langsmith-cli --json runs describe --project my-project --no-language`
 
 ### Datasets & Examples
 - `langsmith-cli --json datasets list [OPTIONS]`: List datasets.
