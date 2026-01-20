@@ -970,7 +970,7 @@ def test_runs_list_with_invalid_since_format(runner):
         # Invalid since format (neither ISO nor relative)
         result = runner.invoke(cli, ["runs", "list", "--since", "invalid"])
         assert result.exit_code != 0
-        assert "Invalid --since format" in result.output
+        assert "Invalid time format" in result.output
 
 
 def test_runs_list_with_empty_results(runner):

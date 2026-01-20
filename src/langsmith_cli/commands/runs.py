@@ -8,11 +8,13 @@ from langsmith.schemas import Run
 
 from langsmith_cli.utils import (
     add_project_filter_options,
+    add_time_filter_options,
     apply_client_side_limit,
     apply_exclude_filter,
     apply_grep_filter,
     build_runs_list_filter,
     build_runs_table,
+    build_time_fql_filters,
     count_option,
     determine_output_format,
     exclude_option,
@@ -26,7 +28,6 @@ from langsmith_cli.utils import (
     output_formatted_data,
     output_option,
     parse_duration_to_seconds,
-    parse_relative_time,
     render_run_details,
     sort_items,
     write_output_to_file,
@@ -357,9 +358,13 @@ def compute_metrics(
 @click.option("--min-latency", help="Minimum latency (e.g., '2s', '500ms', '1.5s').")
 @click.option("--max-latency", help="Maximum latency (e.g., '10s', '2000ms').")
 @click.option(
-    "--since", help="Show runs since time (ISO format or relative like '1 hour ago')."
+    "--since",
+    help="Show runs since time (ISO format, '3d', or '3 days ago').",
 )
-@click.option("--last", help="Show runs from last duration (e.g., '24h', '7d', '30m').")
+@click.option(
+    "--last",
+    help="Show runs from last duration (e.g., '24h', '7d', '30m', '2w').",
+)
 @click.option(
     "--query",
     help="Server-side full-text search in inputs/outputs (fast, but searches only first ~250 chars). Use --grep for unlimited content search.",
@@ -575,25 +580,9 @@ def list_runs(
         duration = parse_duration_to_seconds(max_latency)
         fql_filters.append(f'lt(latency, "{duration}")')
 
-    # Flexible time filters
-    if since:
-        # Try parsing as ISO timestamp first, then as relative time
-        try:
-            # ISO format (Python 3.7+ fromisoformat)
-            timestamp = datetime.datetime.fromisoformat(since.replace("Z", "+00:00"))
-        except Exception:
-            # Try relative time parsing
-            try:
-                timestamp = parse_relative_time(since)
-            except Exception:
-                raise click.BadParameter(
-                    f"Invalid --since format: {since}. Use ISO format (2024-01-14T10:00:00Z) or relative time (24h, 7d)"
-                )
-        fql_filters.append(f'gt(start_time, "{timestamp.isoformat()}")')
-
-    if last:
-        timestamp = parse_relative_time(last)
-        fql_filters.append(f'gt(start_time, "{timestamp.isoformat()}")')
+    # Flexible time filters (supports ISO, relative shorthand, and natural language)
+    time_filters = build_time_fql_filters(since=since, last=last)
+    fql_filters.extend(time_filters)
 
     # Combine all filters with AND logic
     combined_filter = None
@@ -1329,6 +1318,7 @@ def watch_runs(
 @runs.command("search")
 @click.argument("query")
 @add_project_filter_options
+@add_time_filter_options
 @click.option("--limit", default=10, help="Max results.")
 @click.option(
     "--roots",
@@ -1363,6 +1353,8 @@ def search_runs(
     project_name_exact,
     project_name_pattern,
     project_name_regex,
+    since,
+    last,
     limit,
     roots,
     search_in,
@@ -1429,8 +1421,8 @@ def search_runs(
         today=False,
         min_latency=None,
         max_latency=None,
-        since=None,
-        last=None,
+        since=since,  # Pass through time filters
+        last=last,  # Pass through time filters
         sort_by=None,
         fields=None,  # Pass through fields parameter
     )
@@ -1438,6 +1430,7 @@ def search_runs(
 
 @runs.command("sample")
 @add_project_filter_options
+@add_time_filter_options
 @click.option(
     "--stratify-by",
     required=True,
@@ -1479,6 +1472,8 @@ def sample_runs(
     project_name_exact,
     project_name_pattern,
     project_name_regex,
+    since,
+    last,
     stratify_by,
     values,
     dimension_values,
@@ -1517,6 +1512,14 @@ def sample_runs(
           --stratify-by "tag:length,tag:content_type" \\
           --values "short:news,medium:gaming,long:news" \\
           --samples-per-stratum 10
+
+        # With time filtering: Sample only recent runs
+        langsmith-cli runs sample \\
+          --project my-project \\
+          --stratify-by "tag:length_category" \\
+          --values "short,medium,long" \\
+          --since "3 days ago" \\
+          --samples-per-stratum 100
     """
     logger = ctx.obj["logger"]
 
@@ -1527,6 +1530,20 @@ def sample_runs(
     import itertools
 
     logger.debug(f"Sampling runs with stratify_by={stratify_by}, values={values}")
+
+    # Build time filters and combine with additional_filter
+    time_filters = build_time_fql_filters(since=since, last=last)
+    base_filters = time_filters.copy()
+    if additional_filter:
+        base_filters.append(additional_filter)
+
+    # Combine base filters into a single filter
+    if len(base_filters) == 0:
+        base_filter: str | None = None
+    elif len(base_filters) == 1:
+        base_filter = base_filters[0]
+    else:
+        base_filter = f"and({', '.join(base_filters)})"
 
     client = get_or_create_client(ctx)
 
@@ -1592,9 +1609,9 @@ def sample_runs(
                 dimensions, list(combination_values)
             )
 
-            # Combine with additional filter if provided
-            if additional_filter:
-                combined_filter = f"and({stratum_filter}, {additional_filter})"
+            # Combine with base filter (time + additional filters)
+            if base_filter:
+                combined_filter = f"and({stratum_filter}, {base_filter})"
             else:
                 combined_filter = stratum_filter
 
@@ -1640,9 +1657,9 @@ def sample_runs(
                 grouping_type, field_name, stratum_value
             )
 
-            # Combine with additional filter if provided
-            if additional_filter:
-                combined_filter = f"and({stratum_filter}, {additional_filter})"
+            # Combine with base filter (time + additional filters)
+            if base_filter:
+                combined_filter = f"and({stratum_filter}, {base_filter})"
             else:
                 combined_filter = stratum_filter
 
@@ -1683,6 +1700,7 @@ def sample_runs(
 
 @runs.command("analyze")
 @add_project_filter_options
+@add_time_filter_options
 @click.option(
     "--group-by",
     required=True,
@@ -1718,6 +1736,8 @@ def analyze_runs(
     project_name_exact,
     project_name_pattern,
     project_name_regex,
+    since,
+    last,
     group_by,
     metrics,
     additional_filter,
@@ -1779,6 +1799,20 @@ def analyze_runs(
     logger.debug(
         f"Analyzing runs: group_by={group_by}, metrics={metrics}, sample_size={sample_size}"
     )
+
+    # Build time filters and combine with additional_filter
+    time_filters = build_time_fql_filters(since=since, last=last)
+    base_filters = time_filters.copy()
+    if additional_filter:
+        base_filters.append(additional_filter)
+
+    # Combine base filters into a single filter
+    if len(base_filters) == 0:
+        combined_filter: str | None = None
+    elif len(base_filters) == 1:
+        combined_filter = base_filters[0]
+    else:
+        combined_filter = f"and({', '.join(base_filters)})"
 
     client = get_or_create_client(ctx)
 
@@ -1872,7 +1906,7 @@ def analyze_runs(
             client,
             projects_to_query,
             lambda c, proj, **kw: c.list_runs(project_name=proj, **kw),
-            filter=additional_filter,
+            filter=combined_filter,
             limit=None,
             order_by="-start_time",
             console=console,
@@ -1886,7 +1920,7 @@ def analyze_runs(
             try:
                 runs_iter = client.list_runs(
                     project_name=proj_name,
-                    filter=additional_filter,
+                    filter=combined_filter,
                     limit=None,  # SDK paginates automatically
                     order_by="-start_time",
                     select=list(select_fields) if select_fields else None,
@@ -1971,6 +2005,7 @@ def analyze_runs(
 
 @runs.command("tags")
 @add_project_filter_options
+@add_time_filter_options
 @click.option(
     "--sample-size",
     default=1000,
@@ -1985,6 +2020,8 @@ def discover_tags(
     project_name_exact,
     project_name_pattern,
     project_name_regex,
+    since,
+    last,
     sample_size,
 ):
     """Discover tag patterns in a project.
@@ -2013,6 +2050,16 @@ def discover_tags(
     client = get_or_create_client(ctx)
     logger.debug(f"Discovering tags with sample_size={sample_size}")
 
+    # Build time filters
+    time_filters = build_time_fql_filters(since=since, last=last)
+    combined_filter: str | None = None
+    if time_filters:
+        combined_filter = (
+            time_filters[0]
+            if len(time_filters) == 1
+            else f"and({', '.join(time_filters)})"
+        )
+
     # Get matching projects
     projects_to_query = get_matching_projects(
         client,
@@ -2032,6 +2079,7 @@ def discover_tags(
         limit=sample_size,
         order_by="-start_time",
         select=["tags"],  # Only fetch tags field
+        filter=combined_filter,
         console=console,
     )
     all_runs = result.items
@@ -2082,6 +2130,7 @@ def discover_tags(
 
 @runs.command("metadata-keys")
 @add_project_filter_options
+@add_time_filter_options
 @click.option(
     "--sample-size",
     default=1000,
@@ -2096,6 +2145,8 @@ def discover_metadata_keys(
     project_name_exact,
     project_name_pattern,
     project_name_regex,
+    since,
+    last,
     sample_size,
 ):
     """Discover metadata keys used in a project.
@@ -2122,6 +2173,16 @@ def discover_metadata_keys(
     client = get_or_create_client(ctx)
     logger.debug(f"Discovering metadata keys with sample_size={sample_size}")
 
+    # Build time filters
+    time_filters = build_time_fql_filters(since=since, last=last)
+    combined_filter: str | None = None
+    if time_filters:
+        combined_filter = (
+            time_filters[0]
+            if len(time_filters) == 1
+            else f"and({', '.join(time_filters)})"
+        )
+
     # Get matching projects
     projects_to_query = get_matching_projects(
         client,
@@ -2141,6 +2202,7 @@ def discover_metadata_keys(
         limit=sample_size,
         order_by="-start_time",
         select=["extra"],  # Only fetch metadata (stored in extra field)
+        filter=combined_filter,
         console=console,
     )
     all_runs = result.items

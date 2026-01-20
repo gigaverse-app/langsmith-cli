@@ -1118,6 +1118,144 @@ def parse_relative_time(time_str: str) -> Any:
     return datetime.datetime.now(datetime.timezone.utc) - delta
 
 
+def parse_time_input(time_str: str) -> Any:
+    """Parse time input in multiple formats to datetime.
+
+    Supports:
+    - ISO format: "2024-01-14T10:00:00Z", "2024-01-14"
+    - Relative shorthand: "24h", "7d", "30m"
+    - Natural language: "3 days ago", "1 hour ago", "2 weeks ago"
+
+    Args:
+        time_str: Time string in any supported format
+
+    Returns:
+        datetime object in UTC
+
+    Raises:
+        click.BadParameter: If format is not recognized
+    """
+    import datetime
+    import re
+
+    time_str = time_str.strip()
+
+    # Try ISO format first
+    try:
+        return datetime.datetime.fromisoformat(time_str.replace("Z", "+00:00"))
+    except ValueError:
+        pass
+
+    # Try relative shorthand (24h, 7d, 30m)
+    match = re.match(r"^(\d+)(m|h|d|w)$", time_str, re.IGNORECASE)
+    if match:
+        value, unit = int(match.group(1)), match.group(2).lower()
+        if unit == "m":
+            delta = datetime.timedelta(minutes=value)
+        elif unit == "h":
+            delta = datetime.timedelta(hours=value)
+        elif unit == "d":
+            delta = datetime.timedelta(days=value)
+        elif unit == "w":
+            delta = datetime.timedelta(weeks=value)
+        else:
+            raise click.BadParameter(f"Unsupported time unit: {unit}")
+        return datetime.datetime.now(datetime.timezone.utc) - delta
+
+    # Try natural language ("3 days ago", "1 hour ago", "2 weeks ago")
+    match = re.match(
+        r"^(\d+)\s*(minute|min|hour|hr|day|week|wk)s?\s*ago$", time_str, re.IGNORECASE
+    )
+    if match:
+        value, unit = int(match.group(1)), match.group(2).lower()
+        if unit in ("minute", "min"):
+            delta = datetime.timedelta(minutes=value)
+        elif unit in ("hour", "hr"):
+            delta = datetime.timedelta(hours=value)
+        elif unit == "day":
+            delta = datetime.timedelta(days=value)
+        elif unit in ("week", "wk"):
+            delta = datetime.timedelta(weeks=value)
+        else:
+            raise click.BadParameter(f"Unsupported time unit: {unit}")
+        return datetime.datetime.now(datetime.timezone.utc) - delta
+
+    raise click.BadParameter(
+        f"Invalid time format: {time_str}. "
+        "Use ISO format (2024-01-14T10:00:00Z), "
+        "relative shorthand (24h, 7d, 30m), "
+        "or natural language (3 days ago, 1 hour ago)"
+    )
+
+
+def build_time_fql_filters(
+    since: str | None = None,
+    last: str | None = None,
+) -> list[str]:
+    """Build FQL filter expressions for time-based filtering.
+
+    Args:
+        since: Show items since this time (ISO format, relative, or natural language)
+        last: Show items from last duration (e.g., '24h', '7d', '30m')
+
+    Returns:
+        List of FQL filter expressions (may be empty)
+
+    Raises:
+        click.BadParameter: If time format is invalid
+
+    Example:
+        >>> filters = build_time_fql_filters(since="3 days ago")
+        >>> filters
+        ['gt(start_time, "2024-01-11T10:00:00+00:00")']
+    """
+    fql_filters: list[str] = []
+
+    if since:
+        timestamp = parse_time_input(since)
+        fql_filters.append(f'gt(start_time, "{timestamp.isoformat()}")')
+
+    if last:
+        timestamp = parse_time_input(last)
+        fql_filters.append(f'gt(start_time, "{timestamp.isoformat()}")')
+
+    return fql_filters
+
+
+def add_time_filter_options(func: Callable[..., Any]) -> Callable[..., Any]:
+    """Decorator to add universal time filtering options to a command.
+
+    Adds the following Click options:
+    - --since: Show items since time (ISO format, relative, or natural language)
+    - --last: Show items from last duration (shorthand only)
+
+    Usage:
+        @runs.command("list")
+        @add_project_filter_options
+        @add_time_filter_options
+        @click.pass_context
+        def list_runs(ctx, project, ..., since, last, ...):
+            time_filters = build_time_fql_filters(since=since, last=last)
+            # Combine with other filters...
+
+    Supported time formats:
+        --since "2024-01-14T10:00:00Z"    # ISO format
+        --since "3d"                       # 3 days ago (shorthand)
+        --since "3 days ago"              # Natural language
+        --last "24h"                       # Last 24 hours
+        --last "7d"                        # Last 7 days
+    """
+    func = click.option(
+        "--last",
+        help="Show items from last duration (e.g., '24h', '7d', '30m', '2w').",
+    )(func)
+    func = click.option(
+        "--since",
+        help="Show items since time (ISO format, '3d', or '3 days ago').",
+    )(func)
+    return func
+
+
 def add_project_filter_options(func: Callable[..., Any]) -> Callable[..., Any]:
     """Decorator to add universal project filtering options to a command.
 
@@ -1440,22 +1578,9 @@ def build_runs_list_filter(
         duration = parse_duration_to_seconds(max_latency)
         fql_filters.append(f'lt(latency, "{duration}")')
 
-    # Flexible time filters
-    if since:
-        try:
-            timestamp = datetime.datetime.fromisoformat(since.replace("Z", "+00:00"))
-        except Exception:
-            try:
-                timestamp = parse_relative_time(since)
-            except Exception:
-                raise click.BadParameter(
-                    f"Invalid --since format: {since}. Use ISO format or relative time"
-                )
-        fql_filters.append(f'gt(start_time, "{timestamp.isoformat()}")')
-
-    if last:
-        timestamp = parse_relative_time(last)
-        fql_filters.append(f'gt(start_time, "{timestamp.isoformat()}")')
+    # Flexible time filters (supports ISO, relative shorthand, and natural language)
+    time_filters = build_time_fql_filters(since=since, last=last)
+    fql_filters.extend(time_filters)
 
     # Combine all filters with AND logic
     combined_filter = None

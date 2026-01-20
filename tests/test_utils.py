@@ -27,6 +27,8 @@ from langsmith_cli.utils import (
     render_output,
     extract_model_name,
     format_token_count,
+    parse_time_input,
+    build_time_fql_filters,
 )
 
 
@@ -1024,3 +1026,132 @@ class TestFormatTokenCount:
         """Test token count formatting with various inputs."""
         result = format_token_count(tokens)
         assert result == expected
+
+
+class TestParseTimeInput:
+    """Tests for parse_time_input function."""
+
+    def test_iso_format_with_z_suffix(self):
+        """Test parsing ISO format with Z suffix."""
+        result = parse_time_input("2024-01-14T10:00:00Z")
+        assert result.year == 2024
+        assert result.month == 1
+        assert result.day == 14
+        assert result.hour == 10
+
+    def test_iso_format_with_timezone(self):
+        """Test parsing ISO format with explicit timezone."""
+        result = parse_time_input("2024-01-14T10:00:00+00:00")
+        assert result.year == 2024
+        assert result.month == 1
+
+    def test_iso_date_only(self):
+        """Test parsing ISO date without time."""
+        result = parse_time_input("2024-01-14")
+        assert result.year == 2024
+        assert result.month == 1
+        assert result.day == 14
+
+    @pytest.mark.parametrize(
+        "shorthand,expected_delta_type",
+        [
+            ("30m", "minutes"),
+            ("24h", "hours"),
+            ("7d", "days"),
+            ("2w", "weeks"),
+            ("30M", "minutes"),  # Case insensitive
+            ("24H", "hours"),
+            ("7D", "days"),
+            ("2W", "weeks"),
+        ],
+    )
+    def test_relative_shorthand_formats(self, shorthand, expected_delta_type):
+        """Test parsing relative shorthand formats like '24h', '7d'."""
+        result = parse_time_input(shorthand)
+        # Result should be a datetime in the past
+        now = datetime.now(timezone.utc)
+        assert result < now
+
+    @pytest.mark.parametrize(
+        "natural,expected_delta_type",
+        [
+            ("3 days ago", "days"),
+            ("1 hour ago", "hours"),
+            ("30 minutes ago", "minutes"),
+            ("2 weeks ago", "weeks"),
+            ("5 min ago", "minutes"),
+            ("2 hrs ago", "hours"),
+            ("1 wk ago", "weeks"),
+        ],
+    )
+    def test_natural_language_formats(self, natural, expected_delta_type):
+        """Test parsing natural language time formats."""
+        result = parse_time_input(natural)
+        now = datetime.now(timezone.utc)
+        assert result < now
+
+    def test_invalid_format_raises_error(self):
+        """Test that invalid format raises BadParameter."""
+        with pytest.raises(click.BadParameter, match="Invalid time format"):
+            parse_time_input("invalid")
+
+    def test_invalid_format_with_partial_match(self):
+        """Test that partial matches don't work."""
+        with pytest.raises(click.BadParameter):
+            parse_time_input("yesterday")  # Not supported
+
+    def test_whitespace_handling(self):
+        """Test that whitespace is properly trimmed."""
+        result = parse_time_input("  3 days ago  ")
+        now = datetime.now(timezone.utc)
+        assert result < now
+
+
+class TestBuildTimeFqlFilters:
+    """Tests for build_time_fql_filters function."""
+
+    def test_no_filters_returns_empty(self):
+        """Test that no filters returns empty list."""
+        result = build_time_fql_filters()
+        assert result == []
+
+    def test_none_values_returns_empty(self):
+        """Test that None values return empty list."""
+        result = build_time_fql_filters(since=None, last=None)
+        assert result == []
+
+    def test_since_filter_creates_fql(self):
+        """Test that --since creates proper FQL filter."""
+        result = build_time_fql_filters(since="3d")
+        assert len(result) == 1
+        assert result[0].startswith('gt(start_time, "')
+        assert result[0].endswith('")')
+
+    def test_last_filter_creates_fql(self):
+        """Test that --last creates proper FQL filter."""
+        result = build_time_fql_filters(last="24h")
+        assert len(result) == 1
+        assert result[0].startswith('gt(start_time, "')
+
+    def test_both_filters_create_two_fql(self):
+        """Test that both --since and --last create two FQL filters."""
+        result = build_time_fql_filters(since="7d", last="24h")
+        assert len(result) == 2
+        for filter_str in result:
+            assert filter_str.startswith('gt(start_time, "')
+
+    def test_natural_language_since(self):
+        """Test that natural language works in --since."""
+        result = build_time_fql_filters(since="3 days ago")
+        assert len(result) == 1
+        assert "gt(start_time" in result[0]
+
+    def test_invalid_since_raises_error(self):
+        """Test that invalid --since raises BadParameter."""
+        with pytest.raises(click.BadParameter):
+            build_time_fql_filters(since="invalid")
+
+    def test_invalid_last_raises_error(self):
+        """Test that invalid --last raises BadParameter."""
+        with pytest.raises(click.BadParameter):
+            build_time_fql_filters(last="invalid")
