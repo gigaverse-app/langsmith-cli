@@ -33,8 +33,7 @@ langsmith-cli/
 │           └── datasets.py
 ├── skills/
 │   └── langsmith/          # The Claude Skill Definition
-│       ├── SKILL.md
-│       └── bridge.py       # Thin wrapper calling the installed CLI
+│       └── SKILL.md
 ├── .claude-plugin/
 │   └── plugin.json         # Plugin Manifest
 ├── pyproject.toml          # Python Package Metadata
@@ -162,14 +161,14 @@ This tool wraps a Python CLI.
 ## Common Commands
 
 ### runs
-`python skills/langsmith/bridge.py runs list --project <name>`
-`python skills/langsmith/bridge.py runs get <id> --json`
+`langsmith-cli --json runs list --project <name>`
+`langsmith-cli --json runs get <id>`
 
 ### projects
-`python skills/langsmith/bridge.py projects list`
+`langsmith-cli --json projects list`
 
 ### datasets
-`python skills/langsmith/bridge.py datasets list`
+`langsmith-cli --json datasets list`
 
 ```
 

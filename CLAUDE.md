@@ -238,8 +238,7 @@ tests/
 └── test_e2e.py          # End-to-end tests (requires API key)
 
 skills/langsmith/
-├── SKILL.md             # Claude Code skill definition
-└── bridge.py            # Subprocess wrapper for skill invocation
+└── SKILL.md             # Claude Code skill definition
 
 docs/
 ├── PRD.md               # Product requirements
@@ -561,12 +560,6 @@ The plugin is defined in `skills/langsmith/SKILL.md` which teaches Claude how to
 - Use `--fields` to reduce context size
 - Use `--status error` for quick debugging
 - Keep `--limit` small (default 10)
-
-### Bridge Script
-`skills/langsmith/bridge.py` is a thin subprocess wrapper that:
-1. Receives command arguments from Claude
-2. Executes `langsmith-cli` via subprocess
-3. Returns stdout/stderr to Claude
 
 ### Plugin Manifests
 The repository contains two manifest files:

@@ -67,6 +67,8 @@ langsmith-cli --json runs list --project my-project --limit 5 2>&1
 | Count items | `langsmith-cli --json runs list --count` |
 | Debug issues | `langsmith-cli -v runs list 2>&1` |
 
+**Note:** When piping to other processes (`| jq`, `| python3`), prefer using `--output` to write to a file first, then read the file. This avoids potential buffering issues.
+
 ## ⚡ Efficient Usage Guidelines (READ THIS)
 1. **Machine Output:** ALWAYS add `--json` as the FIRST argument to `langsmith-cli` (e.g. `langsmith-cli --json runs list ...`) to get parseable output. Never use table output for agents.
 2. **Context Saving:** Use `--fields` on ALL list/get commands to reduce token usage (~90% reduction).
