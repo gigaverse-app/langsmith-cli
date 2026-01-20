@@ -132,8 +132,9 @@ langsmith-cli --json runs list --project my-project --limit 5 2>&1
   - **Before (complex):** `langsmith-cli --json runs list --project X --limit 1 --roots | jq -r '.[0].id' | xargs langsmith-cli --json runs get --fields inputs,outputs`
   - **After (simple):** `langsmith-cli --json runs get-latest --project X --roots --fields inputs,outputs`
 - `langsmith-cli runs view-file <pattern> [OPTIONS]`: View runs from JSONL files with table display.
+  - **Use this to read files created by `--output`** - don't use the Read tool on JSONL files (they can be 30K+ tokens).
   - `<pattern>`: File path or glob pattern (e.g., `samples.jsonl`, `data/*.jsonl`).
-  - `--fields <comma-separated>`: Only show specific fields.
+  - `--fields <comma-separated>`: Only show specific fields (critical for context efficiency).
   - `--no-truncate`: Show full content in table columns (for human viewing only).
   - Supports `--json` for JSON output.
   - Example: `langsmith-cli runs view-file samples.jsonl`
@@ -196,7 +197,7 @@ langsmith-cli --json runs list --project my-project --limit 5 2>&1
 
 The CLI provides built-in commands that eliminate the need for Unix pipes, jq, and nested commands:
 
-### Pattern 1: Extract Data to File (Recommended)
+### Pattern 1: Extract Data to File and View Later (Recommended)
 ```bash
 # ❌ BAD (shell redirection - no feedback, can fail silently, errors go to stderr)
 langsmith-cli --json runs list --limit 500 --fields id,inputs > data.json
@@ -214,6 +215,22 @@ langsmith-cli prompts list --output prompts.jsonl
 # Shows confirmation: "Wrote 500 items to data.jsonl"
 # Handles Unicode correctly (Hebrew, Chinese, etc.)
 # Returns non-zero exit code on failure (so you can detect errors!)
+```
+
+**Reading saved files back:**
+```bash
+# ✅ Use view-file to read JSONL files created by --output
+# IMPORTANT: Don't try to read these files with the Read tool - they can be very large!
+langsmith-cli runs view-file data.jsonl                    # Table display
+langsmith-cli --json runs view-file data.jsonl             # JSON output
+langsmith-cli runs view-file data.jsonl --fields id,name   # Select specific fields
+langsmith-cli runs view-file "samples/*.jsonl"             # Glob patterns supported
+
+# view-file handles large files efficiently:
+# - Streams line-by-line (no memory issues)
+# - Validates each line as a Run object
+# - Supports --fields for context efficiency
+# - Supports glob patterns for multiple files
 ```
 
 ### Pattern 2: Filter Projects Without Piping
