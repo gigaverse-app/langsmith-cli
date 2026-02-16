@@ -431,6 +431,17 @@ class TestRunsOpen:
                 "https://smith.langchain.com/r/test-run-id"
             )
 
+    def test_open_command_json_mode_outputs_json(self, runner):
+        """Invariant: --json mode open outputs JSON with URL, not diagnostic text."""
+        with patch("webbrowser.open") as mock_browser:
+            result = runner.invoke(cli, ["--json", "runs", "open", "test-run-id"])
+
+            assert result.exit_code == 0
+            data = json.loads(result.output)
+            assert data["run_id"] == "test-run-id"
+            assert "https://smith.langchain.com/r/test-run-id" in data["url"]
+            mock_browser.assert_called_once()
+
 
 class TestRunsWatch:
     """Tests for runs watch command."""

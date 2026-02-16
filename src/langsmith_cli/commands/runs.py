@@ -1211,8 +1211,11 @@ def open_run(ctx, run_id):
     # The SDK also has a way to get the URL but it might require project name.
     url = f"https://smith.langchain.com/r/{run_id}"
 
-    click.echo(f"Opening run {run_id} in browser...")
-    click.echo(f"URL: {url}")
+    if ctx.obj.get("json"):
+        click.echo(json_dumps({"run_id": run_id, "url": url}))
+    else:
+        click.echo(f"Opening run {run_id} in browser...")
+        click.echo(f"URL: {url}")
     webbrowser.open(url)
 
 

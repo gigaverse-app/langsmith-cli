@@ -30,6 +30,7 @@ from langsmith_cli.utils import (
     parse_time_input,
     build_time_fql_filters,
     combine_fql_filters,
+    write_output_to_file,
 )
 
 
@@ -1226,3 +1227,44 @@ class TestCombineFqlFilters:
         filters = ["filter1", "filter2", "filter3"]
         result = combine_fql_filters(filters)
         assert result == "and(filter1, filter2, filter3)"
+
+
+class TestWriteOutputToFile:
+    """Tests for write_output_to_file."""
+
+    def test_success_message_goes_to_stderr_not_stdout(self, tmp_path, capsys):
+        """Invariant: Diagnostic messages from write_output_to_file go to stderr, not stdout.
+
+        This prevents corruption of piped JSON output when --output is used in --json mode.
+        """
+        from rich.console import Console
+
+        output_path = str(tmp_path / "output.jsonl")
+        console = Console()
+        data = [{"id": "123", "name": "test"}]
+
+        write_output_to_file(data, output_path, console, format_type="jsonl")
+
+        captured = capsys.readouterr()
+        # Success message must NOT appear on stdout
+        assert "Wrote" not in captured.out
+        # Success message should appear on stderr
+        assert "Wrote" in captured.err or "1 items" in captured.err
+
+    def test_error_message_goes_to_stderr_not_stdout(self, capsys):
+        """Invariant: Error messages from write_output_to_file go to stderr, not stdout."""
+        from rich.console import Console
+
+        console = Console()
+
+        with pytest.raises(click.Abort):
+            write_output_to_file(
+                [{"id": "123"}],
+                "/nonexistent/path/output.jsonl",
+                console,
+                format_type="jsonl",
+            )
+
+        captured = capsys.readouterr()
+        # Error message must NOT appear on stdout
+        assert "Error" not in captured.out

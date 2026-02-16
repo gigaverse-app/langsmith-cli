@@ -164,4 +164,9 @@ def push_prompt(ctx, name, file_path, description, tags, is_public):
         is_public=is_public,
     )
 
-    logger.success(f"Successfully pushed prompt to {name}")
+    if ctx.obj.get("json"):
+        from langsmith_cli.utils import json_dumps
+
+        click.echo(json_dumps({"status": "success", "name": name}))
+    else:
+        logger.success(f"Successfully pushed prompt to {name}")
