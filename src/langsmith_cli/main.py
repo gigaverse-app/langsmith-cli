@@ -10,6 +10,7 @@ from langsmith_cli.commands.runs import runs
 from langsmith_cli.commands.datasets import datasets
 from langsmith_cli.commands.examples import examples
 from langsmith_cli.commands.prompts import prompts
+from langsmith_cli.commands.self_cmd import self_group
 from langsmith_cli.config import get_credentials_file
 
 # Load credentials with priority order:
@@ -221,6 +222,7 @@ cli_main.add_command(runs)
 cli_main.add_command(datasets)
 cli_main.add_command(examples)
 cli_main.add_command(prompts)
+cli_main.add_command(self_group, "self")
 
 # Backwards compatibility alias
 cli = cli_main
