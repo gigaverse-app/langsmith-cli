@@ -29,6 +29,7 @@ from langsmith_cli.utils import (
     json_dumps,
     output_formatted_data,
     output_option,
+    output_single_item,
     parse_duration_to_seconds,
     render_run_details,
     sort_items,
@@ -850,21 +851,15 @@ def list_runs(
 @fields_option(
     "Comma-separated field names to include (e.g., 'id,name,inputs,error'). Reduces context usage."
 )
+@output_option()
 @click.pass_context
-def get_run(ctx, run_id, fields):
+def get_run(ctx, run_id, fields, output):
     """Fetch details of a single run."""
     client = get_or_create_client(ctx)
     run = client.read_run(run_id)
 
-    # Use shared field filtering utility
     data = filter_fields(run, fields)
-
-    if ctx.obj.get("json"):
-        click.echo(json_dumps(data))
-        return
-
-    # Human-readable output using shared helper
-    render_run_details(data, console)
+    output_single_item(ctx, data, console, output=output, render_fn=render_run_details)
 
 
 @runs.command("get-latest")
@@ -898,6 +893,7 @@ def get_run(ctx, run_id, fields):
 @fields_option(
     "Comma-separated field names (e.g., 'id,name,inputs,outputs'). Reduces context."
 )
+@output_option()
 @click.pass_context
 def get_latest_run(
     ctx,
@@ -921,6 +917,7 @@ def get_latest_run(
     last,
     filter_,
     fields,
+    output,
 ):
     """Get the most recent run from a project.
 
@@ -943,7 +940,7 @@ def get_latest_run(
     logger = ctx.obj["logger"]
 
     # Determine if output is machine-readable (use stderr for diagnostics)
-    is_machine_readable = ctx.obj.get("json") or fields
+    is_machine_readable = ctx.obj.get("json") or fields or output
     logger.use_stderr = is_machine_readable
 
     client = get_or_create_client(ctx)
@@ -1013,15 +1010,12 @@ def get_latest_run(
 
         raise click.Abort()
 
-    # Use shared field filtering
     data = filter_fields(latest_run, fields)
 
-    if ctx.obj.get("json"):
-        click.echo(json_dumps(data))
-        return
+    def render_latest(data: dict, console: Any) -> None:
+        render_run_details(data, console, title="Latest Run")
 
-    # Human-readable output using shared helper
-    render_run_details(data, console, title="Latest Run")
+    output_single_item(ctx, data, console, output=output, render_fn=render_latest)
 
 
 @runs.command("view-file")

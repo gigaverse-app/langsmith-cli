@@ -270,7 +270,7 @@ def test_examples_list_with_output_file(runner, tmp_path):
 
 
 def test_examples_get_json(runner):
-    """INVARIANT: examples get with --json should return valid JSON."""
+    """INVARIANT: examples get --json returns a single dict (not a list) with all example fields."""
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
 
@@ -286,8 +286,10 @@ def test_examples_get_json(runner):
         )
         assert result.exit_code == 0
         data = json.loads(result.output)
+        assert isinstance(data, dict), "examples get should return a dict, not a list"
         assert data["id"] == "3442bd7c-27a2-437b-a38c-f278e455d87b"
         assert data["inputs"]["question"] == "What is AI?"
+        assert data["outputs"]["answer"] == "Artificial Intelligence"
 
 
 def test_examples_get_table_output(runner):
@@ -339,6 +341,38 @@ def test_examples_get_with_fields(runner):
         assert "id" in data
         assert "inputs" in data
         assert "outputs" not in data
+
+
+def test_examples_get_with_output(runner, tmp_path):
+    """INVARIANT: examples get --output writes a single JSON object to file."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        ex1 = create_example(
+            id_str="3442bd7c-27a2-437b-a38c-f278e455d87b",
+            inputs={"question": "What is AI?"},
+            outputs={"answer": "Artificial Intelligence"},
+        )
+        mock_client.read_example.return_value = ex1
+
+        output_file = str(tmp_path / "example.json")
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "examples",
+                "get",
+                "3442bd7c-27a2-437b-a38c-f278e455d87b",
+                "--output",
+                output_file,
+            ],
+        )
+        assert result.exit_code == 0
+        with open(output_file) as f:
+            data = json.load(f)
+        assert isinstance(data, dict)
+        assert data["id"] == "3442bd7c-27a2-437b-a38c-f278e455d87b"
+        assert data["inputs"]["question"] == "What is AI?"
 
 
 def test_examples_get_with_as_of(runner):

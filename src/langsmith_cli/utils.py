@@ -1408,7 +1408,7 @@ def add_project_filter_options(func: Callable[..., Any]) -> Callable[..., Any]:
 
 
 def write_output_to_file(
-    data: list[dict[str, Any]],
+    data: list[dict[str, Any]] | dict[str, Any],
     output_path: str,
     console: ConsoleProtocol,
     *,
@@ -1417,28 +1417,41 @@ def write_output_to_file(
     """Write data to a file with error handling and user feedback.
 
     Universal helper for --output flag across all commands.
+    Supports both list of dicts (for list commands) and single dicts (for get commands).
 
     Args:
-        data: List of dictionaries to write.
+        data: Dictionary or list of dictionaries to write.
               Any is acceptable - JSON values can be str, int, bool, datetime, nested dicts, etc.
         output_path: Path to write file to
         console: Rich console for user feedback
-        format_type: Output format ("jsonl" for newline-delimited JSON, "json" for JSON array)
+        format_type: Output format ("jsonl" for newline-delimited JSON, "json" for JSON array/object)
 
     Raises:
         click.Abort: If file writing fails
 
     Example:
+        # List output
         write_output_to_file(
             [{"id": "123", "name": "test"}],
             "output.jsonl",
             console,
             format_type="jsonl"
         )
+        # Single item output
+        write_output_to_file(
+            {"id": "123", "name": "test"},
+            "output.json",
+            console,
+            format_type="json"
+        )
     """
+    is_single = isinstance(data, dict)
     try:
         with open(output_path, "w", encoding="utf-8") as f:
-            if format_type == "jsonl":
+            if is_single:
+                # Single item - always write as JSON object
+                f.write(json_dumps(data))
+            elif format_type == "jsonl":
                 # Write as newline-delimited JSON (one object per line)
                 for item in data:
                     f.write(json_dumps(item) + "\n")
@@ -1448,10 +1461,54 @@ def write_output_to_file(
             else:
                 raise ValueError(f"Unsupported format_type: {format_type}")
 
-        console.print(f"[green]Wrote {len(data)} items to {output_path}[/green]")
+        if is_single:
+            console.print(f"[green]Wrote item to {output_path}[/green]")
+        else:
+            console.print(f"[green]Wrote {len(data)} items to {output_path}[/green]")
     except Exception as e:
         console.print(f"[red]Error writing to file {output_path}: {e}[/red]")
         raise click.Abort()
+
+
+def output_single_item(
+    ctx: click.Context,
+    data: dict[str, Any],
+    console: ConsoleProtocol,
+    *,
+    output: str | None = None,
+    render_fn: Callable[[dict[str, Any], ConsoleProtocol], None] | None = None,
+) -> None:
+    """Output a single item (dict) in the appropriate format.
+
+    Shared helper for all get/get-latest commands. Handles:
+    - --output FILE: write JSON to file
+    - --json: echo JSON to stdout
+    - Rich rendering: call render_fn for human-readable output
+
+    Args:
+        ctx: Click context (checked for json flag)
+        data: Filtered dict from filter_fields() or manual dict construction
+        console: Rich console for output
+        output: Optional file path for --output flag
+        render_fn: Optional function to render rich output. If None, falls back to
+                   printing the JSON-formatted dict.
+    """
+    if output:
+        write_output_to_file(data, output, console, format_type="json")
+        return
+
+    if ctx.obj.get("json"):
+        click.echo(json_dumps(data))
+        return
+
+    # Human-readable output
+    if render_fn:
+        render_fn(data, console)
+    else:
+        # Default: pretty-print the JSON
+        from rich.syntax import Syntax
+
+        console.print(Syntax(json_dumps(data, indent=2), "json"))
 
 
 def output_option(

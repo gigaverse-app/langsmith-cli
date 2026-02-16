@@ -9,10 +9,10 @@ from langsmith_cli.utils import (
     filter_fields,
     get_or_create_client,
     output_option,
+    output_single_item,
     parse_comma_separated_list,
     render_output,
     write_output_to_file,
-    json_dumps,
 )
 
 console = Console()
@@ -87,11 +87,15 @@ def list_prompts(ctx, limit, is_public, exclude, fields, count, output):
 @prompts.command("get")
 @click.argument("name")
 @click.option("--commit", help="Commit hash or tag.")
+@fields_option(
+    "Comma-separated field names to include (e.g., 'template,input_variables'). Reduces context usage."
+)
+@output_option()
 @click.pass_context
-def get_prompt(ctx, name, commit):
+def get_prompt(ctx, name, commit, fields, output):
     """Fetch a prompt template."""
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json")
+    is_machine_readable = ctx.obj.get("json") or fields or output
     logger.use_stderr = is_machine_readable
 
     logger.debug(f"Fetching prompt: name={name}, commit={commit}")
@@ -100,21 +104,32 @@ def get_prompt(ctx, name, commit):
     # pull_prompt returns the prompt object (might be LangChain PromptTemplate)
     prompt_obj = client.pull_prompt(name + (f":{commit}" if commit else ""))
 
-    # We want a context-efficient representation, usually the template string
-    # Try to convert to dict or extract template
-    if hasattr(prompt_obj, "to_json"):
-        data = prompt_obj.to_json()
-    else:
-        # Fallback to string representation if it's not JSON serializable trivially
+    # Convert prompt object to dict
+    try:
+        data: dict = prompt_obj.to_json()  # type: ignore[union-attr]
+    except AttributeError:
+        # Fallback to string representation if no to_json method
         data = {"prompt": str(prompt_obj)}
 
-    if ctx.obj.get("json"):
-        click.echo(json_dumps(data))
-        return
+    # Apply field filtering if requested
+    if fields:
+        field_set = {f.strip() for f in fields.split(",") if f.strip()}
+        data = {k: v for k, v in data.items() if k in field_set}
 
-    console.print(f"[bold]Prompt:[/bold] {name}")
-    console.print("-" * 20)
-    console.print(str(prompt_obj))
+    # Capture prompt_obj for rich rendering closure
+    prompt_str = str(prompt_obj)
+
+    def render_prompt_details(data: dict, console: object) -> None:
+        from rich.console import Console as RichConsole
+
+        assert isinstance(console, RichConsole)
+        console.print(f"[bold]Prompt:[/bold] {name}")
+        console.print("-" * 20)
+        console.print(prompt_str)
+
+    output_single_item(
+        ctx, data, console, output=output, render_fn=render_prompt_details
+    )
 
 
 @prompts.command("push")

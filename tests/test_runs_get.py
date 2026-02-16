@@ -14,7 +14,7 @@ class TestRunsGet:
     """Tests for runs get command."""
 
     def test_get_json_output(self, runner, mock_client):
-        """Get command returns run data in JSON format."""
+        """INVARIANT: runs get --json returns a single dict (not a list) with all run fields."""
         mock_client.read_run.return_value = create_run(
             name="Detailed Run",
             id_str="12345678-0000-0000-0000-000000000456",
@@ -27,11 +27,15 @@ class TestRunsGet:
         )
 
         assert result.exit_code == 0
-        assert "12345678-0000-0000-0000-000000000456" in result.output
-        assert "hello" in result.output
+        data = json.loads(result.output)
+        assert isinstance(data, dict), "runs get should return a dict, not a list"
+        assert data["id"] == "12345678-0000-0000-0000-000000000456"
+        assert data["name"] == "Detailed Run"
+        assert data["inputs"] == {"q": "hello"}
+        assert data["outputs"] == {"a": "world"}
 
     def test_get_with_fields_pruning(self, runner, mock_client):
-        """--fields prunes output to selected fields only."""
+        """INVARIANT: --fields prunes output to only selected fields, result is still a dict."""
         mock_client.read_run.return_value = create_run(
             name="Full Run",
             id_str="12345678-0000-0000-0000-000000000789",
@@ -53,8 +57,16 @@ class TestRunsGet:
         )
 
         assert result.exit_code == 0
-        assert "foo" in result.output
-        assert "huge_data" not in result.output
+        data = json.loads(result.output)
+        assert isinstance(data, dict), (
+            "runs get --fields should return a dict, not a list"
+        )
+        assert "inputs" in data
+        assert data["inputs"] == {"input": "foo"}
+        # Fields not requested should be absent
+        assert "outputs" not in data
+        assert "extra" not in data
+        assert "name" not in data
 
     def test_get_rich_output(self, runner, mock_client):
         """Get command displays rich formatted output without --json."""
@@ -91,6 +103,66 @@ class TestRunsGet:
         assert "tag1" in result.output or "tags" in result.output
         assert "simple_value" in result.output
 
+    def test_get_with_output_writes_file(self, runner, mock_client, tmp_path):
+        """INVARIANT: --output writes a single JSON object to file."""
+        mock_client.read_run.return_value = create_run(
+            name="File Output Run",
+            id_str="12345678-0000-0000-0000-000000000456",
+            inputs={"q": "hello"},
+        )
+        output_file = str(tmp_path / "run.json")
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "get",
+                "12345678-0000-0000-0000-000000000456",
+                "--output",
+                output_file,
+            ],
+        )
+
+        assert result.exit_code == 0
+        with open(output_file) as f:
+            data = json.load(f)
+        assert isinstance(data, dict)
+        assert data["name"] == "File Output Run"
+        assert data["inputs"] == {"q": "hello"}
+
+    def test_get_with_output_and_fields(self, runner, mock_client, tmp_path):
+        """INVARIANT: --output combined with --fields writes only selected fields."""
+        mock_client.read_run.return_value = create_run(
+            name="Pruned File Run",
+            id_str="12345678-0000-0000-0000-000000000789",
+            inputs={"input": "foo"},
+            outputs={"output": "bar"},
+        )
+        output_file = str(tmp_path / "run_pruned.json")
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "get",
+                "12345678-0000-0000-0000-000000000789",
+                "--fields",
+                "inputs",
+                "--output",
+                output_file,
+            ],
+        )
+
+        assert result.exit_code == 0
+        with open(output_file) as f:
+            data = json.load(f)
+        assert isinstance(data, dict)
+        assert "inputs" in data
+        assert "outputs" not in data
+        assert "name" not in data
+
 
 class TestRunsGetLatest:
     """Tests for runs get-latest command."""
@@ -105,7 +177,7 @@ class TestRunsGetLatest:
         assert "Latest Run" in result.output
 
     def test_get_latest_json_output(self, runner, mock_client):
-        """Get-latest with --json returns JSON."""
+        """INVARIANT: runs get-latest --json returns a single dict (not a list)."""
         mock_client.list_runs.return_value = iter([create_run(name="Latest Run")])
 
         result = runner.invoke(
@@ -114,7 +186,11 @@ class TestRunsGetLatest:
 
         assert result.exit_code == 0
         data = json.loads(result.output)
+        assert isinstance(data, dict), (
+            "runs get-latest should return a dict, not a list"
+        )
         assert data["name"] == "Latest Run"
+        assert "id" in data
 
     def test_get_latest_with_fields(self, runner, mock_client):
         """Get-latest with --fields returns only selected fields."""
@@ -207,6 +283,32 @@ class TestRunsGetLatest:
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert data["name"] == "Run from project2"
+
+    def test_get_latest_with_output_writes_file(self, runner, mock_client, tmp_path):
+        """INVARIANT: get-latest --output writes a single JSON object to file."""
+        mock_client.list_runs.return_value = iter(
+            [create_run(name="Latest For File", inputs={"q": "test"})]
+        )
+        output_file = str(tmp_path / "latest.json")
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "get-latest",
+                "--project",
+                "test",
+                "--output",
+                output_file,
+            ],
+        )
+
+        assert result.exit_code == 0
+        with open(output_file) as f:
+            data = json.load(f)
+        assert isinstance(data, dict)
+        assert data["name"] == "Latest For File"
 
     def test_get_latest_with_tag_filter(self, runner, mock_client):
         """--tag filter builds correct FQL."""
