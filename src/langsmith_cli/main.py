@@ -156,7 +156,7 @@ class LangSmithCLIGroup(click.Group):
 
 
 @click.group(cls=LangSmithCLIGroup)
-@click.version_option()
+@click.version_option(package_name="langsmith-cli")
 @click.option("--json", is_flag=True, help="Output strict JSON for agents.")
 @click.option(
     "--verbose",
