@@ -9,6 +9,7 @@ from langsmith_cli.utils import (
     filter_fields,
     get_or_create_client,
     output_option,
+    output_single_item,
     parse_comma_separated_list,
     parse_json_string,
     render_output,
@@ -139,11 +140,12 @@ def list_examples(
 @click.argument("example_id")
 @click.option("--as-of", help="Dataset version tag or ISO timestamp.")
 @fields_option()
+@output_option()
 @click.pass_context
-def get_example(ctx, example_id, as_of, fields):
+def get_example(ctx, example_id, as_of, fields, output):
     """Fetch details of a single example."""
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json") or bool(fields)
+    is_machine_readable = ctx.obj.get("json") or bool(fields) or bool(output)
     logger.use_stderr = is_machine_readable
 
     logger.debug(f"Fetching example: example_id={example_id}, as_of={as_of}")
@@ -151,20 +153,24 @@ def get_example(ctx, example_id, as_of, fields):
     client = get_or_create_client(ctx)
     example = client.read_example(example_id, as_of=as_of)
 
-    # Use shared field filtering utility
     data = filter_fields(example, fields)
 
-    if ctx.obj.get("json"):
-        click.echo(json_dumps(data))
-        return
+    def render_example_details(data: dict, console: object) -> None:
+        from rich.syntax import Syntax
+        from rich.console import Console as RichConsole
 
-    from rich.syntax import Syntax
+        assert isinstance(console, RichConsole)
+        console.print(f"[bold]Example ID:[/bold] {data.get('id')}")
+        if "inputs" in data:
+            console.print("\n[bold]Inputs:[/bold]")
+            console.print(Syntax(json_dumps(data["inputs"], indent=2), "json"))
+        if "outputs" in data:
+            console.print("\n[bold]Outputs:[/bold]")
+            console.print(Syntax(json_dumps(data["outputs"], indent=2), "json"))
 
-    console.print(f"[bold]Example ID:[/bold] {example.id}")
-    console.print("\n[bold]Inputs:[/bold]")
-    console.print(Syntax(json_dumps(example.inputs, indent=2), "json"))
-    console.print("\n[bold]Outputs:[/bold]")
-    console.print(Syntax(json_dumps(example.outputs, indent=2), "json"))
+    output_single_item(
+        ctx, data, console, output=output, render_fn=render_example_details
+    )
 
 
 @examples.command("create")

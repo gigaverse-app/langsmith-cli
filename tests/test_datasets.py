@@ -228,7 +228,7 @@ def test_datasets_get_table_output(runner):
 
 
 def test_datasets_get_json(runner):
-    """INVARIANT: datasets get with --json should return valid JSON."""
+    """INVARIANT: datasets get --json returns a single dict (not a list) with all dataset fields."""
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
 
@@ -240,7 +240,10 @@ def test_datasets_get_json(runner):
         )
         assert result.exit_code == 0
         data = json.loads(result.output)
+        assert isinstance(data, dict), "datasets get should return a dict, not a list"
         assert data["name"] == "my-dataset"
+        assert data["example_count"] == 42
+        assert "id" in data
 
 
 def test_datasets_get_with_fields(runner):
@@ -268,6 +271,34 @@ def test_datasets_get_with_fields(runner):
         assert "id" in data
         # Other fields should be filtered out
         assert "description" not in data
+
+
+def test_datasets_get_with_output(runner, tmp_path):
+    """INVARIANT: datasets get --output writes a single JSON object to file."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        d1 = create_dataset(name="output-dataset", example_count=5)
+        mock_client.read_dataset.return_value = d1
+
+        output_file = str(tmp_path / "dataset.json")
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "datasets",
+                "get",
+                "ae99b6fa-a6db-4f1c-8868-bc6764f4c29e",
+                "--output",
+                output_file,
+            ],
+        )
+        assert result.exit_code == 0
+        with open(output_file) as f:
+            data = json.load(f)
+        assert isinstance(data, dict)
+        assert data["name"] == "output-dataset"
+        assert data["example_count"] == 5
 
 
 def test_datasets_create(runner):

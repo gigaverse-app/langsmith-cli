@@ -240,7 +240,7 @@ def test_prompts_list_with_output_file(runner, tmp_path):
 
 
 def test_prompts_get_json(runner):
-    """INVARIANT: prompts get with --json should return valid JSON."""
+    """INVARIANT: prompts get --json returns a single dict (not a list) with prompt data."""
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
 
@@ -254,7 +254,9 @@ def test_prompts_get_json(runner):
         result = runner.invoke(cli, ["--json", "prompts", "get", "my-prompt"])
         assert result.exit_code == 0
         data = json.loads(result.output)
+        assert isinstance(data, dict), "prompts get should return a dict, not a list"
         assert data["template"] == "Hello, {name}!"
+        assert data["input_variables"] == ["name"]
 
 
 def test_prompts_get_table_output(runner):
@@ -276,6 +278,35 @@ def test_prompts_get_table_output(runner):
         assert "Hello, {name}!" in output
 
 
+def test_prompts_get_with_fields(runner):
+    """INVARIANT: --fields should limit returned fields in prompts get output."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        class MockPromptObj:
+            def to_json(self):
+                return {
+                    "template": "Hello, {name}!",
+                    "input_variables": ["name"],
+                    "metadata": {"version": "1.0"},
+                }
+
+        mock_client.pull_prompt.return_value = MockPromptObj()
+
+        result = runner.invoke(
+            cli,
+            ["--json", "prompts", "get", "my-prompt", "--fields", "template"],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert isinstance(data, dict)
+        assert "template" in data
+        assert data["template"] == "Hello, {name}!"
+        # Fields not requested should be absent
+        assert "input_variables" not in data
+        assert "metadata" not in data
+
+
 def test_prompts_get_with_commit(runner):
     """INVARIANT: --commit should append to prompt name for versioning."""
     with patch("langsmith.Client") as MockClient:
@@ -292,6 +323,29 @@ def test_prompts_get_with_commit(runner):
         )
         assert result.exit_code == 0
         mock_client.pull_prompt.assert_called_once_with("my-prompt:v1.0")
+
+
+def test_prompts_get_with_output(runner, tmp_path):
+    """INVARIANT: prompts get --output writes a single JSON object to file."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        class MockPromptObj:
+            def to_json(self):
+                return {"template": "Hello, {name}!", "input_variables": ["name"]}
+
+        mock_client.pull_prompt.return_value = MockPromptObj()
+
+        output_file = str(tmp_path / "prompt.json")
+        result = runner.invoke(
+            cli,
+            ["--json", "prompts", "get", "my-prompt", "--output", output_file],
+        )
+        assert result.exit_code == 0
+        with open(output_file) as f:
+            data = json.load(f)
+        assert isinstance(data, dict)
+        assert data["template"] == "Hello, {name}!"
 
 
 def test_prompts_get_fallback_to_string(runner):

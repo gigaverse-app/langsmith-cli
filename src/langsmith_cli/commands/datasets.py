@@ -11,6 +11,7 @@ from langsmith_cli.utils import (
     get_or_create_client,
     json_dumps,
     output_option,
+    output_single_item,
     parse_comma_separated_list,
     parse_json_string,
     render_output,
@@ -124,11 +125,12 @@ def list_datasets(
 @datasets.command("get")
 @click.argument("dataset_id")
 @fields_option()
+@output_option()
 @click.pass_context
-def get_dataset(ctx, dataset_id, fields):
+def get_dataset(ctx, dataset_id, fields, output):
     """Fetch details of a single dataset."""
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json") or bool(fields)
+    is_machine_readable = ctx.obj.get("json") or bool(fields) or bool(output)
     logger.use_stderr = is_machine_readable
 
     logger.debug(f"Fetching dataset: dataset_id={dataset_id}")
@@ -136,16 +138,19 @@ def get_dataset(ctx, dataset_id, fields):
     client = get_or_create_client(ctx)
     dataset = client.read_dataset(dataset_id=dataset_id)
 
-    # Use shared field filtering utility
     data = filter_fields(dataset, fields)
 
-    if ctx.obj.get("json"):
-        click.echo(json_dumps(data))
-        return
+    def render_dataset_details(data: dict, console: object) -> None:
+        from rich.console import Console as RichConsole
 
-    console.print(f"[bold]Name:[/bold] {dataset.name}")
-    console.print(f"[bold]ID:[/bold] {dataset.id}")
-    console.print(f"[bold]Description:[/bold] {dataset.description}")
+        assert isinstance(console, RichConsole)
+        console.print(f"[bold]Name:[/bold] {data.get('name')}")
+        console.print(f"[bold]ID:[/bold] {data.get('id')}")
+        console.print(f"[bold]Description:[/bold] {data.get('description')}")
+
+    output_single_item(
+        ctx, data, console, output=output, render_fn=render_dataset_details
+    )
 
 
 @datasets.command("create")
