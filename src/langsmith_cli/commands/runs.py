@@ -24,7 +24,6 @@ from langsmith_cli.utils import (
     fields_option,
     filter_fields,
     get_matching_items,
-    get_matching_projects,
     get_or_create_client,
     json_dumps,
     output_formatted_data,
@@ -32,6 +31,7 @@ from langsmith_cli.utils import (
     output_single_item,
     parse_duration_to_seconds,
     render_run_details,
+    resolve_project_filters,
     sort_items,
     write_output_to_file,
 )
@@ -416,6 +416,7 @@ def compute_metrics(
 def list_runs(
     ctx,
     project,
+    project_id,
     project_name,
     project_name_exact,
     project_name_pattern,
@@ -513,15 +514,17 @@ def list_runs(
 
     client = get_or_create_client(ctx)
 
-    # Get matching projects using universal helper
-    projects_to_query = get_matching_projects(
+    # Resolve project filters (--project-id bypasses name resolution)
+    pq = resolve_project_filters(
         client,
         project=project,
+        project_id=project_id,
         name=project_name,
         name_exact=project_name_exact,
         name_pattern=project_name_pattern,
         name_regex=project_name_regex,
     )
+    projects_to_query = pq.names
 
     # Handle --roots flag (convenience for --is-root true)
     if roots:
@@ -639,10 +642,16 @@ def list_runs(
         )
 
     # Fetch runs from all matching projects using universal helper
+    def _fetch_runs(c: Any, proj: str | None, **kw: Any) -> Any:
+        if proj is not None:
+            return c.list_runs(project_name=proj, **kw)
+        return c.list_runs(**kw)
+
     result = fetch_from_projects(
         client,
         projects_to_query,
-        lambda c, proj, **kw: c.list_runs(project_name=proj, **kw),
+        _fetch_runs,
+        project_query=pq,
         limit=api_limit,
         query=query,
         error=error_filter,
@@ -898,6 +907,7 @@ def get_run(ctx, run_id, fields, output):
 def get_latest_run(
     ctx,
     project,
+    project_id,
     project_name,
     project_name_exact,
     project_name_pattern,
@@ -947,14 +957,16 @@ def get_latest_run(
     logger.debug(f"Getting latest run with filters: project={project}, status={status}")
 
     # Get matching projects
-    projects_to_query = get_matching_projects(
+    pq = resolve_project_filters(
         client,
         project=project,
+        project_id=project_id,
         name=project_name,
         name_exact=project_name_exact,
         name_pattern=project_name_pattern,
         name_regex=project_name_regex,
     )
+    projects_to_query = pq.names
 
     # Build filter using shared helper
     combined_filter, error_filter = build_runs_list_filter(
@@ -976,23 +988,31 @@ def get_latest_run(
     # Search projects in order until we find a run
     latest_run = None
     failed_projects = []
-    for proj_name in projects_to_query:
+    run_kwargs: dict[str, Any] = dict(
+        limit=1,
+        error=error_filter,
+        filter=combined_filter,
+        is_root=roots,
+        order_by="-start_time",
+    )
+
+    if pq.use_id:
+        # Direct project ID lookup - no iteration needed
         try:
-            runs_iter = client.list_runs(
-                project_name=proj_name,
-                limit=1,
-                error=error_filter,
-                filter=combined_filter,
-                is_root=roots,
-                order_by="-start_time",
-            )
+            runs_iter = client.list_runs(project_id=pq.project_id, **run_kwargs)
             latest_run = next(runs_iter, None)
-            if latest_run:
-                break  # Found a run, stop searching
         except Exception as e:
-            # Track failed projects for diagnostics
-            failed_projects.append((proj_name, str(e)))
-            continue
+            failed_projects.append((f"id:{pq.project_id}", str(e)))
+    else:
+        for proj_name in projects_to_query:
+            try:
+                runs_iter = client.list_runs(project_name=proj_name, **run_kwargs)
+                latest_run = next(runs_iter, None)
+                if latest_run:
+                    break  # Found a run, stop searching
+            except Exception as e:
+                failed_projects.append((proj_name, str(e)))
+                continue
 
     if not latest_run:
         logger.warning("No runs found matching the specified filters")
@@ -1111,6 +1131,7 @@ def view_file(ctx, pattern, no_truncate, fields):
 def run_stats(
     ctx,
     project,
+    project_id,
     project_name,
     project_name_exact,
     project_name_pattern,
@@ -1123,40 +1144,46 @@ def run_stats(
     client = get_or_create_client(ctx)
 
     # Get matching projects using universal helper
-    projects_to_query = get_matching_projects(
+    pq = resolve_project_filters(
         client,
         project=project,
+        project_id=project_id,
         name=project_name,
         name_exact=project_name_exact,
         name_pattern=project_name_pattern,
         name_regex=project_name_regex,
     )
 
-    # Resolve project names to IDs
-    project_ids = []
-    for proj_name in projects_to_query:
-        try:
-            p = client.read_project(project_name=proj_name)
-            project_ids.append(p.id)
-        except Exception:
-            # Fallback: use project name as ID (user might have passed ID directly)
-            project_ids.append(proj_name)
+    # Resolve to project IDs for the stats API
+    resolved_project_ids = []
+    if pq.use_id:
+        resolved_project_ids.append(pq.project_id)
+    else:
+        for proj_name in pq.names:
+            try:
+                p = client.read_project(project_name=proj_name)
+                resolved_project_ids.append(p.id)
+            except Exception:
+                # Fallback: use project name as ID (user might have passed ID directly)
+                resolved_project_ids.append(proj_name)
 
-    if not project_ids:
+    if not resolved_project_ids:
         console.print("[yellow]No matching projects found.[/yellow]")
         return
 
-    stats = client.get_run_stats(project_ids=project_ids)
+    stats = client.get_run_stats(project_ids=resolved_project_ids)
 
     if ctx.obj.get("json"):
         click.echo(json_dumps(stats))
         return
 
     # Build descriptive title
-    if len(projects_to_query) == 1:
-        table_title = f"Stats: {projects_to_query[0]}"
+    if pq.use_id:
+        table_title = f"Stats: id:{pq.project_id}"
+    elif len(pq.names) == 1:
+        table_title = f"Stats: {pq.names[0]}"
     else:
-        table_title = f"Stats: {len(projects_to_query)} projects"
+        table_title = f"Stats: {len(pq.names)} projects"
 
     table = Table(title=table_title)
     table.add_column("Metric")
@@ -1191,6 +1218,7 @@ def open_run(ctx, run_id):
 def watch_runs(
     ctx,
     project,
+    project_id,
     project_name,
     project_name_exact,
     project_name_pattern,
@@ -1215,27 +1243,28 @@ def watch_runs(
 
     def generate_table():
         # Get projects to watch using universal helper
-        projects_to_watch = get_matching_projects(
+        pq = resolve_project_filters(
             client,
             project=project,
+            project_id=project_id,
             name=project_name,
             name_exact=project_name_exact,
             name_pattern=project_name_pattern,
             name_regex=project_name_regex,
         )
         # Build descriptive title based on filter used
-        if project_name_exact:
+        if pq.use_id:
+            title = f"Watching: id:{pq.project_id}"
+        elif project_name_exact:
             title = f"Watching: {project_name_exact}"
         elif project_name_regex:
-            title = f"Watching: regex({project_name_regex}) ({len(projects_to_watch)} projects)"
+            title = f"Watching: regex({project_name_regex}) ({len(pq.names)} projects)"
         elif project_name_pattern:
-            title = (
-                f"Watching: {project_name_pattern} ({len(projects_to_watch)} projects)"
-            )
+            title = f"Watching: {project_name_pattern} ({len(pq.names)} projects)"
         elif project_name:
-            title = f"Watching: *{project_name}* ({len(projects_to_watch)} projects)"
-        elif len(projects_to_watch) > 1:
-            title = f"Watching: {len(projects_to_watch)} projects"
+            title = f"Watching: *{project_name}* ({len(pq.names)} projects)"
+        elif len(pq.names) > 1:
+            title = f"Watching: {len(pq.names)} projects"
         else:
             title = f"Watching: {project}"
         title += f" (Interval: {interval}s)"
@@ -1251,22 +1280,32 @@ def watch_runs(
         # Store runs with their project names as tuples
         all_runs: list[tuple[str, Run]] = []
         failed_count = 0
-        for proj_name in projects_to_watch:
+        if pq.use_id:
             try:
-                # Get a few runs from each project
                 runs = list(
                     client.list_runs(
-                        project_name=proj_name,
-                        limit=5 if project_name_pattern else 10,
+                        project_id=pq.project_id,
+                        limit=10,
                         is_root=True,
                     )
                 )
-                # Store each run with its project name
-                all_runs.extend((proj_name, run) for run in runs)
+                label = f"id:{pq.project_id}"
+                all_runs.extend((label, run) for run in runs)
             except Exception:
-                # Track failed projects but don't spam console in watch mode
                 failed_count += 1
-                pass
+        else:
+            for proj_name in pq.names:
+                try:
+                    runs = list(
+                        client.list_runs(
+                            project_name=proj_name,
+                            limit=5 if project_name_pattern else 10,
+                            is_root=True,
+                        )
+                    )
+                    all_runs.extend((proj_name, run) for run in runs)
+                except Exception:
+                    failed_count += 1
 
         # Sort by start time (most recent first) and limit to 10
         all_runs.sort(key=lambda item: item[1].start_time or "", reverse=True)
@@ -1347,6 +1386,7 @@ def search_runs(
     ctx,
     query,
     project,
+    project_id,
     project_name,
     project_name_exact,
     project_name_pattern,
@@ -1391,6 +1431,7 @@ def search_runs(
     return ctx.invoke(
         list_runs,
         project=project,
+        project_id=project_id,
         project_name=project_name,
         project_name_exact=project_name_exact,
         project_name_pattern=project_name_pattern,
@@ -1466,6 +1507,7 @@ def search_runs(
 def sample_runs(
     ctx,
     project,
+    project_id,
     project_name,
     project_name_exact,
     project_name_pattern,
@@ -1545,14 +1587,20 @@ def sample_runs(
     is_multi_dimensional = isinstance(parsed, list)
 
     # Get matching projects
-    projects_to_query = get_matching_projects(
+    pq = resolve_project_filters(
         client,
         project=project,
+        project_id=project_id,
         name=project_name,
         name_exact=project_name_exact,
         name_pattern=project_name_pattern,
         name_regex=project_name_regex,
     )
+
+    def _fetch_runs(c: Any, proj: str | None, **kw: Any) -> Any:
+        if proj is not None:
+            return c.list_runs(project_name=proj, **kw)
+        return c.list_runs(**kw)
 
     all_samples = []
 
@@ -1611,8 +1659,9 @@ def sample_runs(
             # Fetch samples from all matching projects using universal helper
             result = fetch_from_projects(
                 client,
-                projects_to_query,
-                lambda c, proj, **kw: c.list_runs(project_name=proj, **kw),
+                pq.names,
+                _fetch_runs,
+                project_query=pq,
                 limit=sample_limit,
                 filter=combined_filter,
                 order_by="-start_time",
@@ -1659,8 +1708,9 @@ def sample_runs(
             # Fetch samples from all matching projects using universal helper
             result = fetch_from_projects(
                 client,
-                projects_to_query,
-                lambda c, proj, **kw: c.list_runs(project_name=proj, **kw),
+                pq.names,
+                _fetch_runs,
+                project_query=pq,
                 limit=samples_per_stratum,
                 filter=combined_filter,
                 order_by="-start_time",
@@ -1725,6 +1775,7 @@ def sample_runs(
 def analyze_runs(
     ctx,
     project,
+    project_id,
     project_name,
     project_name_exact,
     project_name_pattern,
@@ -1820,14 +1871,20 @@ def analyze_runs(
     requested_metrics = [m.strip() for m in metrics.split(",")]
 
     # Get matching projects
-    projects_to_query = get_matching_projects(
+    pq = resolve_project_filters(
         client,
         project=project,
+        project_id=project_id,
         name=project_name,
         name_exact=project_name_exact,
         name_pattern=project_name_pattern,
         name_regex=project_name_regex,
     )
+
+    def _fetch_runs(c: Any, proj: str | None, **kw: Any) -> Any:
+        if proj is not None:
+            return c.list_runs(project_name=proj, **kw)
+        return c.list_runs(**kw)
 
     # Determine which fields to fetch based on requested metrics and grouping
     # Use field selection to reduce data transfer and speed up fetch
@@ -1892,8 +1949,9 @@ def analyze_runs(
         # Use serial pagination without field selection
         result = fetch_from_projects(
             client,
-            projects_to_query,
-            lambda c, proj, **kw: c.list_runs(project_name=proj, **kw),
+            pq.names,
+            _fetch_runs,
+            project_query=pq,
             filter=combined_filter,
             limit=None,
             order_by="-start_time",
@@ -1904,10 +1962,15 @@ def analyze_runs(
         # Use sample-based approach with field selection (FAST!)
         # API has max limit of 100 when using select, so manually collect from iterator
         failed_projects = []
-        for proj_name in projects_to_query:
+        sources: list[tuple[str, dict[str, Any]]] = []
+        if pq.use_id:
+            sources = [(f"id:{pq.project_id}", {"project_id": pq.project_id})]
+        else:
+            sources = [(name, {"project_name": name}) for name in pq.names]
+        for source_label, proj_kwargs in sources:
             try:
                 runs_iter = client.list_runs(
-                    project_name=proj_name,
+                    **proj_kwargs,
                     filter=combined_filter,
                     limit=None,  # SDK paginates automatically
                     order_by="-start_time",
@@ -1922,7 +1985,7 @@ def analyze_runs(
                     if collected >= sample_size:
                         break  # Stop early when we have enough
             except Exception as e:
-                failed_projects.append((proj_name, str(e)))
+                failed_projects.append((source_label, str(e)))
 
         # Report failures if any (but don't spam console in analyze mode)
         if failed_projects and len(all_runs) == 0:
@@ -2015,6 +2078,7 @@ def _fetch_runs_for_discovery(
     sample_size: int,
     select: list[str] | None = None,
     cmd_name: str = "discovery",
+    project_id: str | None = None,
 ) -> DiscoveryContext:
     """Shared setup for discovery commands (tags, metadata-keys, fields, describe).
 
@@ -2053,10 +2117,11 @@ def _fetch_runs_for_discovery(
     time_filters = build_time_fql_filters(since=since, last=last)
     combined_filter = combine_fql_filters(time_filters)
 
-    # Get matching projects
-    projects_to_query = get_matching_projects(
+    # Resolve project filters (--project-id bypasses name resolution)
+    pq = resolve_project_filters(
         client,
         project=project,
+        project_id=project_id,
         name=project_name,
         name_exact=project_name_exact,
         name_pattern=project_name_pattern,
@@ -2066,10 +2131,16 @@ def _fetch_runs_for_discovery(
     # Fetch runs
     logger.debug(f"Fetching {sample_size} runs for {cmd_name}...")
 
+    def _fetch_runs(c: Any, proj: str | None, **kw: Any) -> Any:
+        if proj is not None:
+            return c.list_runs(project_name=proj, **kw)
+        return c.list_runs(**kw)
+
     result = fetch_from_projects(
         client,
-        projects_to_query,
-        lambda c, proj, **kw: c.list_runs(project_name=proj, **kw),
+        pq.names,
+        _fetch_runs,
+        project_query=pq,
         limit=sample_size,
         order_by="-start_time",
         select=select,
@@ -2079,7 +2150,7 @@ def _fetch_runs_for_discovery(
 
     return DiscoveryContext(
         runs=result.items,
-        projects=projects_to_query,
+        projects=pq.names if not pq.use_id else [f"id:{pq.project_id}"],
         logger=logger,
     )
 
@@ -2097,6 +2168,7 @@ def _fetch_runs_for_discovery(
 def discover_tags(
     ctx,
     project,
+    project_id,
     project_name,
     project_name_exact,
     project_name_pattern,
@@ -2126,6 +2198,7 @@ def discover_tags(
     discovery = _fetch_runs_for_discovery(
         ctx=ctx,
         project=project,
+        project_id=project_id,
         project_name=project_name,
         project_name_exact=project_name_exact,
         project_name_pattern=project_name_pattern,
@@ -2192,6 +2265,7 @@ def discover_tags(
 def discover_metadata_keys(
     ctx,
     project,
+    project_id,
     project_name,
     project_name_exact,
     project_name_pattern,
@@ -2219,6 +2293,7 @@ def discover_metadata_keys(
     discovery = _fetch_runs_for_discovery(
         ctx=ctx,
         project=project,
+        project_id=project_id,
         project_name=project_name,
         project_name_exact=project_name_exact,
         project_name_pattern=project_name_pattern,
@@ -2282,6 +2357,7 @@ def _field_analysis_common(
     exclude: str | None,
     no_language: bool,
     show_detailed_stats: bool,
+    project_id: str | None = None,
 ) -> None:
     """Shared logic for runs fields and runs describe commands.
 
@@ -2300,6 +2376,7 @@ def _field_analysis_common(
         no_language: Skip language detection
         show_detailed_stats: If True, show length/numeric stats (describe mode).
                             If False, show sample values (fields mode).
+        project_id: Optional project UUID (bypasses name resolution)
     """
     from langsmith_cli.field_analysis import (
         FieldStats,
@@ -2316,6 +2393,7 @@ def _field_analysis_common(
     discovery = _fetch_runs_for_discovery(
         ctx=ctx,
         project=project,
+        project_id=project_id,
         project_name=project_name,
         project_name_exact=project_name_exact,
         project_name_pattern=project_name_pattern,
@@ -2448,6 +2526,7 @@ def add_field_analysis_options(func):
 def discover_fields(
     ctx,
     project,
+    project_id,
     project_name,
     project_name_exact,
     project_name_pattern,
@@ -2480,6 +2559,7 @@ def discover_fields(
     _field_analysis_common(
         ctx=ctx,
         project=project,
+        project_id=project_id,
         project_name=project_name,
         project_name_exact=project_name_exact,
         project_name_pattern=project_name_pattern,
@@ -2502,6 +2582,7 @@ def discover_fields(
 def describe_fields(
     ctx,
     project,
+    project_id,
     project_name,
     project_name_exact,
     project_name_pattern,
@@ -2533,6 +2614,7 @@ def describe_fields(
     _field_analysis_common(
         ctx=ctx,
         project=project,
+        project_id=project_id,
         project_name=project_name,
         project_name_exact=project_name_exact,
         project_name_pattern=project_name_pattern,

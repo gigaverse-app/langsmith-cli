@@ -185,6 +185,26 @@ class TestRunsListFilters:
             reference_example_id=None,
         )
 
+    def test_project_id_filter(self, runner, mock_client):
+        """INVARIANT: --project-id passes project_id directly to SDK, not project_name."""
+        mock_client.list_runs.return_value = []
+
+        runner.invoke(
+            cli,
+            [
+                "runs",
+                "list",
+                "--project-id",
+                "8dc9fb82-ee48-4815-a0b0-c0fbabaa1887",
+                "--limit",
+                "5",
+            ],
+        )
+
+        call_kwargs = mock_client.list_runs.call_args[1]
+        assert call_kwargs["project_id"] == "8dc9fb82-ee48-4815-a0b0-c0fbabaa1887"
+        assert "project_name" not in call_kwargs
+
     def test_tag_filter(self, runner, mock_client):
         """--tag filter builds correct FQL."""
         mock_client.list_runs.return_value = []

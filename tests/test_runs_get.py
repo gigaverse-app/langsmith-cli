@@ -176,6 +176,26 @@ class TestRunsGetLatest:
         assert result.exit_code == 0
         assert "Latest Run" in result.output
 
+    def test_get_latest_with_project_id(self, runner, mock_client):
+        """INVARIANT: --project-id passes project_id directly to SDK."""
+        mock_client.list_runs.return_value = iter([create_run(name="ID Run")])
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "get-latest",
+                "--project-id",
+                "8dc9fb82-ee48-4815-a0b0-c0fbabaa1887",
+            ],
+        )
+
+        assert result.exit_code == 0
+        call_kwargs = mock_client.list_runs.call_args[1]
+        assert call_kwargs["project_id"] == "8dc9fb82-ee48-4815-a0b0-c0fbabaa1887"
+        assert "project_name" not in call_kwargs
+
     def test_get_latest_json_output(self, runner, mock_client):
         """INVARIANT: runs get-latest --json returns a single dict (not a list)."""
         mock_client.list_runs.return_value = iter([create_run(name="Latest Run")])

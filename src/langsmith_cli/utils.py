@@ -1,5 +1,6 @@
 """Utility functions shared across commands."""
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Generic, Protocol, TypeVar, overload
 import click
 import json
@@ -129,11 +130,29 @@ class FetchResult(BaseModel, Generic[T]):
         )
 
 
+@dataclass
+class ProjectQuery:
+    """Resolved project query - either a list of names or a direct project ID.
+
+    When project_id is set, commands should pass it directly to the SDK
+    (e.g., client.list_runs(project_id=...)) instead of using project names.
+    """
+
+    names: list[str]
+    project_id: str | None = None
+
+    @property
+    def use_id(self) -> bool:
+        """Whether to use project_id instead of project names."""
+        return self.project_id is not None
+
+
 def fetch_from_projects(
     client: Any,
     project_names: list[str],
     fetch_func: Callable[..., Any],
     *,
+    project_query: ProjectQuery | None = None,
     limit: int | None = None,
     console: Any | None = None,
     show_warnings: bool = True,
@@ -144,7 +163,11 @@ def fetch_from_projects(
     Args:
         client: LangSmith client instance
         project_names: List of project names to fetch from
-        fetch_func: Function that takes (client, project_name, **kwargs) and returns items
+        fetch_func: Function that takes (client, project_name, **kwargs) and returns items.
+                    When project_query.use_id is True, the second arg is None and
+                    project_id is included in fetch_kwargs.
+        project_query: Optional ProjectQuery. When its use_id is True, project_id is
+                       passed directly to fetch_func via fetch_kwargs instead of project names.
         limit: Optional limit on number of items to fetch per project
         console: Optional console for warnings
         show_warnings: Whether to automatically show warnings (default True)
@@ -164,6 +187,33 @@ def fetch_from_projects(
         >>> if result.has_failures:
         ...     result.report_failures(console)
     """
+    # When project_id is available, bypass name-based iteration
+    if project_query and project_query.use_id:
+        try:
+            items = fetch_func(
+                client,
+                None,
+                limit=limit,
+                project_id=project_query.project_id,
+                **fetch_kwargs,
+            )
+            if not isinstance(items, list):
+                items = list(items)
+            result = FetchResult(
+                items=items,
+                successful_sources=[f"id:{project_query.project_id}"],
+                failed_sources=[],
+            )
+            if show_warnings and result.has_failures and console:
+                result.report_failures(console)
+            return result
+        except Exception as e:
+            return FetchResult(
+                items=[],
+                successful_sources=[],
+                failed_sources=[(f"id:{project_query.project_id}", str(e))],
+            )
+
     all_items: list[Any] = []
     successful: list[str] = []
     failed: list[tuple[str, str]] = []
@@ -1156,6 +1206,47 @@ def get_matching_projects(
     return []
 
 
+def resolve_project_filters(
+    client: Any,
+    *,
+    project: str | None = None,
+    project_id: str | None = None,
+    name: str | None = None,
+    name_exact: str | None = None,
+    name_pattern: str | None = None,
+    name_regex: str | None = None,
+) -> ProjectQuery:
+    """Resolve project filter options into a ProjectQuery.
+
+    When --project-id is provided, returns a ProjectQuery with project_id set,
+    bypassing all name-based resolution. Otherwise delegates to get_matching_projects.
+
+    Args:
+        client: LangSmith Client instance
+        project: Single project name (default fallback)
+        project_id: Direct project UUID (highest priority)
+        name: Substring/contains match
+        name_exact: Exact project name match
+        name_pattern: Wildcard pattern
+        name_regex: Regular expression pattern
+
+    Returns:
+        ProjectQuery with either project_id or names populated
+    """
+    if project_id:
+        return ProjectQuery(names=[], project_id=project_id)
+
+    names = get_matching_projects(
+        client,
+        project=project,
+        name=name,
+        name_exact=name_exact,
+        name_pattern=name_pattern,
+        name_regex=name_regex,
+    )
+    return ProjectQuery(names=names)
+
+
 def parse_duration_to_seconds(duration_str: str) -> str:
     """Parse duration string like '2s', '500ms', '1.5s' to FQL format."""
     import re
@@ -1362,6 +1453,7 @@ def add_project_filter_options(func: Callable[..., Any]) -> Callable[..., Any]:
 
     Adds the following Click options in consistent order:
     - --project: Single project name (default/fallback)
+    - --project-id: Direct project UUID (bypasses name resolution)
     - --project-name: Substring/contains match
     - --project-name-exact: Exact match
     - --project-name-pattern: Wildcard pattern (*, ?)
@@ -1371,17 +1463,18 @@ def add_project_filter_options(func: Callable[..., Any]) -> Callable[..., Any]:
         @runs.command("list")
         @add_project_filter_options
         @click.pass_context
-        def list_runs(ctx, project, project_name, project_name_exact, project_name_pattern, project_name_regex, ...):
+        def list_runs(ctx, project, project_id, project_name, project_name_exact, project_name_pattern, project_name_regex, ...):
             client = get_or_create_client(ctx)
-            projects = get_matching_projects(
+            projects, pid = resolve_project_filters(
                 client,
                 project=project,
+                project_id=project_id,
                 name=project_name,
                 name_exact=project_name_exact,
                 name_pattern=project_name_pattern,
                 name_regex=project_name_regex,
             )
-            # Use projects list...
+            # Use projects list or pid...
     """
     func = click.option(
         "--project-name-regex",
@@ -1398,6 +1491,11 @@ def add_project_filter_options(func: Callable[..., Any]) -> Callable[..., Any]:
     func = click.option(
         "--project-name",
         help="Substring/contains match for project names (convenience filter).",
+    )(func)
+    func = click.option(
+        "--project-id",
+        default=None,
+        help="Project UUID (bypasses name resolution, fastest lookup).",
     )(func)
     func = click.option(
         "--project",
