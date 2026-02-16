@@ -10,6 +10,7 @@ from langsmith_cli.commands.runs import runs
 from langsmith_cli.commands.datasets import datasets
 from langsmith_cli.commands.examples import examples
 from langsmith_cli.commands.prompts import prompts
+from langsmith_cli.commands.self_cmd import self_group
 from langsmith_cli.config import get_credentials_file
 
 # Load credentials with priority order:
@@ -155,7 +156,7 @@ class LangSmithCLIGroup(click.Group):
 
 
 @click.group(cls=LangSmithCLIGroup)
-@click.version_option()
+@click.version_option(package_name="langsmith-cli")
 @click.option("--json", is_flag=True, help="Output strict JSON for agents.")
 @click.option(
     "--verbose",
@@ -178,7 +179,7 @@ def cli_main(ctx, json, verbose, quiet):
     ctx.obj["json"] = json
 
     # Initialize logger with verbosity level
-    from langsmith_cli.logging import CLILogger, Verbosity
+    from langsmith_cli.cli_logging import CLILogger, Verbosity
 
     # Determine if using machine-readable mode
     # (will be refined in commands when --format/--count/--output is known)
@@ -221,6 +222,7 @@ cli_main.add_command(runs)
 cli_main.add_command(datasets)
 cli_main.add_command(examples)
 cli_main.add_command(prompts)
+cli_main.add_command(self_group, "self")
 
 # Backwards compatibility alias
 cli = cli_main
