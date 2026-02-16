@@ -669,10 +669,8 @@ def list_runs(
     failed_projects = result.failed_sources
 
     # CRITICAL: Fail fast if ALL sources failed (prevents silent failures)
-    # In JSON mode, output empty array before failing for parseable output
-    if result.all_failed and (ctx.obj.get("json") or output_format in ["csv", "yaml"]):
-        format_type = determine_output_format(output_format, ctx.obj.get("json"))
-        output_formatted_data([], format_type)
+    # The global error handler in LangSmithCLIGroup outputs JSON errors in --json mode,
+    # so we don't need to output [] here (which would cause double output on stdout).
     result.raise_if_all_failed(logger, "runs")
 
     # Report partial failures (some succeeded, some failed)
@@ -1168,7 +1166,14 @@ def run_stats(
                 resolved_project_ids.append(proj_name)
 
     if not resolved_project_ids:
-        console.print("[yellow]No matching projects found.[/yellow]")
+        if ctx.obj.get("json"):
+            click.echo(
+                json_dumps(
+                    {"error": "NotFoundError", "message": "No matching projects found."}
+                )
+            )
+        else:
+            console.print("[yellow]No matching projects found.[/yellow]")
         return
 
     stats = client.get_run_stats(project_ids=resolved_project_ids)

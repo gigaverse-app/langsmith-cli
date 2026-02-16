@@ -147,8 +147,27 @@ class LangSmithCLIGroup(click.Group):
                     sys.exit(1)
 
             else:
-                # Unexpected error - re-raise for debugging
-                raise
+                # Non-LangSmith error (Click exceptions, Python exceptions, etc.)
+                if json_mode:
+                    # In JSON mode, ALWAYS output structured JSON to stdout.
+                    # Empty stdout breaks piped JSON parsing (json.loads fails).
+                    if isinstance(e, click.ClickException):
+                        error_data = {
+                            "error": type(e).__name__,
+                            "message": e.format_message(),
+                        }
+                        exit_code = e.exit_code
+                    else:
+                        error_data = {
+                            "error": type(e).__name__,
+                            "message": str(e),
+                        }
+                        exit_code = 1
+                    click.echo(json_lib.dumps(error_data))
+                    sys.exit(exit_code)
+                else:
+                    # In human mode, re-raise for Click's default formatting
+                    raise
         finally:
             # Flush stdout to prevent data loss when piping to other processes
             # This fixes race conditions where buffered output may not reach the pipe

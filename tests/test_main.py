@@ -1,3 +1,5 @@
+import click
+
 from langsmith_cli.main import cli
 
 
@@ -275,6 +277,133 @@ def test_generic_langsmith_error_handling_json_mode(runner):
         error_data = json.loads(result.output)
         assert error_data["error"] == "LangSmithError"
         assert "Server error" in error_data["message"] or "500" in error_data["message"]
+
+
+class TestNonLangSmithErrorsInJsonMode:
+    """Invariant: In --json mode, ALL errors produce valid JSON on stdout, never empty stdout."""
+
+    def test_click_exception_in_json_mode_outputs_json(self, runner):
+        """ClickException (e.g. from raise_if_all_failed) outputs JSON error in JSON mode."""
+        import json
+        from unittest.mock import patch
+
+        with patch("langsmith.Client") as MockClient:
+            mock_client = MockClient.return_value
+            mock_client.list_projects.side_effect = click.ClickException(
+                "Failed to fetch runs from all 3 source(s)."
+            )
+
+            result = runner.invoke(cli, ["--json", "projects", "list"])
+
+            assert result.exit_code != 0
+            error_data = json.loads(result.output)
+            assert error_data["error"] == "ClickException"
+            assert "Failed to fetch runs" in error_data["message"]
+
+    def test_click_usage_error_in_json_mode_outputs_json(self, runner):
+        """UsageError (e.g. invalid option) outputs JSON error in JSON mode."""
+        import json
+        from unittest.mock import patch
+
+        with patch("langsmith.Client") as MockClient:
+            mock_client = MockClient.return_value
+            mock_client.list_projects.side_effect = click.UsageError(
+                "Invalid value for '--limit': 'abc' is not a valid integer."
+            )
+
+            result = runner.invoke(cli, ["--json", "projects", "list"])
+
+            assert result.exit_code != 0
+            error_data = json.loads(result.output)
+            assert error_data["error"] == "UsageError"
+            assert "Invalid value" in error_data["message"]
+
+    def test_click_bad_parameter_in_json_mode_outputs_json(self, runner):
+        """BadParameter (e.g. from date parsing) outputs JSON error in JSON mode."""
+        import json
+        from unittest.mock import patch
+
+        with patch("langsmith.Client") as MockClient:
+            mock_client = MockClient.return_value
+            mock_client.list_projects.side_effect = click.BadParameter(
+                "Could not parse datetime 'not a date'", param_hint="'--since'"
+            )
+
+            result = runner.invoke(cli, ["--json", "projects", "list"])
+
+            assert result.exit_code != 0
+            error_data = json.loads(result.output)
+            assert error_data["error"] == "BadParameter"
+            assert "not a date" in error_data["message"]
+
+    def test_unexpected_exception_in_json_mode_outputs_json(self, runner):
+        """Unexpected Python exceptions output JSON error in JSON mode."""
+        import json
+        from unittest.mock import patch
+
+        with patch("langsmith.Client") as MockClient:
+            mock_client = MockClient.return_value
+            mock_client.list_projects.side_effect = ValueError(
+                "unexpected internal error"
+            )
+
+            result = runner.invoke(cli, ["--json", "projects", "list"])
+
+            assert result.exit_code != 0
+            error_data = json.loads(result.output)
+            assert error_data["error"] == "ValueError"
+            assert "unexpected internal error" in error_data["message"]
+
+    def test_runtime_error_in_json_mode_outputs_json(self, runner):
+        """RuntimeError outputs JSON error in JSON mode."""
+        import json
+        from unittest.mock import patch
+
+        with patch("langsmith.Client") as MockClient:
+            mock_client = MockClient.return_value
+            mock_client.list_projects.side_effect = RuntimeError(
+                "connection reset by peer"
+            )
+
+            result = runner.invoke(cli, ["--json", "projects", "list"])
+
+            assert result.exit_code != 0
+            error_data = json.loads(result.output)
+            assert error_data["error"] == "RuntimeError"
+            assert "connection reset" in error_data["message"]
+
+    def test_non_json_mode_click_exception_still_shows_click_format(self, runner):
+        """In non-JSON mode, Click exceptions still show Click's default formatting."""
+        from unittest.mock import patch
+
+        with patch("langsmith.Client") as MockClient:
+            mock_client = MockClient.return_value
+            mock_client.list_projects.side_effect = click.ClickException(
+                "Something went wrong"
+            )
+
+            result = runner.invoke(cli, ["projects", "list"])
+
+            assert result.exit_code != 0
+            assert "Something went wrong" in result.output
+            # Should NOT be JSON
+            assert result.output.strip()[0] != "{"
+
+    def test_non_json_mode_unexpected_exception_reraises(self, runner):
+        """In non-JSON mode, unexpected exceptions re-raise and show traceback."""
+        from unittest.mock import patch
+
+        with patch("langsmith.Client") as MockClient:
+            mock_client = MockClient.return_value
+            mock_client.list_projects.side_effect = ValueError(
+                "unexpected internal error"
+            )
+
+            result = runner.invoke(cli, ["projects", "list"])
+
+            # CliRunner captures the exception
+            assert result.exit_code != 0
+            assert result.exception is not None
 
 
 class TestVerbosityFlags:

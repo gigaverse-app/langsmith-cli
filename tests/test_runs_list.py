@@ -95,12 +95,10 @@ class TestRunsListJSON:
         assert data == []
 
     def test_json_output_on_api_error(self, runner):
-        """--json returns non-zero exit code on API error.
+        """Invariant: --json mode errors produce valid JSON error object, not empty stdout.
 
-        When ALL sources fail to fetch, the CLI should:
-        1. Output empty JSON array (for parseable output)
-        2. Return non-zero exit code (so scripts can detect failure)
-        3. Show error message
+        When ALL sources fail, the global error handler outputs a JSON error object
+        with non-zero exit code so scripts can detect and parse the failure.
         """
 
         with patch("langsmith.Client") as MockClient:
@@ -109,20 +107,18 @@ class TestRunsListJSON:
 
             result = runner.invoke(cli, ["--json", "runs", "list", "--project", "test"])
 
-            # Exit code should be non-zero when all sources fail
             assert result.exit_code != 0
-            # Output should contain empty JSON array
-            assert "[]" in result.output
-            # Output should contain error information
-            assert "API Error" in result.output or "Failed to fetch" in result.output
+            # Output should be valid JSON with error details
+            error_data = json.loads(result.output.strip().split("\n")[-1])
+            assert "error" in error_data
+            assert "message" in error_data
+            assert "Failed to fetch" in error_data["message"]
 
     def test_json_output_on_iterator_error(self, runner):
-        """--json returns non-zero exit code on iterator failure.
+        """Invariant: --json mode iterator errors produce valid JSON error object.
 
-        When ALL sources fail to fetch (even during iteration), the CLI should:
-        1. Output empty JSON array (for parseable output)
-        2. Return non-zero exit code (so scripts can detect failure)
-        3. Show error message
+        When ALL sources fail during iteration, the global error handler outputs
+        a JSON error object with non-zero exit code.
         """
 
         with patch("langsmith.Client") as MockClient:
@@ -136,14 +132,12 @@ class TestRunsListJSON:
 
             result = runner.invoke(cli, ["--json", "runs", "list", "--project", "test"])
 
-            # Exit code should be non-zero when all sources fail
             assert result.exit_code != 0
-            # Output should contain empty JSON array
-            assert "[]" in result.output
-            # Output should contain error information
-            assert (
-                "Iterator failed" in result.output or "Failed to fetch" in result.output
-            )
+            # Output should be valid JSON with error details
+            error_data = json.loads(result.output.strip().split("\n")[-1])
+            assert "error" in error_data
+            assert "message" in error_data
+            assert "Failed to fetch" in error_data["message"]
 
     def test_json_output_no_extra_text(self, runner, mock_client):
         """--json outputs ONLY JSON, no extra text."""

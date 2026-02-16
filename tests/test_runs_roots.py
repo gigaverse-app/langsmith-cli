@@ -46,18 +46,12 @@ def test_runs_list_api_failure_returns_nonzero_exit_code_in_json_mode(runner):
 
 
 def test_runs_list_api_failure_shows_error_in_output_or_stderr(runner):
-    """INVARIANT: When API fails, error information must be visible.
+    """Invariant: API failures in --json mode produce valid JSON error on stdout.
 
-    Users who run `langsmith-cli --json runs list > output.json` should
-    know when something goes wrong. Either:
-    1. Error message in stderr (which they should see)
-    2. Error info included in JSON output
-    3. Non-zero exit code (which scripts can check)
-
-    The CLI now:
-    - Outputs empty JSON array (for parseable output)
-    - Logs errors to stderr
-    - Returns non-zero exit code
+    Users who run `langsmith-cli --json runs list 2>/dev/null | python3 -c "..."` should
+    always get parseable JSON on stdout. The global error handler ensures:
+    1. JSON error object on stdout (for parseable output)
+    2. Non-zero exit code (so scripts can detect failure)
     """
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
@@ -68,12 +62,11 @@ def test_runs_list_api_failure_shows_error_in_output_or_stderr(runner):
         # Exit code must be non-zero
         assert result.exit_code != 0
 
-        # Output should contain error information
-        assert "Rate limited" in result.output or "Failed to fetch" in result.output
-
-        # Empty JSON array should be output for parseable output
-        # (The error message comes after, so we check it's in there)
-        assert "[]" in result.output
+        # Last line of output should be valid JSON with error details
+        error_data = json.loads(result.output.strip().split("\n")[-1])
+        assert "error" in error_data
+        assert "message" in error_data
+        assert "Failed to fetch" in error_data["message"]
 
 
 def test_runs_list_roots_flag_passes_is_root_to_api(runner):
