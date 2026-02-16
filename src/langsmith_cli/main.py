@@ -179,7 +179,7 @@ def cli_main(ctx, json, verbose, quiet):
     ctx.obj["json"] = json
 
     # Initialize logger with verbosity level
-    from langsmith_cli.logging import CLILogger, Verbosity
+    from langsmith_cli.cli_logging import CLILogger, Verbosity
 
     # Determine if using machine-readable mode
     # (will be refined in commands when --format/--count/--output is known)

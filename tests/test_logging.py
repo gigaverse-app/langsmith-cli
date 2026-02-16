@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from rich.console import Console
 
-from langsmith_cli.logging import CLILogger, Verbosity
+from langsmith_cli.cli_logging import CLILogger, Verbosity
 
 
 class TestVerbosity:
