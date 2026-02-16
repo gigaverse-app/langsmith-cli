@@ -1559,12 +1559,21 @@ def write_output_to_file(
             else:
                 raise ValueError(f"Unsupported format_type: {format_type}")
 
+        # Diagnostic messages go to stderr to avoid corrupting piped stdout in JSON mode
+        from rich.console import Console as RichConsole
+
+        stderr_console = RichConsole(stderr=True)
         if is_single:
-            console.print(f"[green]Wrote item to {output_path}[/green]")
+            stderr_console.print(f"[green]Wrote item to {output_path}[/green]")
         else:
-            console.print(f"[green]Wrote {len(data)} items to {output_path}[/green]")
+            stderr_console.print(
+                f"[green]Wrote {len(data)} items to {output_path}[/green]"
+            )
     except Exception as e:
-        console.print(f"[red]Error writing to file {output_path}: {e}[/red]")
+        from rich.console import Console as RichConsole
+
+        stderr_console = RichConsole(stderr=True)
+        stderr_console.print(f"[red]Error writing to file {output_path}: {e}[/red]")
         raise click.Abort()
 
 

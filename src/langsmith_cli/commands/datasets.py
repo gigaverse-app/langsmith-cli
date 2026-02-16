@@ -232,6 +232,17 @@ def push_dataset(ctx, file_path, dataset):
         dataset_name=dataset,
     )
 
-    logger.success(
-        f"Successfully pushed {len(examples)} examples to dataset '{dataset}'"
-    )
+    if ctx.obj.get("json"):
+        click.echo(
+            json_dumps(
+                {
+                    "status": "success",
+                    "dataset": dataset,
+                    "examples_count": len(examples),
+                }
+            )
+        )
+    else:
+        logger.success(
+            f"Successfully pushed {len(examples)} examples to dataset '{dataset}'"
+        )

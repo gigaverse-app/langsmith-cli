@@ -366,6 +366,24 @@ def test_prompts_get_fallback_to_string(runner):
         assert data["prompt"] == "Hello, world!"
 
 
+def test_prompts_push_json_mode_outputs_json_confirmation(runner, tmp_path):
+    """Invariant: --json mode push outputs JSON confirmation, not empty stdout."""
+    with patch("langsmith.Client") as MockClient:
+        MockClient.return_value  # Client is needed but return value isn't used directly
+
+        prompt_file = tmp_path / "my_prompt.txt"
+        prompt_file.write_text("Hello, {name}!")
+
+        result = runner.invoke(
+            cli,
+            ["--json", "prompts", "push", "my-prompt", str(prompt_file)],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["status"] == "success"
+        assert data["name"] == "my-prompt"
+
+
 def test_prompts_push(runner, tmp_path):
     """INVARIANT: prompts push should upload a prompt file."""
     with patch("langsmith.Client") as MockClient:

@@ -350,6 +350,37 @@ def test_datasets_create_with_type(runner):
         assert call_kwargs["data_type"].value == "chat"
 
 
+def test_datasets_push_json_mode_outputs_json_confirmation(runner, tmp_path):
+    """Invariant: --json mode push outputs JSON confirmation, not empty stdout."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        jsonl_file = tmp_path / "examples.jsonl"
+        examples = [
+            {"inputs": {"text": "hello"}, "outputs": {"result": "world"}},
+        ]
+        jsonl_file.write_text("\n".join(json.dumps(e) for e in examples))
+
+        mock_client.read_dataset.return_value = create_dataset(name="target-dataset")
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "datasets",
+                "push",
+                str(jsonl_file),
+                "--dataset",
+                "target-dataset",
+            ],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["status"] == "success"
+        assert data["dataset"] == "target-dataset"
+        assert data["examples_count"] == 1
+
+
 def test_datasets_push(runner, tmp_path):
     """INVARIANT: datasets push should upload examples from a JSONL file."""
     with patch("langsmith.Client") as MockClient:
