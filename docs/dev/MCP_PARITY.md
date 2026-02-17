@@ -45,7 +45,6 @@ This document tracks feature parity between the langsmith-cli and the official L
 - ✅ `is_root` → `--is-root`
 - ✅ `trace_filter` → `--trace-filter`
 - ✅ `tree_filter` → `--tree-filter`
-- ✅ `order_by` → `--order-by`
 - ✅ `reference_example_id` → `--reference-example-id`
 
 **`runs get`** (2/2 parameters):

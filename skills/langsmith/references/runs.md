@@ -18,7 +18,6 @@ langsmith-cli --json runs list [OPTIONS]
 - `--filter TEXT` - Advanced FQL query (see Filter Query Language section)
 - `--trace-filter TEXT` - Filter applied to root run of trace
 - `--tree-filter TEXT` - Filter applied to any run in trace tree
-- `--order-by TEXT` - Sort field (default: `-start_time`). Prefix with `-` for descending
 - `--reference-example-id UUID` - Filter runs by reference example ID
 
 **Output Fields:**
@@ -194,4 +193,3 @@ langsmith-cli runs watch [OPTIONS]
 - `--refresh INTEGER` - Refresh interval in seconds (default: 2)
 
 **Behavior:** Shows live table of recent runs with auto-refresh
-
