@@ -10,6 +10,13 @@ import click
 from langsmith.schemas import Run
 
 from langsmith_cli.utils import (
+    CLIFetchError,
+    FetchResult,
+    ProjectQuery,
+    _looks_like_uuid,
+    get_project_suggestions,
+    raise_if_all_failed_with_suggestions,
+    resolve_project_filters,
     output_formatted_data,
     sort_items,
     apply_regex_filter,
@@ -1268,3 +1275,318 @@ class TestWriteOutputToFile:
         captured = capsys.readouterr()
         # Error message must NOT appear on stdout
         assert "Error" not in captured.out
+
+
+class TestLooksLikeUuid:
+    """Tests for _looks_like_uuid helper."""
+
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            ("8dc9fb82-ee48-4815-a0b0-c0cbabaa1887", True),
+            ("00000000-0000-0000-0000-000000000000", True),
+            ("8DC9FB82-EE48-4815-A0B0-C0CBABAA1887", True),
+            ("abcdef12-3456-7890-abcd-ef1234567890", True),
+            ("default", False),
+            ("prd/my-project", False),
+            ("8dc9fb82ee484815a0b0c0cbabaa1887", False),
+            ("8dc9fb82-ee48-4815-a0b0-c0cbabaa188", False),
+            ("8dc9fb82-ee48-4815-a0b0-c0cbabaa18877", False),
+            ("not-a-uuid-at-all-really-not-one", False),
+            ("", False),
+        ],
+    )
+    def test_uuid_detection(self, value, expected):
+        """INVARIANT: UUID format strings (8-4-4-4-12 hex) are correctly identified."""
+        assert _looks_like_uuid(value) is expected
+
+
+class TestResolveProjectFiltersUuidAutoDetect:
+    """Tests for UUID auto-detection in resolve_project_filters."""
+
+    def test_uuid_in_project_param_treated_as_project_id(self):
+        """INVARIANT: When --project receives a UUID, it is treated as --project-id."""
+        mock_client = MagicMock()
+
+        pq = resolve_project_filters(
+            mock_client,
+            project="8dc9fb82-ee48-4815-a0b0-c0cbabaa1887",
+        )
+
+        assert pq.use_id is True
+        assert pq.project_id == "8dc9fb82-ee48-4815-a0b0-c0cbabaa1887"
+        assert pq.names == []
+        mock_client.list_projects.assert_not_called()
+
+    def test_normal_name_not_treated_as_uuid(self):
+        """INVARIANT: Normal project names pass through as names."""
+        mock_client = MagicMock()
+
+        pq = resolve_project_filters(
+            mock_client,
+            project="prd/promotion_service",
+        )
+
+        assert pq.use_id is False
+        assert pq.names == ["prd/promotion_service"]
+
+    def test_explicit_project_id_takes_priority(self):
+        """INVARIANT: --project-id takes priority over UUID in --project."""
+        mock_client = MagicMock()
+
+        pq = resolve_project_filters(
+            mock_client,
+            project="8dc9fb82-ee48-4815-a0b0-c0cbabaa1887",
+            project_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        )
+
+        assert pq.use_id is True
+        assert pq.project_id == "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+    def test_default_project_name_not_uuid(self):
+        """INVARIANT: The default 'default' project name is not treated as UUID."""
+        mock_client = MagicMock()
+
+        pq = resolve_project_filters(
+            mock_client,
+            project="default",
+        )
+
+        assert pq.use_id is False
+        assert pq.names == ["default"]
+
+
+class TestGetProjectSuggestions:
+    """Tests for get_project_suggestions."""
+
+    def _make_project(self, name: str) -> MagicMock:
+        """Create a mock project with a name attribute."""
+        proj = MagicMock()
+        proj.name = name
+        return proj
+
+    def test_substring_match_finds_prefixed_project(self):
+        """INVARIANT: 'promotion_service' suggests 'prd/promotion_service'."""
+        mock_client = MagicMock()
+        mock_client.list_projects.return_value = [
+            self._make_project("prd/promotion_service"),
+            self._make_project("prd/user_service"),
+            self._make_project("stg/promotion_service"),
+        ]
+
+        suggestions = get_project_suggestions(mock_client, "promotion_service")
+
+        assert "prd/promotion_service" in suggestions
+        assert "stg/promotion_service" in suggestions
+
+    def test_reverse_substring_match(self):
+        """INVARIANT: 'prd/promotion_service' suggests 'promotion_service' (name in query)."""
+        mock_client = MagicMock()
+        mock_client.list_projects.return_value = [
+            self._make_project("promotion_service"),
+            self._make_project("unrelated"),
+        ]
+
+        suggestions = get_project_suggestions(mock_client, "prd/promotion_service")
+
+        assert "promotion_service" in suggestions
+        assert "unrelated" not in suggestions
+
+    def test_token_overlap_finds_similar(self):
+        """INVARIANT: Token-based matching finds projects with shared segments."""
+        mock_client = MagicMock()
+        mock_client.list_projects.return_value = [
+            self._make_project("prd/promotion_service"),
+            self._make_project("stg/analytics"),
+        ]
+
+        suggestions = get_project_suggestions(mock_client, "promotion")
+
+        assert "prd/promotion_service" in suggestions
+        assert "stg/analytics" not in suggestions
+
+    def test_no_matches_returns_empty(self):
+        """INVARIANT: No similar projects returns empty list."""
+        mock_client = MagicMock()
+        mock_client.list_projects.return_value = [
+            self._make_project("completely-different"),
+        ]
+
+        suggestions = get_project_suggestions(mock_client, "zzz_nonexistent_zzz")
+
+        assert suggestions == []
+
+    def test_api_failure_returns_empty(self):
+        """INVARIANT: If listing projects fails, returns empty (no error)."""
+        mock_client = MagicMock()
+        mock_client.list_projects.side_effect = Exception("API error")
+
+        suggestions = get_project_suggestions(mock_client, "anything")
+
+        assert suggestions == []
+
+    def test_max_suggestions_respected(self):
+        """INVARIANT: At most max_suggestions results returned."""
+        mock_client = MagicMock()
+        mock_client.list_projects.return_value = [
+            self._make_project(f"prd/service_{i}") for i in range(20)
+        ]
+
+        suggestions = get_project_suggestions(mock_client, "service", max_suggestions=3)
+
+        assert len(suggestions) <= 3
+
+    def test_exact_match_excluded(self):
+        """INVARIANT: Exact name match is excluded from suggestions."""
+        mock_client = MagicMock()
+        mock_client.list_projects.return_value = [
+            self._make_project("my-project"),
+            self._make_project("my-project-v2"),
+        ]
+
+        suggestions = get_project_suggestions(mock_client, "my-project")
+
+        assert "my-project" not in suggestions
+        assert "my-project-v2" in suggestions
+
+
+class TestRaiseIfAllFailedWithSuggestions:
+    """Tests for raise_if_all_failed with suggestions parameter."""
+
+    def test_includes_suggestions_in_error_message(self):
+        """INVARIANT: When suggestions are available, the error message includes them."""
+        result: FetchResult[str] = FetchResult(
+            items=[],
+            successful_sources=[],
+            failed_sources=[("promotion_service", "Project not found")],
+        )
+
+        with pytest.raises(CLIFetchError) as exc_info:
+            result.raise_if_all_failed(
+                entity_name="runs",
+                suggestions=["prd/promotion_service", "stg/promotion_service"],
+            )
+
+        msg = exc_info.value.format_message()
+        assert "prd/promotion_service" in msg
+        assert "Did you mean" in msg
+
+    def test_structured_data_on_exception(self):
+        """INVARIANT: CLIFetchError carries failed_sources and suggestions."""
+        result: FetchResult[str] = FetchResult(
+            items=[],
+            successful_sources=[],
+            failed_sources=[("my-project", "Not found")],
+        )
+
+        with pytest.raises(CLIFetchError) as exc_info:
+            result.raise_if_all_failed(
+                entity_name="runs",
+                suggestions=["my-project-v2"],
+            )
+
+        err = exc_info.value
+        assert err.failed_sources == [("my-project", "Not found")]
+        assert err.suggestions == ["my-project-v2"]
+
+    def test_includes_failure_details_in_message(self):
+        """INVARIANT: Error message includes per-source failure details."""
+        result: FetchResult[str] = FetchResult(
+            items=[],
+            successful_sources=[],
+            failed_sources=[("my-project", "Client.read_project: Not found")],
+        )
+
+        with pytest.raises(CLIFetchError) as exc_info:
+            result.raise_if_all_failed(entity_name="runs")
+
+        msg = exc_info.value.format_message()
+        assert "my-project" in msg
+        assert "Not found" in msg
+
+    def test_no_suggestions_still_shows_details(self):
+        """INVARIANT: Without suggestions, error still includes failure details."""
+        result: FetchResult[str] = FetchResult(
+            items=[],
+            successful_sources=[],
+            failed_sources=[("my-project", "API Error")],
+        )
+
+        with pytest.raises(CLIFetchError) as exc_info:
+            result.raise_if_all_failed(entity_name="runs")
+
+        msg = exc_info.value.format_message()
+        assert "Failed to fetch" in msg
+        assert "my-project" in msg
+        assert "Did you mean" not in msg
+
+    def test_does_not_raise_when_not_all_failed(self):
+        """INVARIANT: Partial failures do not raise."""
+        result: FetchResult[str] = FetchResult(
+            items=["item1"],
+            successful_sources=["proj1"],
+            failed_sources=[("proj2", "error")],
+        )
+
+        result.raise_if_all_failed(
+            entity_name="runs",
+            suggestions=["irrelevant"],
+        )
+
+
+class TestRaiseIfAllFailedWithSuggestionsWrapper:
+    """Tests for raise_if_all_failed_with_suggestions convenience function."""
+
+    def test_fetches_suggestions_on_failure(self):
+        """INVARIANT: Suggestions are fetched when single project name fails."""
+        mock_client = MagicMock()
+        proj = MagicMock()
+        proj.name = "prd/promotion_service"
+        mock_client.list_projects.return_value = [proj]
+
+        result: FetchResult[str] = FetchResult(
+            items=[],
+            successful_sources=[],
+            failed_sources=[("promotion_service", "Not found")],
+        )
+        pq = ProjectQuery(names=["promotion_service"])
+
+        with pytest.raises(CLIFetchError) as exc_info:
+            raise_if_all_failed_with_suggestions(
+                result, mock_client, pq, entity_name="runs"
+            )
+
+        assert "prd/promotion_service" in exc_info.value.suggestions
+
+    def test_skips_suggestions_for_id_based_queries(self):
+        """INVARIANT: No suggestions fetched for project-id failures."""
+        mock_client = MagicMock()
+
+        result: FetchResult[str] = FetchResult(
+            items=[],
+            successful_sources=[],
+            failed_sources=[("id:some-uuid", "Not found")],
+        )
+        pq = ProjectQuery(names=[], project_id="some-uuid")
+
+        with pytest.raises(CLIFetchError):
+            raise_if_all_failed_with_suggestions(
+                result, mock_client, pq, entity_name="runs"
+            )
+
+        mock_client.list_projects.assert_not_called()
+
+    def test_no_raise_when_successful(self):
+        """INVARIANT: Does not raise when there are successful sources."""
+        mock_client = MagicMock()
+
+        result: FetchResult[str] = FetchResult(
+            items=["item"],
+            successful_sources=["proj1"],
+            failed_sources=[],
+        )
+        pq = ProjectQuery(names=["proj1"])
+
+        raise_if_all_failed_with_suggestions(
+            result, mock_client, pq, entity_name="runs"
+        )

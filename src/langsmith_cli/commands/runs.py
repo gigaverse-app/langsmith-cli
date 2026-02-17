@@ -25,11 +25,13 @@ from langsmith_cli.utils import (
     filter_fields,
     get_matching_items,
     get_or_create_client,
+    get_project_suggestions,
     json_dumps,
     output_formatted_data,
     output_option,
     output_single_item,
     parse_duration_to_seconds,
+    raise_if_all_failed_with_suggestions,
     render_run_details,
     resolve_project_filters,
     sort_items,
@@ -666,7 +668,8 @@ def list_runs(
     # CRITICAL: Fail fast if ALL sources failed (prevents silent failures)
     # The global error handler in LangSmithCLIGroup outputs JSON errors in --json mode,
     # so we don't need to output [] here (which would cause double output on stdout).
-    result.raise_if_all_failed(logger, "runs")
+    # Uses raise_if_all_failed_with_suggestions to suggest similar project names.
+    raise_if_all_failed_with_suggestions(result, client, pq, logger, "runs")
 
     # Report partial failures (some succeeded, some failed)
     if result.has_failures:
@@ -1019,6 +1022,16 @@ def get_latest_run(
                 logger.warning(f"  • {proj}: {short_error}")
             if len(failed_projects) > 3:
                 logger.warning(f"  • ... and {len(failed_projects) - 3} more")
+
+            # Suggest similar project names for single-project failures
+            failed_names = [
+                name for name, _ in failed_projects if not name.startswith("id:")
+            ]
+            if len(failed_names) == 1:
+                suggestions = get_project_suggestions(client, failed_names[0])
+                if suggestions:
+                    suggestion_list = ", ".join(f"'{s}'" for s in suggestions[:5])
+                    logger.info(f"Did you mean: {suggestion_list}?")
 
         raise click.Abort()
 
