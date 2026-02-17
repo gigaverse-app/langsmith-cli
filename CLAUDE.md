@@ -111,10 +111,18 @@ main.py (entry point)
 ├── runs (group)
 │   ├── list
 │   ├── get
+│   ├── get-latest
 │   ├── stats
 │   ├── open
 │   ├── watch
-│   └── search
+│   ├── search
+│   ├── sample
+│   ├── analyze
+│   ├── tags
+│   ├── metadata-keys
+│   ├── fields
+│   ├── describe
+│   └── view-file
 ├── datasets (group)
 │   ├── list
 │   ├── get
@@ -124,10 +132,13 @@ main.py (entry point)
 │   ├── list
 │   ├── get
 │   └── create
-└── prompts (group)
-    ├── list
-    ├── get
-    └── push
+├── prompts (group)
+│   ├── list
+│   ├── get
+│   └── push
+└── self (group)
+    ├── detect
+    └── update
 ```
 
 ### Key Design Patterns
@@ -217,23 +228,37 @@ def list_runs(ctx, output_format, count, output, ...):
 ```
 src/langsmith_cli/
 ├── __init__.py
-├── main.py              # Entry point, CLI group registration
-├── logging.py           # CLILogger for verbosity control and stream separation
+├── main.py              # Entry point, CLI group registration, global error handler
+├── cli_logging.py       # CLILogger for verbosity control and stream separation
+├── config.py            # Credentials file management
+├── field_analysis.py    # Field discovery and statistics (runs fields/describe)
+├── filters.py           # FQL filter builders and time parsing
+├── utils.py             # Shared helpers (output formatting, project resolution, etc.)
 └── commands/            # Modular command implementations
     ├── auth.py          # Authentication (login)
     ├── projects.py      # Project management
     ├── runs.py          # Runs/traces (largest module)
     ├── datasets.py      # Dataset operations
     ├── examples.py      # Dataset examples
-    └── prompts.py       # Prompt management
+    ├── prompts.py       # Prompt management
+    └── self_cmd.py      # Self-inspection (detect, update)
 
 tests/
-├── conftest.py          # Pytest fixtures (CliRunner)
-├── test_main.py         # Root CLI tests
+├── conftest.py          # Pytest fixtures (CliRunner, model factories)
+├── test_main.py         # Root CLI + global error handler tests
 ├── test_logging.py      # CLILogger tests
 ├── test_auth.py         # Auth command tests
 ├── test_projects.py     # Projects command tests
-├── test_runs.py         # Runs command tests (largest)
+├── test_runs.py         # Runs command tests
+├── test_runs_list.py    # Runs list command tests (filters, JSON, formats)
+├── test_runs_get.py     # Runs get/get-latest/open tests
+├── test_runs_roots.py   # Runs --roots flag tests
+├── test_runs_sample.py  # Runs sample command tests
+├── test_datasets.py     # Datasets command tests
+├── test_examples.py     # Examples command tests
+├── test_prompts.py      # Prompts command tests
+├── test_self.py         # Self detect/update command tests
+├── test_utils.py        # Utility function tests
 ├── test_smoke.py        # Smoke tests (requires API key)
 └── test_e2e.py          # End-to-end tests (requires API key)
 

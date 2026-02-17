@@ -108,10 +108,11 @@ langsmith-cli runs watch
 ### 📦 **Complete Coverage**
 Every LangSmith resource at your fingertips:
 - ✅ **Projects** - List, create, inspect
-- ✅ **Runs** - Search, stats, watch, open in browser
+- ✅ **Runs** - Search, stats, watch, sample, analyze, field discovery
 - ✅ **Datasets** - CRUD + bulk JSONL uploads
 - ✅ **Examples** - Full lifecycle management
 - ✅ **Prompts** - Version control your prompts
+- ✅ **Self** - Installation detection + auto-update
 
 ---
 
@@ -260,8 +261,8 @@ langsmith-cli runs watch --project production
 ### 💾 Bulk Dataset Uploads
 
 ```bash
-# Export examples to JSONL
-langsmith-cli --json examples list --dataset my-dataset > examples.jsonl
+# Export examples to JSONL (using --output for reliable file writing)
+langsmith-cli examples list --dataset my-dataset --output examples.jsonl
 
 # Upload to new dataset
 langsmith-cli datasets push examples.jsonl --dataset production-eval
@@ -374,9 +375,18 @@ auth login              # Authenticate with LangSmith
 projects list           # List all projects
 runs list              # Search and filter runs
 runs get <id>          # Inspect a specific run
+runs get-latest        # Get most recent run matching filters
 runs stats             # Aggregate statistics
 runs watch             # Live run dashboard
 runs open <id>         # Open trace in browser
+runs search            # Full-text search across runs
+runs sample            # Stratified sampling by tags/metadata
+runs analyze           # Group runs and compute metrics
+runs tags              # Discover tag patterns
+runs metadata-keys     # Discover metadata keys
+runs fields            # Discover field paths and types
+runs describe          # Detailed field statistics
+runs view-file         # View runs from JSONL files
 datasets list          # List datasets
 datasets create        # Create new dataset
 datasets push          # Bulk upload from JSONL
@@ -385,6 +395,8 @@ examples create        # Add example to dataset
 prompts list           # List prompt repositories
 prompts get            # Pull a prompt template
 prompts push           # Push local prompt to LangSmith
+self detect            # Show installation details
+self update            # Update to latest version
 ```
 
 ### Global Flags
@@ -400,7 +412,8 @@ prompts push           # Push local prompt to LangSmith
 
 | Option | Description | Example |
 |--------|-------------|---------|
-| `--project` | Filter by project | `--project production` |
+| `--project` | Filter by project name | `--project production` |
+| `--project-id` | Filter by project UUID | `--project-id abc-123...` |
 | `--status` | Filter by status | `--status error` |
 | `--failed` | Only failed runs | `--failed` |
 | `--succeeded` | Only successful runs | `--succeeded` |
@@ -492,8 +505,7 @@ uv run pyright
 ```
 
 ### Project Stats
-- **79% Test Coverage** (116 tests)
-- **100% Utils Coverage** (47 tests for helpers)
+- **92% Test Coverage** (589 tests)
 - **Zero Type Errors** (Pyright clean)
 - **100% MCP Parity** (13/13 tools)
 
