@@ -48,3 +48,14 @@ class TestRunsSearch:
         _, kwargs = mock_client.list_runs.call_args
         assert 'search("user_123")' in kwargs["filter"]
         assert expected_search in kwargs["filter"]
+
+    def test_order_by_not_passed_to_api(self, runner, mock_client):
+        """INVARIANT: order_by must NOT be passed to client.list_runs() — API rejects it with 400."""
+        mock_client.list_runs.return_value = []
+
+        runner.invoke(cli, ["runs", "search", "test"])
+
+        call_kwargs = mock_client.list_runs.call_args[1]
+        assert "order_by" not in call_kwargs, (
+            "order_by should not be passed to list_runs — LangSmith API rejects it with 400 Bad Request"
+        )

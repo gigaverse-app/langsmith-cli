@@ -23,8 +23,7 @@ This document provides practical workflows and use cases for common LangSmith op
 langsmith-cli --json runs list \
   --project production-app \
   --status error \
-  --limit 5 \
-  --order-by -start_time
+  --limit 5
 
 # Step 2: Inspect specific failure (context-efficient)
 langsmith-cli --json runs get <run-id> \
@@ -75,8 +74,7 @@ langsmith-cli runs open <trace-id>
 langsmith-cli --json runs list \
   --project production-app \
   --filter 'gt(latency, "5s")' \
-  --limit 20 \
-  --order-by -latency
+  --limit 20
 
 # Step 2: Analyze latency distribution
 langsmith-cli --json runs stats \
@@ -374,8 +372,7 @@ langsmith-cli --json runs stats --project production-app --limit 1000
 langsmith-cli --json runs list \
   --project production-app \
   --filter 'gt(total_cost, 0.1)' \
-  --limit 20 \
-  --order-by -total_cost
+  --limit 20
 
 # Analyze cost by component type
 langsmith-cli --json runs list \
@@ -685,7 +682,6 @@ while true; do
     RUNS=$(langsmith-cli --json runs list \
       --project "$PROJECT" \
       --limit 100 \
-      --order-by -start_time \
       $FILTER)
 
     # Process each new run

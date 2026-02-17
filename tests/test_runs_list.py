@@ -175,8 +175,18 @@ class TestRunsListFilters:
             is_root=None,
             trace_filter=None,
             tree_filter=None,
-            order_by="-start_time",
             reference_example_id=None,
+        )
+
+    def test_order_by_not_passed_to_api(self, runner, mock_client):
+        """INVARIANT: order_by must NOT be passed to client.list_runs() — API rejects it with 400."""
+        mock_client.list_runs.return_value = []
+
+        runner.invoke(cli, ["runs", "list", "--project", "test"])
+
+        call_kwargs = mock_client.list_runs.call_args[1]
+        assert "order_by" not in call_kwargs, (
+            "order_by should not be passed to list_runs — LangSmith API rejects it with 400 Bad Request"
         )
 
     def test_project_id_filter(self, runner, mock_client):

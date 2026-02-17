@@ -183,7 +183,6 @@ presets:
       project: production
       status: error
       limit: 50
-      order-by: "-start_time"
 
   expensive-llm-calls:
     command: runs list
