@@ -80,8 +80,14 @@ langsmith-cli <command> [options]
 **Solution:** Run `langsmith-cli auth login` or set `LANGSMITH_API_KEY` env var
 
 ### "Project not found"
-**Cause:** Project name doesn't exist
-**Solution:** Run `langsmith-cli projects list` to see available projects
+**Cause:** Project name doesn't exist or has a path prefix (e.g., `prd/my-project`)
+**Solution:**
+1. The error message will suggest similar project names if available
+2. List projects: `langsmith-cli --json projects list --fields name`
+3. Use substring matching: `langsmith-cli --json runs list --project-name my-project`
+4. Use wildcards: `langsmith-cli --json runs list --project-name-pattern "*my-project*"`
+5. If you have a UUID, pass it to `--project-id` or `--project` (UUIDs are auto-detected)
+6. In JSON mode, the error includes structured `suggestions` and `failed_sources` fields
 
 ### "Dataset not found"
 **Cause:** Dataset name doesn't match exactly

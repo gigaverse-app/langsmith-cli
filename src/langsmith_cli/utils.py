@@ -14,6 +14,24 @@ T = TypeVar("T")
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
 
+class CLIFetchError(click.ClickException):
+    """ClickException with structured failure data for JSON mode.
+
+    Carries failed_sources and suggestions so the global error handler
+    in main.py can produce structured JSON output instead of a flat message.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        failed_sources: list[tuple[str, str]] | None = None,
+        suggestions: list[str] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.failed_sources = failed_sources or []
+        self.suggestions = suggestions or []
+
+
 class FetchResult(BaseModel, Generic[T]):
     """Result of fetching items from multiple projects/sources.
 
@@ -98,19 +116,25 @@ class FetchResult(BaseModel, Generic[T]):
         self,
         logger: Any | None = None,
         entity_name: str = "runs",
+        suggestions: list[str] | None = None,
     ) -> None:
-        """Raise ClickException if all sources failed.
+        """Raise CLIFetchError if all sources failed.
 
         Use this for consistent error handling across commands. This method:
         1. Reports failures to logger (if provided)
-        2. Raises ClickException with clear error message
+        2. Logs suggestions if available
+        3. Raises CLIFetchError with failure details and suggestions
+
+        The CLIFetchError carries structured data (failed_sources, suggestions)
+        so the global error handler in main.py can produce structured JSON output.
 
         Args:
             logger: Optional CLILogger for reporting (uses proper stderr in JSON mode)
             entity_name: What we were trying to fetch (e.g., "runs", "datasets")
+            suggestions: Optional list of similar project names to suggest
 
         Raises:
-            click.ClickException: If all sources failed to fetch
+            CLIFetchError: If all sources failed to fetch
 
         Example:
             result = fetch_from_projects(client, projects, fetch_func)
@@ -123,10 +147,26 @@ class FetchResult(BaseModel, Generic[T]):
         # Report failures if logger provided
         if logger:
             self.report_failures_to_logger(logger)
+            if suggestions:
+                suggestion_list = ", ".join(f"'{s}'" for s in suggestions[:5])
+                logger.info(f"Did you mean: {suggestion_list}?")
 
-        raise click.ClickException(
-            f"Failed to fetch {entity_name} from all {self.total_sources} source(s). "
-            "Check the error messages above."
+        # Build human-readable message (also used as fallback in non-JSON mode)
+        parts: list[str] = [
+            f"Failed to fetch {entity_name} from all {self.total_sources} source(s)."
+        ]
+        for source, error_msg in self.failed_sources[:3]:
+            short = error_msg[:100] + "..." if len(error_msg) > 100 else error_msg
+            parts.append(f"  {source}: {short}")
+        if suggestions:
+            parts.append(
+                f"Did you mean: {', '.join(repr(s) for s in suggestions[:5])}?"
+            )
+
+        raise CLIFetchError(
+            "\n".join(parts),
+            failed_sources=self.failed_sources,
+            suggestions=suggestions or [],
         )
 
 
@@ -1206,6 +1246,123 @@ def get_matching_projects(
     return []
 
 
+def _looks_like_uuid(value: str) -> bool:
+    """Check if a string looks like a UUID (8-4-4-4-12 hex format).
+
+    Used to auto-detect when a user passes a UUID to --project instead of --project-id.
+
+    Args:
+        value: String to check
+
+    Returns:
+        True if the string matches UUID format
+    """
+    import re
+
+    return bool(
+        re.match(
+            r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+            value,
+        )
+    )
+
+
+def get_project_suggestions(
+    client: Any,
+    failed_name: str,
+    max_suggestions: int = 5,
+) -> list[str]:
+    """Find similar project names to suggest when a project is not found.
+
+    Uses two strategies:
+    1. Substring matching: query appears in name or name appears in query
+    2. Token matching: split by '/', '-', '_', '.' and find shared tokens
+
+    Only called on the failure path (not the happy path), so the extra
+    API call to list projects is acceptable.
+
+    Args:
+        client: LangSmith Client instance
+        failed_name: The project name that was not found
+        max_suggestions: Maximum number of suggestions to return
+
+    Returns:
+        List of similar project names, sorted by relevance (may be empty)
+    """
+    import re
+
+    try:
+        all_projects = list(client.list_projects())
+    except Exception:
+        return []
+
+    query_lower = failed_name.lower()
+    query_tokens = set(re.split(r"[/\-_.]", query_lower))
+    query_tokens.discard("")
+
+    scored: list[tuple[float, str]] = []
+    for proj in all_projects:
+        name = proj.name
+        name_lower = name.lower()
+
+        # Exact match — shouldn't happen but skip
+        if name_lower == query_lower:
+            continue
+
+        # Substring match (highest priority)
+        if query_lower in name_lower or name_lower in query_lower:
+            scored.append((1.0, name))
+            continue
+
+        # Token overlap (Jaccard-style score)
+        name_tokens = set(re.split(r"[/\-_.]", name_lower))
+        name_tokens.discard("")
+        if not query_tokens or not name_tokens:
+            continue
+
+        shared = query_tokens & name_tokens
+        if shared:
+            score = len(shared) / len(query_tokens | name_tokens)
+            scored.append((score, name))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [name for _, name in scored[:max_suggestions]]
+
+
+def raise_if_all_failed_with_suggestions(
+    result: "FetchResult[Any]",
+    client: Any,
+    project_query: ProjectQuery,
+    logger: Any | None = None,
+    entity_name: str = "runs",
+) -> None:
+    """Raise if all sources failed, with project name suggestions.
+
+    Wraps FetchResult.raise_if_all_failed() with automatic suggestion
+    fetching when a single project name lookup fails.
+
+    Args:
+        result: The FetchResult to check
+        client: LangSmith client (for fetching project list on failure)
+        project_query: The ProjectQuery used for the fetch
+        logger: Optional CLILogger
+        entity_name: What we were trying to fetch
+    """
+    if not result.all_failed:
+        return
+
+    # Only fetch suggestions for single-project-name failures
+    suggestions: list[str] | None = None
+    if project_query.names and not project_query.use_id:
+        failed_names = [
+            name for name, _ in result.failed_sources if not name.startswith("id:")
+        ]
+        if len(failed_names) == 1:
+            suggestions = get_project_suggestions(client, failed_names[0])
+
+    result.raise_if_all_failed(logger, entity_name, suggestions=suggestions)
+
+
 def resolve_project_filters(
     client: Any,
     *,
@@ -1219,11 +1376,13 @@ def resolve_project_filters(
     """Resolve project filter options into a ProjectQuery.
 
     When --project-id is provided, returns a ProjectQuery with project_id set,
-    bypassing all name-based resolution. Otherwise delegates to get_matching_projects.
+    bypassing all name-based resolution. When --project contains a UUID, it is
+    auto-detected and treated as --project-id. Otherwise delegates to
+    get_matching_projects.
 
     Args:
         client: LangSmith Client instance
-        project: Single project name (default fallback)
+        project: Single project name (default fallback). UUIDs are auto-detected.
         project_id: Direct project UUID (highest priority)
         name: Substring/contains match
         name_exact: Exact project name match
@@ -1235,6 +1394,10 @@ def resolve_project_filters(
     """
     if project_id:
         return ProjectQuery(names=[], project_id=project_id)
+
+    # Auto-detect: if --project looks like a UUID, treat as --project-id
+    if project and _looks_like_uuid(project):
+        return ProjectQuery(names=[], project_id=project)
 
     names = get_matching_projects(
         client,

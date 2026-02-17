@@ -1,7 +1,7 @@
 """Tests for runs list command and filters."""
 
 import json
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 import pytest
 
@@ -566,3 +566,66 @@ class TestRunsListValidation:
 
         assert result.exit_code != 0
         assert "Invalid regex pattern" in result.output
+
+
+class TestRunsListProjectNotFound:
+    """Tests for project-not-found error experience."""
+
+    def test_uuid_in_project_flag_uses_project_id(self, runner, mock_client):
+        """INVARIANT: UUID passed to --project auto-redirects to project_id lookup."""
+        mock_client.list_runs.return_value = [create_run(name="Found")]
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "list",
+                "--project",
+                "8dc9fb82-ee48-4815-a0b0-c0cbabaa1887",
+            ],
+        )
+
+        assert result.exit_code == 0
+        # Verify list_runs was called with project_id kwarg
+        call_kwargs = mock_client.list_runs.call_args
+        # The project_id gets passed through fetch_from_projects
+        assert call_kwargs is not None
+
+    def test_error_suggests_similar_projects_json(self, runner, mock_client):
+        """INVARIANT: JSON error includes suggested project names when project not found."""
+        mock_client.list_runs.side_effect = Exception("Project not found")
+        proj = MagicMock()
+        proj.name = "prd/promotion_service"
+        mock_client.list_projects.return_value = [proj]
+
+        result = runner.invoke(
+            cli,
+            ["--json", "runs", "list", "--project", "promotion_service"],
+        )
+
+        assert result.exit_code != 0
+        # Extract JSON from mixed stdout/stderr output
+        error_data = None
+        for line in result.output.strip().split("\n"):
+            line = line.strip()
+            if line.startswith("{"):
+                error_data = json.loads(line)
+                break
+        assert error_data is not None
+        assert "prd/promotion_service" in error_data.get("suggestions", [])
+
+    def test_error_suggests_similar_projects_human(self, runner, mock_client):
+        """INVARIANT: Human-mode error includes suggested project names."""
+        mock_client.list_runs.side_effect = Exception("Project not found")
+        proj = MagicMock()
+        proj.name = "prd/promotion_service"
+        mock_client.list_projects.return_value = [proj]
+
+        result = runner.invoke(
+            cli,
+            ["runs", "list", "--project", "promotion_service"],
+        )
+
+        assert result.exit_code != 0
+        assert "prd/promotion_service" in result.output

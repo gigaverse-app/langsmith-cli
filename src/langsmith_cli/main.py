@@ -1,6 +1,7 @@
 import sys
 import json as json_lib
 import os
+from typing import Any
 import click
 from rich.console import Console
 from dotenv import load_dotenv
@@ -148,10 +149,23 @@ class LangSmithCLIGroup(click.Group):
 
             else:
                 # Non-LangSmith error (Click exceptions, Python exceptions, etc.)
+                from langsmith_cli.utils import CLIFetchError
+
                 if json_mode:
                     # In JSON mode, ALWAYS output structured JSON to stdout.
                     # Empty stdout breaks piped JSON parsing (json.loads fails).
-                    if isinstance(e, click.ClickException):
+                    if isinstance(e, CLIFetchError):
+                        # Structured error with failure details and suggestions
+                        error_data: dict[str, Any] = {
+                            "error": "FetchError",
+                            "message": e.format_message(),
+                            "failed_sources": [
+                                {"name": n, "error": err} for n, err in e.failed_sources
+                            ],
+                            "suggestions": e.suggestions,
+                        }
+                        exit_code = e.exit_code
+                    elif isinstance(e, click.ClickException):
                         error_data = {
                             "error": type(e).__name__,
                             "message": e.format_message(),

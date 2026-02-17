@@ -1,3 +1,6 @@
+import json
+from typing import Any
+
 import click
 
 from langsmith_cli.main import cli
@@ -444,3 +447,84 @@ class TestVerbosityFlags:
 
         assert result.exit_code == 0
         # Trace level messages should be visible (if any)
+
+
+def _extract_json_from_output(output: str) -> dict[str, Any]:
+    """Extract JSON object from CliRunner output that may contain mixed stderr/stdout.
+
+    CliRunner mixes stdout and stderr, so logger messages may precede the JSON.
+    This finds and parses the JSON object line.
+    """
+    for line in output.strip().split("\n"):
+        line = line.strip()
+        if line.startswith("{"):
+            return json.loads(line)
+    raise ValueError(f"No JSON found in output: {output!r}")
+
+
+class TestCLIFetchErrorHandling:
+    """Tests for CLIFetchError handling in global error handler."""
+
+    def test_json_mode_includes_structured_fields(self, runner, mock_client):
+        """INVARIANT: JSON error output includes failed_sources and suggestions fields."""
+        mock_client.list_runs.side_effect = Exception("Project not found")
+        mock_client.list_projects.return_value = []
+
+        result = runner.invoke(
+            cli, ["--json", "runs", "list", "--project", "nonexistent"]
+        )
+
+        assert result.exit_code != 0
+        error_data = _extract_json_from_output(result.output)
+        assert error_data["error"] == "FetchError"
+        assert "failed_sources" in error_data
+        assert "suggestions" in error_data
+        assert isinstance(error_data["failed_sources"], list)
+        assert isinstance(error_data["suggestions"], list)
+
+    def test_json_mode_includes_suggestions(self, runner, mock_client):
+        """INVARIANT: JSON error includes similar project names when available."""
+        from unittest.mock import MagicMock
+
+        mock_client.list_runs.side_effect = Exception("Project not found")
+        proj = MagicMock()
+        proj.name = "prd/promotion_service"
+        mock_client.list_projects.return_value = [proj]
+
+        result = runner.invoke(
+            cli, ["--json", "runs", "list", "--project", "promotion_service"]
+        )
+
+        assert result.exit_code != 0
+        error_data = _extract_json_from_output(result.output)
+        assert error_data["error"] == "FetchError"
+        assert "prd/promotion_service" in error_data["suggestions"]
+        assert len(error_data["failed_sources"]) == 1
+        assert error_data["failed_sources"][0]["name"] == "promotion_service"
+
+    def test_json_mode_failed_sources_have_name_and_error(self, runner, mock_client):
+        """INVARIANT: Each failed_source has name and error fields."""
+        mock_client.list_runs.side_effect = Exception("SDK error message")
+        mock_client.list_projects.return_value = []
+
+        result = runner.invoke(
+            cli, ["--json", "runs", "list", "--project", "bad-project"]
+        )
+
+        assert result.exit_code != 0
+        error_data = _extract_json_from_output(result.output)
+        fs = error_data["failed_sources"][0]
+        assert "name" in fs
+        assert "error" in fs
+        assert fs["name"] == "bad-project"
+        assert "SDK error message" in fs["error"]
+
+    def test_human_mode_shows_error_message(self, runner, mock_client):
+        """INVARIANT: Human mode shows readable error with failure details."""
+        mock_client.list_runs.side_effect = Exception("Project not found")
+        mock_client.list_projects.return_value = []
+
+        result = runner.invoke(cli, ["runs", "list", "--project", "nonexistent"])
+
+        assert result.exit_code != 0
+        assert "Failed to fetch" in result.output
