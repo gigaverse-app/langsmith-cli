@@ -212,6 +212,17 @@ class TestRunsGetLatest:
         assert data["name"] == "Latest Run"
         assert "id" in data
 
+    def test_order_by_not_passed_to_api(self, runner, mock_client):
+        """INVARIANT: order_by must NOT be passed to client.list_runs() — API rejects it with 400."""
+        mock_client.list_runs.return_value = iter([create_run(name="Latest Run")])
+
+        runner.invoke(cli, ["runs", "get-latest", "--project", "test"])
+
+        call_kwargs = mock_client.list_runs.call_args[1]
+        assert "order_by" not in call_kwargs, (
+            "order_by should not be passed to list_runs — LangSmith API rejects it with 400 Bad Request"
+        )
+
     def test_get_latest_with_fields(self, runner, mock_client):
         """Get-latest with --fields returns only selected fields."""
         mock_client.list_runs.return_value = iter(

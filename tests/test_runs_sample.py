@@ -123,6 +123,32 @@ class TestRunsSample:
         assert result.exit_code != 0
         assert "Invalid grouping format" in result.output
 
+    def test_order_by_not_passed_to_api(self, runner, mock_client):
+        """INVARIANT: order_by must NOT be passed to client.list_runs() — API rejects it with 400."""
+        mock_client.list_runs.return_value = [
+            create_run(name="test-run", tags=["category:test"])
+        ]
+
+        runner.invoke(
+            cli,
+            [
+                "runs",
+                "sample",
+                "--stratify-by",
+                "tag:category",
+                "--values",
+                "test",
+                "--samples-per-stratum",
+                "1",
+            ],
+        )
+
+        for call in mock_client.list_runs.call_args_list:
+            call_kwargs = call[1]
+            assert "order_by" not in call_kwargs, (
+                "order_by should not be passed to list_runs — LangSmith API rejects it with 400 Bad Request"
+            )
+
 
 class TestRunsSampleMultiDimensional:
     """Tests for multi-dimensional stratification."""
@@ -130,7 +156,7 @@ class TestRunsSampleMultiDimensional:
     def test_multi_dimensional_cartesian_product(self, runner, mock_client):
         """Multi-dimensional sampling with Cartesian product."""
 
-        def mock_list_runs(project_name, limit, filter, order_by):
+        def mock_list_runs(project_name, limit, filter, **kwargs):
             if "length:short" in filter and "content_type:news" in filter:
                 return [
                     create_run("short-news", tags=["length:short", "content_type:news"])

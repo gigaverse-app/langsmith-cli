@@ -449,6 +449,23 @@ class TestRunsAnalyze:
         _, kwargs = mock_client.list_runs.call_args
         assert 'gte(start_time, "2026-01-01")' in kwargs["filter"]
 
+    def test_order_by_not_passed_to_api(self, runner, mock_client):
+        """INVARIANT: order_by must NOT be passed to client.list_runs() — API rejects it with 400."""
+        mock_client.list_runs.return_value = [
+            create_run("run1", tags=["category:test"])
+        ]
+
+        runner.invoke(
+            cli,
+            ["runs", "analyze", "--group-by", "tag:category", "--metrics", "count"],
+        )
+
+        for call in mock_client.list_runs.call_args_list:
+            call_kwargs = call[1]
+            assert "order_by" not in call_kwargs, (
+                "order_by should not be passed to list_runs — LangSmith API rejects it with 400 Bad Request"
+            )
+
     def test_analyze_invalid_group_by(self, runner):
         """Invalid group-by format produces error."""
         result = runner.invoke(cli, ["runs", "analyze", "--group-by", "unknown:field"])

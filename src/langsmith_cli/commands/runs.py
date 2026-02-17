@@ -321,9 +321,6 @@ def compute_metrics(
 )
 @click.option("--trace-filter", help="Filter applied to root trace.")
 @click.option("--tree-filter", help="Filter if any run in trace tree matches.")
-@click.option(
-    "--order-by", default="-start_time", help="Sort field (prefix with - for desc)."
-)
 @click.option("--reference-example-id", help="Filter runs for a specific example.")
 @click.option(
     "--tag",
@@ -430,7 +427,6 @@ def list_runs(
     roots,
     trace_filter,
     tree_filter,
-    order_by,
     reference_example_id,
     tag,
     name_pattern,
@@ -661,7 +657,6 @@ def list_runs(
         is_root=is_root,
         trace_filter=trace_filter,
         tree_filter=tree_filter,
-        order_by=order_by,
         reference_example_id=reference_example_id,
         console=None,  # Don't auto-report warnings (we have custom diagnostics below)
     )
@@ -991,7 +986,6 @@ def get_latest_run(
         error=error_filter,
         filter=combined_filter,
         is_root=roots,
-        order_by="-start_time",
     )
 
     if pq.use_id:
@@ -1455,7 +1449,6 @@ def search_runs(
         roots=roots,  # Pass through --roots flag
         trace_filter=None,
         tree_filter=None,
-        order_by="-start_time",
         reference_example_id=None,
         tag=(),
         name_pattern=None,
@@ -1672,7 +1665,6 @@ def sample_runs(
                 project_query=pq,
                 limit=sample_limit,
                 filter=combined_filter,
-                order_by="-start_time",
                 console=console,
             )
             stratum_runs = result.items[:sample_limit]
@@ -1721,7 +1713,6 @@ def sample_runs(
                 project_query=pq,
                 limit=samples_per_stratum,
                 filter=combined_filter,
-                order_by="-start_time",
                 console=console,
             )
             stratum_runs = result.items[:samples_per_stratum]
@@ -1962,7 +1953,6 @@ def analyze_runs(
             project_query=pq,
             filter=combined_filter,
             limit=None,
-            order_by="-start_time",
             console=console,
         )
         all_runs = result.items
@@ -1981,7 +1971,6 @@ def analyze_runs(
                     **proj_kwargs,
                     filter=combined_filter,
                     limit=None,  # SDK paginates automatically
-                    order_by="-start_time",
                     select=list(select_fields) if select_fields else None,
                 )
 
@@ -2150,7 +2139,6 @@ def _fetch_runs_for_discovery(
         _fetch_runs,
         project_query=pq,
         limit=sample_size,
-        order_by="-start_time",
         select=select,
         filter=combined_filter,
         console=console,
