@@ -48,8 +48,8 @@ langsmith-cli runs list --project my-project --fields id,name,status --output ru
 ```bash
 # ❌ WRONG - Never use shell redirection for data extraction
 langsmith-cli --json runs list --project my-project > runs.json
-# If API fails: you get empty [], no error message, exit code 0
-# You won't know anything went wrong!
+# If API fails: errors go to stderr (invisible with redirection)
+# You may get a JSON error object instead of data, and won't know what happened
 ```
 
 ```bash
@@ -107,7 +107,8 @@ langsmith-cli --json runs list --project my-project --limit 5 2>&1
 
 ### Runs (Traces)
 - `langsmith-cli --json runs list [OPTIONS]`: List recent runs.
-  - `--project <name>`: Filter by project.
+  - `--project <name>`: Filter by project name (default: "default").
+  - `--project-id <uuid>`: Filter by project UUID (bypasses name resolution, faster).
   - `--limit <n>`: Max results (default 10, keep it small).
   - `--status <success|error>`: Filter by status.
   - `--filter <string>`: Advanced FQL query string (see FQL examples below).
@@ -210,6 +211,13 @@ langsmith-cli --json runs list --project my-project --limit 5 2>&1
   - `--output <file>`: Write to file instead of stdout
 - `langsmith-cli --json prompts get <name> [--commit <hash>]`: Fetch a prompt template.
 - `langsmith-cli --json prompts push <name> <file_path>`: Push a local file as a prompt.
+
+### Self (Installation Management)
+- `langsmith-cli self detect`: Show installation details (version, install method, paths).
+  - Reports: version, install method (uv tool, pipx, pip, editable), install path, executable path, Python version.
+- `langsmith-cli self update`: Update langsmith-cli to the latest version.
+  - Auto-detects install method and runs the appropriate upgrade command.
+  - Checks PyPI for latest version before updating.
 
 ## Common Patterns (No Piping Needed)
 
