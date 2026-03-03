@@ -2770,10 +2770,11 @@ def export_runs(
     )
     all_runs: list[Run] = result.items
 
-    # Report any fetch failures
+    # If all sources failed, raise with suggestions (reports failures internally).
+    # Otherwise, report partial failures.
+    raise_if_all_failed_with_suggestions(result, client, pq, logger, "runs")
     if result.has_failures:
         result.report_failures_to_logger(logger)
-    raise_if_all_failed_with_suggestions(result, client, pq, logger, "runs")
 
     if not all_runs:
         if ctx.obj.get("json"):

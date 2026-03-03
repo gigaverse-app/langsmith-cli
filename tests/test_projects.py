@@ -676,6 +676,27 @@ def test_projects_get_not_found(runner):
         assert "not found" in result.output.lower()
 
 
+def test_projects_get_not_found_langsmith_error(runner):
+    """INVARIANT: LangSmithError (e.g. LangSmithUserError for invalid UUID) should produce friendly error."""
+    from langsmith.utils import LangSmithError
+
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        # SDK raises LangSmithUserError (subclass of LangSmithError) when
+        # project_id is not a valid UUID. The first call (by name) raises
+        # LangSmithNotFoundError, the fallback (by ID) raises LangSmithError.
+        from langsmith.utils import LangSmithNotFoundError
+
+        mock_client.read_project.side_effect = [
+            LangSmithNotFoundError("Not found"),
+            LangSmithError("project_id must be a valid UUID"),
+        ]
+
+        result = runner.invoke(cli, ["projects", "get", "nonexistent"])
+        assert result.exit_code != 0
+        assert "not found" in result.output.lower()
+
+
 def test_projects_get_with_fields(runner):
     """INVARIANT: --fields should limit returned fields."""
     with patch("langsmith.Client") as MockClient:

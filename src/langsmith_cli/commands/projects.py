@@ -36,7 +36,7 @@ def resolve_project(
     Tries name first (unless input looks like a UUID), then falls back.
     Raises click.ClickException if neither resolves.
     """
-    from langsmith.utils import LangSmithNotFoundError
+    from langsmith.utils import LangSmithError, LangSmithNotFoundError
 
     # Optimization: if it looks like a UUID, try by ID first
     if _looks_like_uuid(name_or_id):
@@ -44,7 +44,7 @@ def resolve_project(
             return client.read_project(
                 project_id=name_or_id, include_stats=include_stats
             )
-        except (LangSmithNotFoundError, ValueError):
+        except (LangSmithNotFoundError, LangSmithError, ValueError):
             raise click.ClickException(f"Project '{name_or_id}' not found.")
 
     # Otherwise, try name first, fall back to ID
@@ -57,7 +57,7 @@ def resolve_project(
             return client.read_project(
                 project_id=name_or_id, include_stats=include_stats
             )
-        except (LangSmithNotFoundError, ValueError):
+        except (LangSmithNotFoundError, LangSmithError, ValueError):
             raise click.ClickException(f"Project '{name_or_id}' not found.")
 
 
