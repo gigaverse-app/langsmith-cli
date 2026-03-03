@@ -103,7 +103,12 @@ langsmith-cli --json runs list --project my-project --limit 5 2>&1
 - `langsmith-cli --json projects list [OPTIONS]`: List all projects.
   - `--fields <comma-separated>`: Select specific fields (e.g., `id,name`)
   - `--output <file>`: Write to file instead of stdout
+- `langsmith-cli --json projects get <name-or-id>`: Get project details (UUID auto-detected).
+  - `--include-stats/--no-stats`: Include/exclude run statistics (default: include)
+  - `--fields <comma-separated>`: Select fields
 - `langsmith-cli --json projects create <name>`: Create a new project.
+- `langsmith-cli --json projects update <name-or-id> --name <new> --description <desc>`: Update project.
+- `langsmith-cli --json projects delete <name-or-id> --confirm`: Delete a project.
 
 ### Runs (Traces)
 - `langsmith-cli --json runs list [OPTIONS]`: List recent runs.
@@ -192,6 +197,17 @@ langsmith-cli --json runs list --project my-project --limit 5 2>&1
   - Returns: `{"fields": [{"path": "inputs.query", "type": "string", "present_pct": 98.0, "length": {"min": 5, "max": 500, "avg": 89}, "languages": {"en": 80.0}}, ...], "total_runs": 100}`
   - Example: `langsmith-cli --json runs describe --include inputs,outputs`
   - Example: `langsmith-cli --json runs describe --project my-project --no-language`
+- `langsmith-cli runs export <directory> [OPTIONS]`: Export runs as individual JSON files.
+  - `--project <name>`: Project name (required)
+  - `--limit <n>`: Max runs to export (default: 50)
+  - `--status <success|error>`: Filter by status
+  - `--roots`: Export only root traces
+  - `--tag <tag>`: Filter by tag (repeatable)
+  - `--last <duration>`: Time window (e.g., `24h`, `7d`)
+  - `--fields <comma-separated>`: Reduce exported file size
+  - `--filename-pattern <pattern>`: Custom filenames (placeholders: `{run_id}`, `{name}`, `{index}`, `{trace_id}`)
+  - Example: `langsmith-cli runs export ./traces --project my-project --roots --limit 100`
+  - Example: `langsmith-cli --json runs export ./errors --project my-project --status error --last 24h --fields name,inputs,outputs,error`
 
 ### Datasets & Examples
 - `langsmith-cli --json datasets list [OPTIONS]`: List datasets.
@@ -204,13 +220,22 @@ langsmith-cli --json runs list --project my-project --limit 5 2>&1
   - `--output <file>`: Write to file instead of stdout
 - `langsmith-cli --json examples get <id> [--fields id,inputs,outputs]`: Get example details.
 - `langsmith-cli --json examples create --dataset <name> --inputs <json> --outputs <json>`: Add an example.
+- `langsmith-cli --json examples update <id> --inputs <json> --outputs <json>`: Update an example.
+- `langsmith-cli --json examples delete <id> [<id>...] --confirm`: Delete examples (supports bulk).
+- `langsmith-cli --json examples from-run <run-id> --dataset <name>`: Create example from a run.
 
 ### Prompts
 - `langsmith-cli --json prompts list [OPTIONS]`: List prompt repositories.
   - `--fields <comma-separated>`: Select fields (e.g., `repo_handle,description`)
   - `--output <file>`: Write to file instead of stdout
 - `langsmith-cli --json prompts get <name> [--commit <hash>]`: Fetch a prompt template.
+- `langsmith-cli --json prompts pull <name> [--commit <hash>]`: Pull full prompt content (manifest, examples).
+  - `--include-model`: Include model configuration
+  - `--fields <comma-separated>`: Select fields
 - `langsmith-cli --json prompts push <name> <file_path>`: Push a local file as a prompt.
+- `langsmith-cli --json prompts create <name> [--description <text>]`: Create a new prompt.
+- `langsmith-cli --json prompts delete <name> --confirm`: Delete a prompt.
+- `langsmith-cli --json prompts commits <name> [--limit N]`: List prompt versions.
 
 ### Self (Installation Management)
 - `langsmith-cli self detect`: Show installation details (version, install method, paths).

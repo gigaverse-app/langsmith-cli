@@ -193,3 +193,56 @@ langsmith-cli runs watch [OPTIONS]
 - `--refresh INTEGER` - Refresh interval in seconds (default: 2)
 
 **Behavior:** Shows live table of recent runs with auto-refresh
+
+### `runs export`
+
+Export runs as individual JSON files for offline analysis.
+
+```bash
+langsmith-cli --json runs export <directory> [OPTIONS]
+```
+
+**Arguments:**
+- `directory` (required) - Output directory (created if needed)
+
+**Options:**
+- `--project TEXT` - Project name (required)
+- `--limit INTEGER` - Maximum runs to export (default: 50)
+- `--status TEXT` - Filter: `success` or `error`
+- `--roots` - Export only root traces
+- `--run-type TEXT` - Filter by type: `llm`, `chain`, `tool`, etc.
+- `--tag TEXT` - Filter by tag (can specify multiple)
+- `--last TEXT` - Time window: `24h`, `7d`, `30m`, etc.
+- `--since TEXT` - Since timestamp or relative time
+- `--filter TEXT` - FQL filter string
+- `--filename-pattern TEXT` - Output filename template (default: `{run_id}.json`)
+  - Placeholders: `{run_id}`, `{trace_id}`, `{index}`, `{name}`
+- `--fields TEXT` - Comma-separated fields to include (reduces file size)
+
+**Output (JSON mode):**
+```json
+{
+  "status": "success",
+  "exported": 10,
+  "directory": "/path/to/output",
+  "files": ["<run-id-1>.json", "<run-id-2>.json", ...],
+  "errors": []
+}
+```
+
+**Examples:**
+```bash
+# Export last 50 root traces
+langsmith-cli runs export ./traces --project my-project --roots
+
+# Export error traces from last 24h
+langsmith-cli --json runs export ./errors --project my-project --status error --last 24h
+
+# Export with field pruning for smaller files
+langsmith-cli runs export ./traces --project my-project \
+  --fields name,inputs,outputs,status,error --limit 100
+
+# Custom filenames
+langsmith-cli runs export ./traces --project my-project \
+  --filename-pattern "{name}_{run_id}.json"
+```

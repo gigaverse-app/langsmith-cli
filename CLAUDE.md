@@ -107,7 +107,10 @@ main.py (entry point)
 │   └── login
 ├── projects (group)
 │   ├── list
-│   └── create
+│   ├── get
+│   ├── create
+│   ├── update
+│   └── delete
 ├── runs (group)
 │   ├── list
 │   ├── get
@@ -122,7 +125,8 @@ main.py (entry point)
 │   ├── metadata-keys
 │   ├── fields
 │   ├── describe
-│   └── view-file
+│   ├── view-file
+│   └── export
 ├── datasets (group)
 │   ├── list
 │   ├── get
@@ -131,11 +135,18 @@ main.py (entry point)
 ├── examples (group)
 │   ├── list
 │   ├── get
-│   └── create
+│   ├── create
+│   ├── update
+│   ├── delete
+│   └── from-run
 ├── prompts (group)
 │   ├── list
 │   ├── get
-│   └── push
+│   ├── pull
+│   ├── push
+│   ├── create
+│   ├── delete
+│   └── commits
 └── self (group)
     ├── detect
     └── update

@@ -104,3 +104,78 @@ langsmith-cli --json examples create \
   --split train
 ```
 
+### `examples update`
+
+Update an existing example's inputs, outputs, metadata, or split.
+
+```bash
+langsmith-cli --json examples update <example-id> [OPTIONS]
+```
+
+**Arguments:**
+- `example-id` (required) - Example UUID
+
+**Options:**
+- `--inputs JSON` - New input data as JSON
+- `--outputs JSON` - New output data as JSON
+- `--metadata JSON` - New metadata as JSON
+- `--split TEXT` - New split name
+
+At least one option is required.
+
+**Output:** Updated example data
+
+**Example:**
+```bash
+langsmith-cli --json examples update <uuid> \
+  --outputs '{"answer": "Updated answer"}' \
+  --metadata '{"reviewed": true}'
+```
+
+### `examples delete`
+
+Delete one or more examples by ID. Supports bulk deletion with partial failure reporting.
+
+```bash
+langsmith-cli --json examples delete <example-id> [<example-id>...] [OPTIONS]
+```
+
+**Arguments:**
+- `example-ids` (required) - One or more example UUIDs
+
+**Options:**
+- `--confirm` - Skip confirmation prompt
+
+**Output:** `{"status": "success", "deleted": [...], "errors": [...]}`
+
+**Examples:**
+```bash
+# Delete single example
+langsmith-cli --json examples delete <uuid> --confirm
+
+# Bulk delete
+langsmith-cli --json examples delete <uuid1> <uuid2> <uuid3> --confirm
+```
+
+### `examples from-run`
+
+Create an example from a run's inputs and outputs.
+
+```bash
+langsmith-cli --json examples from-run <run-id> --dataset <name>
+```
+
+**Arguments:**
+- `run-id` (required) - Run UUID to create example from
+
+**Options:**
+- `--dataset TEXT` (required) - Dataset name to add the example to
+
+**Output:** Created example object
+
+**Example:**
+```bash
+# Turn a good run into a training example
+langsmith-cli --json examples from-run <run-uuid> --dataset "training-data"
+```
+
