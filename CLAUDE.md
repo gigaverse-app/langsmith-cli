@@ -530,6 +530,100 @@ def create_dataset(name="test", example_count=10) -> Dataset:
 - E2E tests validate full SDK interaction (require API key)
 - Aim for 100% coverage of new code
 
+### Handling Mixed stdout/stderr in Tests (CliRunner)
+
+Click's `CliRunner` mixes stdout and stderr. When commands use `logger.info()` before JSON output, the `--json` test output may contain non-JSON lines. Use the shared `parse_json_output()` helper from conftest:
+
+```python
+from conftest import parse_json_output
+
+def test_json_output(runner, tmp_path):
+    result = runner.invoke(cli, ["--json", "runs", "export", str(tmp_path), ...])
+    data = parse_json_output(result.output)  # Finds last JSON line
+    assert data["status"] == "success"
+```
+
+**Anti-pattern:** Don't use `json.loads(result.output)` directly when commands emit progress messages — it will fail with `JSONDecodeError`.
+
+### SDK Exception Types in Tests
+
+Always use real SDK exception types in test side_effects, never bare `Exception`:
+
+```python
+# ❌ BAD - bare Exception won't be caught by specific handlers
+mock_client.delete_example.side_effect = Exception("Not found")
+
+# ✅ GOOD - matches the actual exception hierarchy
+from langsmith.utils import LangSmithNotFoundError
+mock_client.delete_example.side_effect = LangSmithNotFoundError("Not found")
+```
+
+## Reusable Patterns Across Commands
+
+### Name-or-ID Resolution (projects.py: `resolve_project()`)
+
+When a command accepts a name or ID argument, use the `resolve_project()` helper in `projects.py`. It:
+1. Auto-detects UUIDs via `_looks_like_uuid()` to save an API call
+2. Falls back from name to ID lookup
+3. Raises `click.ClickException` on not-found
+
+```python
+from langsmith_cli.commands.projects import resolve_project
+
+project = resolve_project(client, name_or_id, include_stats=True)
+```
+
+### Shared Filter Building (utils.py: `build_runs_list_filter()`)
+
+Never manually reconstruct status/tag/time filters. Use the canonical helper:
+
+```python
+combined_filter, error_filter = build_runs_list_filter(
+    filter_=filter_, status=status, tag=tag, since=since, last=last
+)
+```
+
+### Shared Multi-Project Fetching (utils.py: `fetch_from_projects()`)
+
+Never write manual project iteration loops. Use `fetch_from_projects()`:
+
+```python
+def _fetch_runs(c, proj, **kw):
+    if proj is not None:
+        return c.list_runs(project_name=proj, **kw)
+    return c.list_runs(**kw)
+
+result = fetch_from_projects(client, projects, _fetch_runs, project_query=pq, ...)
+raise_if_all_failed_with_suggestions(result, client, pq, logger, "runs")
+```
+
+### Destructive Operations Pattern
+
+For delete/destructive commands, follow this pattern:
+1. Require `--confirm` flag (skip with `click.confirm(abort=True)`)
+2. Resolve entity first (verify it exists), then perform the operation
+3. Use specific SDK exceptions (`LangSmithNotFoundError`), never broad `except Exception`
+4. In JSON mode, return `{"status": "success", ...}` on success
+
+### Filename Sanitization
+
+When writing user-controlled filenames, sanitize with regex:
+```python
+import re
+safe = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name)
+safe = safe.strip(". ")
+```
+
+### Common Anti-Patterns to Avoid
+
+1. **`hasattr()` on Pydantic models** → Use `p.field is not None` instead
+2. **Broad `except Exception`** in loops → Catch specific SDK exceptions
+3. **Manual filter construction** → Use `build_runs_list_filter()`
+4. **Manual project iteration** → Use `fetch_from_projects()`
+5. **Duplicated utility logic** → Extract to helpers (e.g., `normalize_split()`)
+6. **`--flag default=True is_flag=True`** → No-op; use `--flag/--no-flag` pair
+7. **ThreadPoolExecutor for local file I/O** → Sequential is faster (no GIL benefit)
+
 ## Engineering Standards (from docs/AGENTS.md)
 
 ### 1. Type Safety (Zero Tolerance for Weak Types)
