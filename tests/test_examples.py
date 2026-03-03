@@ -647,13 +647,15 @@ def test_examples_delete_multiple(runner):
 
 def test_examples_delete_partial_failure(runner):
     """INVARIANT: Partial delete failures should report both successes and errors."""
+    from langsmith.utils import LangSmithNotFoundError
+
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
 
-        # First succeeds, second fails
+        # First succeeds, second fails with SDK-specific exception
         mock_client.delete_example.side_effect = [
             None,
-            Exception("Not found"),
+            LangSmithNotFoundError("Not found"),
         ]
 
         result = runner.invoke(

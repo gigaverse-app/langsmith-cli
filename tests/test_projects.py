@@ -641,19 +641,13 @@ def test_projects_get_by_name_table(runner):
 
 
 def test_projects_get_falls_back_to_id(runner):
-    """INVARIANT: projects get should try name first, then fall back to ID."""
-    from langsmith.utils import LangSmithNotFoundError
-
+    """INVARIANT: projects get with UUID should resolve by ID directly."""
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
 
         project = create_project(name="found-by-id")
-
-        # First call (by name) fails, second call (by ID) succeeds
-        mock_client.read_project.side_effect = [
-            LangSmithNotFoundError("Not found by name"),
-            project,
-        ]
+        # UUID auto-detected → read_project(project_id=...) called directly
+        mock_client.read_project.return_value = project
 
         result = runner.invoke(
             cli,
@@ -663,8 +657,10 @@ def test_projects_get_falls_back_to_id(runner):
         data = json.loads(result.output)
         assert data["name"] == "found-by-id"
 
-        # Verify both calls were made
-        assert mock_client.read_project.call_count == 2
+        # UUID detected → only one call with project_id
+        mock_client.read_project.assert_called_once_with(
+            project_id="f47ac10b-58cc-4372-a567-0e02b2c3d479", include_stats=True
+        )
 
 
 def test_projects_get_not_found(runner):
@@ -829,9 +825,11 @@ def test_projects_update_table_output(runner):
 
 
 def test_projects_delete_with_confirm_json(runner):
-    """INVARIANT: projects delete --confirm should delete and return success."""
+    """INVARIANT: projects delete --confirm should resolve then delete by ID."""
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
+        project = create_project(name="my-project")
+        mock_client.read_project.return_value = project
 
         result = runner.invoke(
             cli, ["--json", "projects", "delete", "my-project", "--confirm"]
@@ -839,13 +837,15 @@ def test_projects_delete_with_confirm_json(runner):
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert data["status"] == "success"
-        mock_client.delete_project.assert_called_once_with(project_name="my-project")
+        mock_client.delete_project.assert_called_once_with(project_id=str(project.id))
 
 
 def test_projects_delete_table_output(runner):
     """INVARIANT: projects delete should show success message."""
     with patch("langsmith.Client") as MockClient:
-        MockClient.return_value
+        mock_client = MockClient.return_value
+        project = create_project(name="my-project")
+        mock_client.read_project.return_value = project
 
         result = runner.invoke(
             cli, ["projects", "delete", "my-project", "--confirm"]
@@ -857,26 +857,27 @@ def test_projects_delete_table_output(runner):
 
 
 def test_projects_delete_not_found(runner):
-    """INVARIANT: Deleting non-existent project should handle gracefully."""
+    """INVARIANT: Deleting non-existent project should raise error."""
     from langsmith.utils import LangSmithNotFoundError
 
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
-        mock_client.delete_project.side_effect = LangSmithNotFoundError("Not found")
+        # resolve_project fails: name lookup fails, ID fallback also fails
+        mock_client.read_project.side_effect = LangSmithNotFoundError("Not found")
 
         result = runner.invoke(
-            cli, ["--json", "projects", "delete", "missing", "--confirm"]
+            cli, ["projects", "delete", "missing", "--confirm"]
         )
-        assert result.exit_code == 0
-        data = json.loads(result.output)
-        assert data["status"] == "error"
-        assert "not found" in data["message"]
+        assert result.exit_code != 0
+        assert "not found" in result.output.lower()
 
 
 def test_projects_delete_requires_confirmation(runner):
     """INVARIANT: Without --confirm, delete should prompt for confirmation."""
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
+        project = create_project(name="my-project")
+        mock_client.read_project.return_value = project
 
         result = runner.invoke(
             cli, ["projects", "delete", "my-project"], input="n\n"
@@ -886,17 +887,12 @@ def test_projects_delete_requires_confirmation(runner):
 
 
 def test_projects_delete_falls_back_to_id(runner):
-    """INVARIANT: Delete should try by name first, then fall back to ID."""
-    from langsmith.utils import LangSmithNotFoundError
-
+    """INVARIANT: Delete with UUID should resolve by ID directly."""
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
-
-        # First call (by name) fails, second call (by ID) succeeds
-        mock_client.delete_project.side_effect = [
-            LangSmithNotFoundError("Not found by name"),
-            None,  # Success on second call
-        ]
+        project = create_project(name="my-project")
+        # UUID auto-detected → read_project(project_id=...) succeeds directly
+        mock_client.read_project.return_value = project
 
         result = runner.invoke(
             cli,
@@ -911,4 +907,8 @@ def test_projects_delete_falls_back_to_id(runner):
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert data["status"] == "success"
-        assert mock_client.delete_project.call_count == 2
+        # resolve_project detects UUID, reads by ID, then deletes by ID
+        mock_client.read_project.assert_called_once_with(
+            project_id="f47ac10b-58cc-4372-a567-0e02b2c3d479", include_stats=False
+        )
+        mock_client.delete_project.assert_called_once_with(project_id=str(project.id))

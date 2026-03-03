@@ -21,6 +21,13 @@ from langsmith_cli.utils import (
 console = Console()
 
 
+def normalize_split(split: str | None) -> list[str] | None:
+    """Normalize a split string to the list format expected by the SDK."""
+    if not split:
+        return None
+    return [split] if isinstance(split, str) else split
+
+
 @click.group()
 def examples():
     """Manage dataset examples."""
@@ -194,17 +201,12 @@ def create_example(ctx, dataset, inputs, outputs, metadata, split):
     output_dict = parse_json_string(outputs, "outputs")
     metadata_dict = parse_json_string(metadata, "metadata")
 
-    # Handle split - can be a single string or list
-    split_value = None
-    if split:
-        split_value = [split] if isinstance(split, str) else split
-
     example = client.create_example(
         inputs=input_dict,
         outputs=output_dict,
         dataset_name=dataset,
         metadata=metadata_dict,
-        split=split_value,
+        split=normalize_split(split),
     )
 
     if ctx.obj.get("json"):
@@ -241,16 +243,12 @@ def update_example(ctx, example_id, inputs, outputs, metadata, split):
     output_dict = parse_json_string(outputs, "outputs")
     metadata_dict = parse_json_string(metadata, "metadata")
 
-    split_value = None
-    if split:
-        split_value = [split] if isinstance(split, str) else split
-
     result = client.update_example(
         example_id,
         inputs=input_dict,
         outputs=output_dict,
         metadata=metadata_dict,
-        split=split_value,
+        split=normalize_split(split),
     )
 
     if ctx.obj.get("json"):
@@ -279,13 +277,15 @@ def delete_examples(ctx, example_ids, confirm):
 
     client = get_or_create_client(ctx)
 
+    from langsmith.utils import LangSmithError, LangSmithNotFoundError
+
     deleted = []
     errors = []
     for eid in example_ids:
         try:
             client.delete_example(eid)
             deleted.append(eid)
-        except Exception as e:
+        except (LangSmithNotFoundError, LangSmithError) as e:
             errors.append({"id": eid, "error": str(e)})
 
     if ctx.obj.get("json"):
@@ -316,8 +316,13 @@ def example_from_run(ctx, run_id, dataset):
 
     client = get_or_create_client(ctx)
 
+    from langsmith.utils import LangSmithNotFoundError
+
     # Read the run first
-    run = client.read_run(run_id)
+    try:
+        run = client.read_run(run_id)
+    except LangSmithNotFoundError:
+        raise click.ClickException(f"Run '{run_id}' not found.")
 
     # Create example from the run
     example = client.create_example_from_run(run, dataset_name=dataset)

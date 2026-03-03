@@ -2,6 +2,7 @@ import click
 from rich.console import Console
 from rich.table import Table
 from langsmith_cli.utils import (
+    _looks_like_uuid,
     sort_items,
     apply_regex_filter,
     apply_wildcard_filter,
@@ -22,6 +23,42 @@ from langsmith_cli.utils import (
 )
 
 console = Console()
+
+
+def resolve_project(
+    client: object,
+    name_or_id: str,
+    *,
+    include_stats: bool = False,
+) -> object:
+    """Resolve a project by name or UUID, with smart UUID auto-detection.
+
+    Tries name first (unless input looks like a UUID), then falls back.
+    Raises click.ClickException if neither resolves.
+    """
+    from langsmith.utils import LangSmithNotFoundError
+
+    # Optimization: if it looks like a UUID, try by ID first
+    if _looks_like_uuid(name_or_id):
+        try:
+            return client.read_project(
+                project_id=name_or_id, include_stats=include_stats
+            )
+        except (LangSmithNotFoundError, ValueError):
+            raise click.ClickException(f"Project '{name_or_id}' not found.")
+
+    # Otherwise, try name first, fall back to ID
+    try:
+        return client.read_project(
+            project_name=name_or_id, include_stats=include_stats
+        )
+    except LangSmithNotFoundError:
+        try:
+            return client.read_project(
+                project_id=name_or_id, include_stats=include_stats
+            )
+        except (LangSmithNotFoundError, ValueError):
+            raise click.ClickException(f"Project '{name_or_id}' not found.")
 
 
 @click.group()
@@ -145,7 +182,7 @@ def list_projects(
         projects_list = [
             p
             for p in projects_list
-            if hasattr(p, "run_count") and p.run_count and p.run_count > 0
+            if p.run_count is not None and p.run_count > 0
         ]
 
     # Client-side sorting for table output
@@ -153,9 +190,7 @@ def list_projects(
         # Map sort field to project attribute
         sort_key_map = {
             "name": lambda p: (p.name or "").lower(),
-            "run_count": lambda p: p.run_count
-            if hasattr(p, "run_count") and p.run_count
-            else 0,
+            "run_count": lambda p: p.run_count if p.run_count is not None else 0,
         }
         projects_list = sort_items(projects_list, sort_by, sort_key_map, console)
 
@@ -293,15 +328,13 @@ def create_project(ctx, name, description):
 @projects.command("get")
 @click.argument("name_or_id")
 @click.option(
-    "--include-stats", is_flag=True, default=True, help="Include run statistics (default: true)."
+    "--include-stats/--no-stats", default=True, help="Include/exclude run statistics (default: include)."
 )
 @fields_option()
 @output_option()
 @click.pass_context
 def get_project(ctx, name_or_id, include_stats, fields, output):
     """Get details of a single project by name or ID."""
-    from langsmith.utils import LangSmithNotFoundError
-
     logger = ctx.obj["logger"]
     is_machine_readable = ctx.obj.get("json") or bool(fields) or bool(output)
     logger.use_stderr = is_machine_readable
@@ -309,19 +342,7 @@ def get_project(ctx, name_or_id, include_stats, fields, output):
     logger.debug(f"Fetching project: {name_or_id}")
 
     client = get_or_create_client(ctx)
-
-    # Try reading by name first, fall back to ID
-    try:
-        project = client.read_project(
-            project_name=name_or_id, include_stats=include_stats
-        )
-    except LangSmithNotFoundError:
-        try:
-            project = client.read_project(
-                project_id=name_or_id, include_stats=include_stats
-            )
-        except (LangSmithNotFoundError, ValueError):
-            raise click.ClickException(f"Project '{name_or_id}' not found.")
+    project = resolve_project(client, name_or_id, include_stats=include_stats)
 
     data = filter_fields(project, fields)
 
@@ -353,8 +374,6 @@ def get_project(ctx, name_or_id, include_stats, fields, output):
 @click.pass_context
 def update_project(ctx, name_or_id, new_name, description):
     """Update a project's name or description."""
-    from langsmith.utils import LangSmithNotFoundError
-
     logger = ctx.obj["logger"]
     is_machine_readable = ctx.obj.get("json")
     logger.use_stderr = is_machine_readable
@@ -365,15 +384,7 @@ def update_project(ctx, name_or_id, new_name, description):
     logger.debug(f"Updating project: {name_or_id}")
 
     client = get_or_create_client(ctx)
-
-    # Resolve project to get its ID
-    try:
-        project = client.read_project(project_name=name_or_id)
-    except LangSmithNotFoundError:
-        try:
-            project = client.read_project(project_id=name_or_id)
-        except (LangSmithNotFoundError, ValueError):
-            raise click.ClickException(f"Project '{name_or_id}' not found.")
+    project = resolve_project(client, name_or_id)
 
     updated = client.update_project(
         project.id, name=new_name, description=description
@@ -392,8 +403,6 @@ def update_project(ctx, name_or_id, new_name, description):
 @click.pass_context
 def delete_project(ctx, name_or_id, confirm):
     """Delete a project."""
-    from langsmith.utils import LangSmithNotFoundError
-
     logger = ctx.obj["logger"]
     is_machine_readable = ctx.obj.get("json")
     logger.use_stderr = is_machine_readable
@@ -407,20 +416,9 @@ def delete_project(ctx, name_or_id, confirm):
 
     client = get_or_create_client(ctx)
 
-    # Try by name first, then by ID
-    try:
-        client.delete_project(project_name=name_or_id)
-    except LangSmithNotFoundError:
-        try:
-            client.delete_project(project_id=name_or_id)
-        except (LangSmithNotFoundError, ValueError):
-            if ctx.obj.get("json"):
-                click.echo(
-                    json_dumps({"status": "error", "message": f"Project '{name_or_id}' not found"})
-                )
-            else:
-                logger.warning(f"Project '{name_or_id}' not found.")
-            return
+    # Resolve first, then delete by ID (consistent pattern)
+    project = resolve_project(client, name_or_id)
+    client.delete_project(project_id=str(project.id))
 
     if ctx.obj.get("json"):
         click.echo(json_dumps({"status": "success", "name": name_or_id}))

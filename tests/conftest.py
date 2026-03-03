@@ -55,6 +55,30 @@ def strip_ansi(text: str) -> str:
     return unstyle(text)
 
 
+def parse_json_output(output: str) -> dict | list:
+    """Extract JSON from mixed stdout/stderr output.
+
+    Click's CliRunner mixes stdout and stderr, so logger messages
+    may appear before the JSON output. This finds the last JSON object/array.
+    """
+    import json
+
+    # Try parsing the whole output first
+    try:
+        return json.loads(output)
+    except json.JSONDecodeError:
+        pass
+    # Find the last line that starts with { or [
+    for line in reversed(output.strip().split("\n")):
+        line = line.strip()
+        if line.startswith("{") or line.startswith("["):
+            try:
+                return json.loads(line)
+            except json.JSONDecodeError:
+                continue
+    raise ValueError(f"No JSON found in output: {output!r}")
+
+
 def create_dataset(
     name: str = "test-dataset",
     description: str = "Test dataset",

@@ -8,26 +8,7 @@ from langsmith_cli.main import cli
 from unittest.mock import patch
 import json
 import os
-from conftest import create_run, create_project, strip_ansi
-
-
-def parse_json_output(output: str) -> dict:
-    """Extract JSON from mixed stdout/stderr output.
-
-    The CliRunner mixes stdout and stderr, so logger messages
-    may appear before the JSON output. Find the last JSON object.
-    """
-    # Try parsing the whole output first
-    try:
-        return json.loads(output)
-    except json.JSONDecodeError:
-        pass
-    # Find the last line that starts with { or [
-    for line in reversed(output.strip().split("\n")):
-        line = line.strip()
-        if line.startswith("{") or line.startswith("["):
-            return json.loads(line)
-    raise ValueError(f"No JSON found in output: {output!r}")
+from conftest import create_run, create_project, parse_json_output, strip_ansi
 
 
 def test_export_creates_directory_and_files(runner, tmp_path):
