@@ -11,7 +11,12 @@ langsmith.schemas, ensuring compatibility with the actual SDK.
 from langsmith_cli.main import cli
 from unittest.mock import patch
 import json
-from conftest import create_prompt, strip_ansi
+from conftest import (
+    create_prompt,
+    create_prompt_commit,
+    create_listed_prompt_commit,
+    strip_ansi,
+)
 from langsmith.schemas import ListPromptsResponse
 
 
@@ -460,3 +465,363 @@ def test_prompts_push_public(runner, tmp_path):
         mock_client.push_prompt.assert_called_once()
         call_kwargs = mock_client.push_prompt.call_args[1]
         assert call_kwargs["is_public"] is True
+
+
+# ===== prompts pull tests =====
+
+
+def test_prompts_pull_json(runner):
+    """INVARIANT: prompts pull --json returns PromptCommit data with manifest."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        commit = create_prompt_commit(
+            owner="my-org",
+            repo="greeting",
+            commit_hash="abc123",
+            manifest={"type": "prompt", "template": "Hello, {name}!"},
+        )
+        mock_client.pull_prompt_commit.return_value = commit
+
+        result = runner.invoke(cli, ["--json", "prompts", "pull", "greeting"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["owner"] == "my-org"
+        assert data["repo"] == "greeting"
+        assert data["commit_hash"] == "abc123"
+        assert data["manifest"]["template"] == "Hello, {name}!"
+
+
+def test_prompts_pull_with_commit_version(runner):
+    """INVARIANT: --commit should be appended to the prompt identifier."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        commit = create_prompt_commit()
+        mock_client.pull_prompt_commit.return_value = commit
+
+        result = runner.invoke(
+            cli, ["--json", "prompts", "pull", "my-prompt", "--commit", "v1.0"]
+        )
+        assert result.exit_code == 0
+        mock_client.pull_prompt_commit.assert_called_once_with(
+            "my-prompt:v1.0", include_model=False
+        )
+
+
+def test_prompts_pull_with_include_model(runner):
+    """INVARIANT: --include-model should be passed to SDK."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        commit = create_prompt_commit()
+        mock_client.pull_prompt_commit.return_value = commit
+
+        result = runner.invoke(
+            cli, ["--json", "prompts", "pull", "my-prompt", "--include-model"]
+        )
+        assert result.exit_code == 0
+        mock_client.pull_prompt_commit.assert_called_once_with(
+            "my-prompt", include_model=True
+        )
+
+
+def test_prompts_pull_with_fields(runner):
+    """INVARIANT: --fields should filter output to only requested fields."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        commit = create_prompt_commit()
+        mock_client.pull_prompt_commit.return_value = commit
+
+        result = runner.invoke(
+            cli,
+            ["--json", "prompts", "pull", "my-prompt", "--fields", "commit_hash,manifest"],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert "commit_hash" in data
+        assert "manifest" in data
+        assert "owner" not in data
+
+
+def test_prompts_pull_table_output(runner):
+    """INVARIANT: prompts pull without --json should show formatted output."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        commit = create_prompt_commit(owner="my-org", repo="greeting", commit_hash="abc123")
+        mock_client.pull_prompt_commit.return_value = commit
+
+        result = runner.invoke(cli, ["prompts", "pull", "greeting"])
+        assert result.exit_code == 0
+        output = strip_ansi(result.output)
+        assert "my-org" in output
+        assert "greeting" in output
+        assert "abc123" in output
+
+
+def test_prompts_pull_with_output_file(runner, tmp_path):
+    """INVARIANT: --output should write commit data to file."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        commit = create_prompt_commit()
+        mock_client.pull_prompt_commit.return_value = commit
+
+        output_file = str(tmp_path / "commit.json")
+        result = runner.invoke(
+            cli,
+            ["--json", "prompts", "pull", "my-prompt", "--output", output_file],
+        )
+        assert result.exit_code == 0
+        with open(output_file) as f:
+            data = json.load(f)
+        assert data["commit_hash"] == "abc123def456"
+
+
+# ===== prompts delete tests =====
+
+
+def test_prompts_delete_json(runner):
+    """INVARIANT: prompts delete with --confirm should delete and return success."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        result = runner.invoke(
+            cli, ["--json", "prompts", "delete", "my-prompt", "--confirm"]
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["status"] == "success"
+        assert data["name"] == "my-prompt"
+        mock_client.delete_prompt.assert_called_once_with("my-prompt")
+
+
+def test_prompts_delete_table_output(runner):
+    """INVARIANT: prompts delete should show success message."""
+    with patch("langsmith.Client") as MockClient:
+        MockClient.return_value
+
+        result = runner.invoke(
+            cli, ["prompts", "delete", "my-prompt", "--confirm"]
+        )
+        assert result.exit_code == 0
+        output = strip_ansi(result.output)
+        assert "Deleted" in output
+        assert "my-prompt" in output
+
+
+def test_prompts_delete_not_found(runner):
+    """INVARIANT: Deleting non-existent prompt should handle gracefully."""
+    from langsmith.utils import LangSmithNotFoundError
+
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.delete_prompt.side_effect = LangSmithNotFoundError("Not found")
+
+        result = runner.invoke(
+            cli, ["--json", "prompts", "delete", "missing", "--confirm"]
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["status"] == "error"
+        assert "not found" in data["message"]
+
+
+def test_prompts_delete_requires_confirmation(runner):
+    """INVARIANT: Without --confirm, delete should prompt for confirmation."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        # Simulate user saying 'n' to confirmation
+        result = runner.invoke(
+            cli, ["prompts", "delete", "my-prompt"], input="n\n"
+        )
+        # Should abort
+        assert result.exit_code != 0
+        mock_client.delete_prompt.assert_not_called()
+
+
+# ===== prompts create tests =====
+
+
+def test_prompts_create_json(runner):
+    """INVARIANT: prompts create --json should return prompt data."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        prompt = create_prompt(
+            repo_handle="new-prompt",
+            full_name="owner/new-prompt",
+            owner="owner",
+        )
+        mock_client.create_prompt.return_value = prompt
+
+        result = runner.invoke(cli, ["--json", "prompts", "create", "new-prompt"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["full_name"] == "owner/new-prompt"
+        mock_client.create_prompt.assert_called_once()
+
+
+def test_prompts_create_with_options(runner):
+    """INVARIANT: --description, --tags, --is-public should be passed to SDK."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        prompt = create_prompt(
+            repo_handle="new-prompt",
+            full_name="owner/new-prompt",
+            owner="owner",
+            description="A test prompt",
+        )
+        mock_client.create_prompt.return_value = prompt
+
+        result = runner.invoke(
+            cli,
+            [
+                "prompts",
+                "create",
+                "new-prompt",
+                "--description",
+                "A test prompt",
+                "--tags",
+                "prod,v2",
+                "--is-public",
+                "true",
+            ],
+        )
+        assert result.exit_code == 0
+        call_kwargs = mock_client.create_prompt.call_args[1]
+        assert call_kwargs["description"] == "A test prompt"
+        assert call_kwargs["tags"] == ["prod", "v2"]
+        assert call_kwargs["is_public"] is True
+
+
+def test_prompts_create_already_exists(runner):
+    """INVARIANT: Creating existing prompt should handle gracefully."""
+    from langsmith.utils import LangSmithConflictError
+
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.create_prompt.side_effect = LangSmithConflictError(
+            "Prompt already exists"
+        )
+
+        result = runner.invoke(
+            cli, ["--json", "prompts", "create", "existing"]
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["status"] == "error"
+        assert "already exists" in data["message"]
+
+
+# ===== prompts commits tests =====
+
+
+def test_prompts_commits_json(runner):
+    """INVARIANT: prompts commits --json should return list of commits."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        c1 = create_listed_prompt_commit(
+            id_str="a9adf0cb-6238-453f-abab-f75361a39ea8",
+            commit_hash="abc123",
+        )
+        c2 = create_listed_prompt_commit(
+            id_str="b9bdf0cb-7348-563f-bcbc-a86471b50fb9",
+            commit_hash="def456",
+            parent_commit_hash="abc123",
+        )
+
+        mock_client.list_prompt_commits.return_value = iter([c1, c2])
+
+        result = runner.invoke(cli, ["--json", "prompts", "commits", "my-prompt"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert isinstance(data, list)
+        assert len(data) == 2
+        assert data[0]["commit_hash"] == "abc123"
+        assert data[1]["commit_hash"] == "def456"
+
+
+def test_prompts_commits_table_output(runner):
+    """INVARIANT: prompts commits without --json should show formatted table."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        c1 = create_listed_prompt_commit(commit_hash="abc123")
+        mock_client.list_prompt_commits.return_value = iter([c1])
+
+        result = runner.invoke(cli, ["prompts", "commits", "my-prompt"])
+        assert result.exit_code == 0
+        output = strip_ansi(result.output)
+        assert "abc123" in output
+        assert "Commits" in output
+
+
+def test_prompts_commits_with_limit(runner):
+    """INVARIANT: --limit should be passed to SDK."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_prompt_commits.return_value = iter([])
+
+        result = runner.invoke(
+            cli, ["prompts", "commits", "my-prompt", "--limit", "5"]
+        )
+        assert result.exit_code == 0
+        call_kwargs = mock_client.list_prompt_commits.call_args[1]
+        assert call_kwargs["limit"] == 5
+
+
+def test_prompts_commits_with_count(runner):
+    """INVARIANT: --count should output only the count."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        commits = [
+            create_listed_prompt_commit(
+                id_str=f"a9adf0cb-6238-453f-abab-f75361a39e{i:02d}",
+                commit_hash=f"hash{i}",
+            )
+            for i in range(3)
+        ]
+        mock_client.list_prompt_commits.return_value = iter(commits)
+
+        result = runner.invoke(
+            cli, ["--json", "prompts", "commits", "my-prompt", "--count"]
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data == 3
+
+
+def test_prompts_commits_with_output_file(runner, tmp_path):
+    """INVARIANT: --output should write commits to file."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        c1 = create_listed_prompt_commit(commit_hash="abc123")
+        mock_client.list_prompt_commits.return_value = iter([c1])
+
+        output_file = tmp_path / "commits.jsonl"
+        result = runner.invoke(
+            cli,
+            ["prompts", "commits", "my-prompt", "--output", str(output_file)],
+        )
+        assert result.exit_code == 0
+        assert output_file.exists()
+        data = json.loads(output_file.read_text().strip())
+        assert data["commit_hash"] == "abc123"
+
+
+def test_prompts_commits_empty(runner):
+    """INVARIANT: Empty commits list should be handled gracefully."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_prompt_commits.return_value = iter([])
+
+        result = runner.invoke(cli, ["prompts", "commits", "my-prompt"])
+        assert result.exit_code == 0

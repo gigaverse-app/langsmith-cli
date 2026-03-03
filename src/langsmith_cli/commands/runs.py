@@ -2636,3 +2636,228 @@ def describe_fields(
         no_language=no_language,
         show_detailed_stats=True,
     )
+
+
+@runs.command("export")
+@click.argument("directory", type=click.Path())
+@add_project_filter_options
+@click.option("--limit", default=50, help="Max runs to export (default 50).")
+@click.option(
+    "--status", type=click.Choice(["success", "error"]), help="Filter by status."
+)
+@click.option("--filter", "filter_", help="LangSmith FQL filter.")
+@click.option("--is-root", type=bool, help="Filter root traces only (true/false).")
+@click.option(
+    "--roots",
+    is_flag=True,
+    help="Export only root traces.",
+)
+@click.option("--run-type", help="Filter by run type (llm, chain, tool, etc).")
+@click.option(
+    "--tag",
+    multiple=True,
+    help="Filter by tag (can specify multiple).",
+)
+@add_time_filter_options
+@click.option(
+    "--max-concurrent",
+    default=5,
+    type=click.IntRange(1, 10),
+    help="Max concurrent fetches (default 5, max 10).",
+)
+@click.option(
+    "--filename-pattern",
+    default="{run_id}.json",
+    help="Filename pattern. Placeholders: {run_id}, {trace_id}, {index}, {name}. Default: {run_id}.json",
+)
+@fields_option()
+@click.pass_context
+def export_runs(
+    ctx,
+    directory,
+    project,
+    project_id,
+    project_name,
+    project_name_exact,
+    project_name_pattern,
+    project_name_regex,
+    limit,
+    status,
+    filter_,
+    is_root,
+    roots,
+    run_type,
+    tag,
+    since,
+    last,
+    max_concurrent,
+    filename_pattern,
+    fields,
+):
+    """Export runs as individual JSON files to a directory.
+
+    Each run is saved as a separate JSON file, enabling offline analysis
+    and integration with AI coding agents.
+
+    \b
+    Examples:
+        # Export last 50 root traces
+        langsmith-cli runs export ./traces --project my-project --roots
+
+        # Export error traces from last 24h
+        langsmith-cli runs export ./errors --project my-project --status error --last 24h
+
+        # Export with custom filenames
+        langsmith-cli runs export ./traces --project my-project --filename-pattern "{name}_{run_id}.json"
+
+        # Export with field pruning for smaller files
+        langsmith-cli runs export ./traces --project my-project --fields name,inputs,outputs,status,latency
+    """
+    import os
+    import concurrent.futures
+    import pathlib
+
+    logger = ctx.obj["logger"]
+    logger.use_stderr = True  # Always use stderr for progress
+
+    logger.debug(f"Exporting runs to: {directory}, limit={limit}")
+
+    client = get_or_create_client(ctx)
+
+    # Create output directory
+    out_dir = pathlib.Path(directory)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Resolve project filters
+    pq = resolve_project_filters(
+        client,
+        project=project,
+        project_id=project_id,
+        name=project_name,
+        name_exact=project_name_exact,
+        name_pattern=project_name_pattern,
+        name_regex=project_name_regex,
+    )
+    projects_to_query = pq.names
+
+    # Handle --roots flag
+    if roots:
+        is_root = True
+
+    # Handle status filtering
+    error_filter = None
+    if status == "error":
+        error_filter = True
+    elif status == "success":
+        error_filter = False
+
+    # Build FQL filters
+    fql_filters: list[str] = []
+    if filter_:
+        fql_filters.append(filter_)
+    if tag:
+        for t in tag:
+            fql_filters.append(f'has(tags, "{t}")')
+
+    # Add time filters
+    time_filters = build_time_fql_filters(since=since, last=last)
+    fql_filters.extend(time_filters)
+
+    combined_filter = combine_fql_filters(fql_filters)
+
+    logger.info(
+        f"Fetching up to {limit} runs from {len(projects_to_query)} project(s)..."
+    )
+
+    # Fetch runs
+    all_runs: list[Run] = []
+    for project_name_str in projects_to_query:
+        try:
+            runs_gen = client.list_runs(
+                project_name=project_name_str,
+                limit=limit,
+                error=error_filter,
+                filter=combined_filter,
+                run_type=run_type,
+                is_root=is_root,
+            )
+            fetched = list(runs_gen)
+            all_runs.extend(fetched)
+        except Exception as e:
+            logger.warning(f"Failed to fetch from '{project_name_str}': {e}")
+
+    if not all_runs:
+        if ctx.obj.get("json"):
+            click.echo(json_dumps({"status": "success", "exported": 0, "directory": str(out_dir)}))
+        else:
+            logger.warning("No runs found matching filters.")
+        return
+
+    # Apply limit across all projects
+    if len(all_runs) > limit:
+        all_runs = all_runs[:limit]
+
+    # Determine field filtering
+    include_fields: set[str] | None = None
+    if fields:
+        include_fields = {f.strip() for f in fields.split(",") if f.strip()}
+
+    def _export_single_run(args: tuple[int, Run]) -> str:
+        """Export a single run to a JSON file. Returns the filename."""
+        index, run = args
+
+        # Build filename from pattern
+        safe_name = (run.name or "unnamed").replace("/", "_").replace("\\", "_")
+        fname = filename_pattern.format(
+            run_id=run.id,
+            trace_id=run.trace_id or run.id,
+            index=index,
+            name=safe_name,
+        )
+
+        # Dump run data
+        if include_fields:
+            data = run.model_dump(include=include_fields, mode="json")
+        else:
+            data = run.model_dump(mode="json")
+
+        file_path = out_dir / fname
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(json_dumps(data, indent=2))
+
+        return fname
+
+    # Export concurrently
+    exported_files: list[str] = []
+    errors: list[dict[str, str]] = []
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_concurrent) as executor:
+        futures = {
+            executor.submit(_export_single_run, (i, run)): run
+            for i, run in enumerate(all_runs)
+        }
+        for future in concurrent.futures.as_completed(futures):
+            run = futures[future]
+            try:
+                fname = future.result()
+                exported_files.append(fname)
+            except Exception as e:
+                errors.append({"run_id": str(run.id), "error": str(e)})
+
+    if ctx.obj.get("json"):
+        click.echo(
+            json_dumps(
+                {
+                    "status": "success",
+                    "exported": len(exported_files),
+                    "directory": str(out_dir),
+                    "files": sorted(exported_files),
+                    "errors": errors,
+                }
+            )
+        )
+    else:
+        logger.success(f"Exported {len(exported_files)} run(s) to {out_dir}/")
+        if errors:
+            for err in errors:
+                logger.warning(f"Failed to export {err['run_id']}: {err['error']}")
