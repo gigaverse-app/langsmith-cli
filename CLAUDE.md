@@ -131,6 +131,7 @@ main.py (entry point)
 │   ├── list
 │   ├── get
 │   ├── create
+│   ├── delete
 │   └── push
 ├── examples (group)
 │   ├── list
@@ -571,12 +572,17 @@ mock_client.delete_example.side_effect = LangSmithNotFoundError("Not found")
 
 ## Reusable Patterns Across Commands
 
-### Name-or-ID Resolution (projects.py: `resolve_project()`)
+### Name-or-ID Resolution (`resolve_project()`, `resolve_dataset()`)
 
-When a command accepts a name or ID argument, use the `resolve_project()` helper in `projects.py`. It:
-1. Auto-detects UUIDs via `_looks_like_uuid()` to save an API call
-2. Falls back from name to ID lookup
-3. Raises `click.ClickException` on not-found
+When a command accepts a name or ID argument, use the existing resolve helpers:
+- `projects.py: resolve_project(client, name_or_id, include_stats=True)`
+- `datasets.py: resolve_dataset(client, name_or_id)`
+
+These helpers follow a consistent pattern:
+1. Auto-detect UUIDs via `_looks_like_uuid()` to save an API call
+2. Fall back from name to ID lookup
+3. Catch `(LangSmithNotFoundError, LangSmithError, ValueError)` for friendly errors
+4. Raise `click.ClickException` on not-found
 
 ```python
 from langsmith_cli.commands.projects import resolve_project

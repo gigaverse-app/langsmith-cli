@@ -215,6 +215,8 @@ langsmith-cli --json runs list --project my-project --limit 5 2>&1
   - `--output <file>`: Write to file instead of stdout
 - `langsmith-cli --json datasets get <id> [--fields id,name,description]`: Get dataset details.
 - `langsmith-cli --json datasets create <name>`: Create a dataset.
+- `langsmith-cli --json datasets delete <name-or-id> --confirm`: Delete a dataset.
+- `langsmith-cli --json datasets push <file.jsonl> --dataset <name>`: Upload examples from JSONL.
 - `langsmith-cli --json examples list --dataset <name> [OPTIONS]`: List examples in a dataset.
   - `--fields <comma-separated>`: Select fields (e.g., `id,inputs,outputs`)
   - `--output <file>`: Write to file instead of stdout

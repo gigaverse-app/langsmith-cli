@@ -10,7 +10,7 @@ langsmith-cli --json examples list [OPTIONS]
 
 **Options:**
 - `--dataset TEXT` (required) - Dataset name or UUID
-- `--limit INTEGER` - Maximum results (default: 10, max: 100)
+- `--limit INTEGER` - Maximum results (default: 20)
 - `--offset INTEGER` - Skip N examples (default: 0)
 - `--example-ids TEXT` - Comma-separated list of example UUIDs
 - `--filter TEXT` - Advanced FQL query
@@ -19,6 +19,10 @@ langsmith-cli --json examples list [OPTIONS]
 - `--as-of TEXT` - Version tag or ISO timestamp
 - `--inline-s3-urls BOOLEAN` - Inline S3 URLs: `true` or `false`
 - `--include-attachments BOOLEAN` - Include attachments: `true` or `false`
+- `--exclude TEXT` - Exclude items containing substring (repeatable)
+- `--fields TEXT` - Comma-separated field names to include
+- `--count` - Output only the count of results
+- `--output TEXT` - Write output to file (JSONL format)
 
 **Output Fields:**
 - `id` (UUID) - Example identifier
@@ -61,6 +65,8 @@ langsmith-cli --json examples get <example-id> [OPTIONS]
 
 **Options:**
 - `--as-of TEXT` - Version tag or ISO timestamp
+- `--fields TEXT` - Comma-separated field names to include
+- `--output TEXT` - Write output to file (JSON format)
 
 **Output:** Complete example object
 
@@ -83,7 +89,6 @@ langsmith-cli --json examples create [OPTIONS]
 - `--outputs JSON` - Expected output data as JSON object
 - `--metadata JSON` - Custom metadata as JSON object
 - `--split TEXT` - Split name (e.g., "train", "test", "validation")
-- `--source-run-id UUID` - Source run UUID if example from trace
 
 **Output:** Created example object
 

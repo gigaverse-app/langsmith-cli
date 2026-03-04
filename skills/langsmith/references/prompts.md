@@ -9,8 +9,12 @@ langsmith-cli --json prompts list [OPTIONS]
 ```
 
 **Options:**
-- `--limit INTEGER` - Maximum results (default: 10)
+- `--limit INTEGER` - Maximum results (default: 20)
 - `--is-public BOOLEAN` - Filter by visibility: `true` or `false`
+- `--exclude TEXT` - Exclude items containing substring (repeatable)
+- `--fields TEXT` - Comma-separated field names to include
+- `--count` - Output only the count of results
+- `--output TEXT` - Write output to file (JSONL format)
 
 **Output Fields:**
 - `repo_handle` (string) - Prompt identifier
@@ -48,6 +52,8 @@ langsmith-cli --json prompts get <name> [OPTIONS]
 
 **Options:**
 - `--commit TEXT` - Specific commit hash (default: latest)
+- `--fields TEXT` - Comma-separated field names to include
+- `--output TEXT` - Write output to file (JSON format)
 
 **Output Fields:**
 - `repo_handle` (string) - Prompt identifier
@@ -177,7 +183,7 @@ langsmith-cli --json prompts create <name> [OPTIONS]
 
 **Options:**
 - `--description TEXT` - Prompt description
-- `--is-public` - Make prompt public (default: private)
+- `--is-public BOOLEAN` - Make prompt public: `true` or `false` (default: private)
 - `--tags TEXT` - Comma-separated tags
 
 **Output:** Created prompt object
@@ -222,9 +228,11 @@ langsmith-cli --json prompts commits <name> [OPTIONS]
 
 **Options:**
 - `--limit INTEGER` - Maximum commits to return (default: 20)
+- `--offset INTEGER` - Number of commits to skip
+- `--include-model` - Include model configuration
 - `--fields TEXT` - Comma-separated fields to return
 - `--count` - Return only the count of commits
-- `--output FILE` - Write output to file
+- `--output TEXT` - Write output to file
 
 **Output Fields:**
 - `commit_hash` (string) - Commit hash

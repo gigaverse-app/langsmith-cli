@@ -9,10 +9,18 @@ langsmith-cli --json projects list [OPTIONS]
 ```
 
 **Options:**
-- `--limit INTEGER` - Maximum number of projects to return (default: 10)
-- `--name TEXT` - Filter by exact project name (regex supported)
-- `--reference-dataset-id UUID` - Filter projects by reference dataset ID
+- `--limit INTEGER` - Maximum number of projects to return (default: 100, use 0 for no limit)
+- `--name TEXT` - Filter by exact project name
+- `--name-pattern TEXT` - Filter by name with wildcards (e.g. `'*prod*'`)
+- `--name-regex TEXT` - Filter by name with regex
 - `--reference-dataset-name TEXT` - Filter projects by reference dataset name
+- `--has-runs` - Show only projects with runs (run_count > 0)
+- `--sort-by TEXT` - Sort by field (name, run_count). Prefix with `-` for descending
+- `--exclude TEXT` - Exclude items containing substring (repeatable)
+- `--fields TEXT` - Comma-separated field names to include
+- `--count` - Output only the count of results
+- `--output TEXT` - Write output to file (JSONL format)
+- `--format [table|json|csv|yaml]` - Output format
 
 **Output Fields:**
 - `id` (UUID) - Project identifier
@@ -48,7 +56,6 @@ langsmith-cli --json projects create <name> [OPTIONS]
 
 **Options:**
 - `--description TEXT` - Project description
-- `--reference-dataset-id UUID` - Associate with a dataset
 
 **Output:** Created project object
 

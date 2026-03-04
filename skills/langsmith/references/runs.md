@@ -10,7 +10,8 @@ langsmith-cli --json runs list [OPTIONS]
 
 **Options:**
 - `--project TEXT` - Project name (default: "default")
-- `--limit INTEGER` - Maximum results (default: 10, max: 100)
+- `--project-id TEXT` - Project UUID
+- `--limit INTEGER` - Maximum results (default: 10)
 - `--status TEXT` - Filter by status: `success` or `error`
 - `--run-type TEXT` - Filter by type: `llm`, `chain`, `tool`, `retriever`, `prompt`, `parser`
 - `--is-root BOOLEAN` - Filter for root traces only: `true` or `false`
@@ -19,6 +20,15 @@ langsmith-cli --json runs list [OPTIONS]
 - `--trace-filter TEXT` - Filter applied to root run of trace
 - `--tree-filter TEXT` - Filter applied to any run in trace tree
 - `--reference-example-id UUID` - Filter runs by reference example ID
+- `--tag TEXT` - Filter by tag (repeatable for AND logic)
+- `--roots` - Show only root traces (shorthand for `--is-root true`)
+- `--since TEXT` - Show runs since timestamp or relative time
+- `--last TEXT` - Show runs from last duration (e.g. `24h`, `7d`)
+- `--query TEXT` - Client-side text search across run content
+- `--fields TEXT` - Comma-separated field names to include
+- `--exclude TEXT` - Exclude items containing substring (repeatable)
+- `--count` - Output only the count of results
+- `--output TEXT` - Write output to file (JSONL format)
 
 **Output Fields:**
 - `id` (UUID) - Run identifier
@@ -124,7 +134,7 @@ langsmith-cli --json runs stats [OPTIONS]
 
 **Options:**
 - `--project TEXT` - Project name (default: "default")
-- `--limit INTEGER` - Number of recent runs to analyze (default: 100)
+- `--project-id TEXT` - Project UUID
 
 **Output Fields:**
 - `project_name` (string) - Project name
@@ -142,7 +152,7 @@ langsmith-cli --json runs stats [OPTIONS]
 
 **Example:**
 ```bash
-langsmith-cli --json runs stats --project myapp --limit 1000
+langsmith-cli --json runs stats --project myapp
 ```
 
 ### `runs search`
@@ -190,7 +200,7 @@ langsmith-cli runs watch [OPTIONS]
 
 **Options:**
 - `--project TEXT` - Project to monitor (default: "default")
-- `--refresh INTEGER` - Refresh interval in seconds (default: 2)
+- `--interval FLOAT` - Refresh interval in seconds (default: 2)
 
 **Behavior:** Shows live table of recent runs with auto-refresh
 

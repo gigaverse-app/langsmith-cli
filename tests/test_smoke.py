@@ -115,18 +115,23 @@ def shared_test_project():
 
 @pytest.fixture(scope="session")
 def shared_test_dataset():
-    """Create one dataset for all smoke tests to share.
+    """Create one dataset for all smoke tests to share, then clean up.
 
     This avoids creating multiple datasets and reduces API calls.
+    Uses yield fixture to ensure cleanup even if tests fail.
     """
     dataset_name = f"smoke-test-shared-{os.urandom(4).hex()}"
     exit_code, stdout, _ = run_cli("--json", "datasets", "create", dataset_name)
 
+    data = None
     if exit_code == 0:
         data = parse_json_output(stdout)
-        if data:
-            return data
-    return None
+
+    yield data if data else None
+
+    # Teardown: delete the dataset to prevent orphans
+    if data and data.get("id"):
+        run_cli("--json", "datasets", "delete", data["id"], "--confirm")
 
 
 @pytest.fixture(scope="session")
@@ -299,32 +304,38 @@ class TestDatasetsSkill:
     def test_datasets_create_and_get(self):
         """Test: langsmith-cli --json datasets create <name>"""
         dataset_name = f"smoke-test-ds-{os.urandom(4).hex()}"
+        dataset_id = None
 
-        # Create dataset
-        exit_code, stdout, stderr = run_cli(
-            "--json",
-            "datasets",
-            "create",
-            dataset_name,
-            "--description",
-            "Smoke test dataset",
-        )
+        try:
+            # Create dataset
+            exit_code, stdout, stderr = run_cli(
+                "--json",
+                "datasets",
+                "create",
+                dataset_name,
+                "--description",
+                "Smoke test dataset",
+            )
 
-        assert exit_code == 0, f"Create failed: {stderr}"
-        create_data = parse_json_output(stdout)
-        assert create_data is not None, "Create output is not valid JSON"
-        assert create_data.get("name") == dataset_name, "Dataset name doesn't match"
-        dataset_id = create_data.get("id")
-        assert dataset_id, "Created dataset should have ID"
+            assert exit_code == 0, f"Create failed: {stderr}"
+            create_data = parse_json_output(stdout)
+            assert create_data is not None, "Create output is not valid JSON"
+            assert create_data.get("name") == dataset_name, "Dataset name doesn't match"
+            dataset_id = create_data.get("id")
+            assert dataset_id, "Created dataset should have ID"
 
-        # Get dataset to verify
-        exit_code, stdout, stderr = run_cli("--json", "datasets", "get", dataset_id)
+            # Get dataset to verify
+            exit_code, stdout, stderr = run_cli("--json", "datasets", "get", dataset_id)
 
-        assert exit_code == 0, f"Get failed: {stderr}"
-        get_data = parse_json_output(stdout)
-        assert get_data is not None, "Get output is not valid JSON"
-        assert get_data.get("id") == dataset_id, "Dataset ID doesn't match"
-        assert get_data.get("name") == dataset_name, "Dataset name doesn't match"
+            assert exit_code == 0, f"Get failed: {stderr}"
+            get_data = parse_json_output(stdout)
+            assert get_data is not None, "Get output is not valid JSON"
+            assert get_data.get("id") == dataset_id, "Dataset ID doesn't match"
+            assert get_data.get("name") == dataset_name, "Dataset name doesn't match"
+        finally:
+            # Clean up to prevent orphaned datasets
+            if dataset_id:
+                run_cli("--json", "datasets", "delete", dataset_id, "--confirm")
 
 
 class TestExamplesSkill:
