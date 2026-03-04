@@ -1,4 +1,5 @@
 import os
+from typing import Any
 
 # Set COLUMNS before any imports to ensure Rich Console detects correct width
 # This must happen before importing any modules that create Console instances
@@ -55,7 +56,7 @@ def strip_ansi(text: str) -> str:
     return unstyle(text)
 
 
-def parse_json_output(output: str) -> dict | list:
+def parse_json_output(output: str) -> dict[str, Any]:
     """Extract JSON from mixed stdout/stderr output.
 
     Click's CliRunner mixes stdout and stderr, so logger messages

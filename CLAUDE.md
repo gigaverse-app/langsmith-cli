@@ -167,6 +167,30 @@ def list_runs(...):
     client = langsmith.Client()
 ```
 
+**1b. Strong Types Without Circular Imports (TYPE_CHECKING Pattern)**
+```python
+# Problem: We want strong types for langsmith.Client and SDK models,
+# but top-level imports break the lazy loading pattern.
+# Solution: Use TYPE_CHECKING + from __future__ import annotations
+
+from __future__ import annotations
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import langsmith
+    from langsmith.schemas import Dataset, TracerSessionResult
+
+# Now use string-style annotations (evaluated lazily thanks to __future__)
+def resolve_dataset(client: langsmith.Client, name: str) -> Dataset:
+    ...
+
+# ❌ BAD - using `object` as type (loses all type safety)
+def resolve_dataset(client: object, name: str) -> object: ...
+
+# ❌ BAD - top-level import (breaks lazy loading)
+from langsmith import Client
+```
+
 **2. Dual Output Pattern (JSON vs Rich Tables)**
 ```python
 # All commands check ctx.obj.get("json") flag

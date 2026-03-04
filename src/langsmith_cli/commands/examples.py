@@ -290,9 +290,7 @@ def delete_examples(ctx, example_ids, confirm):
 
     if ctx.obj.get("json"):
         click.echo(
-            json_dumps(
-                {"status": "success", "deleted": deleted, "errors": errors}
-            )
+            json_dumps({"status": "success", "deleted": deleted, "errors": errors})
         )
     else:
         if deleted:

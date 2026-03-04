@@ -472,9 +472,7 @@ def test_datasets_delete_by_name_json(runner):
         assert data["name"] == "my-dataset"
         # Should resolve by name then delete by ID
         mock_client.read_dataset.assert_called_once_with(dataset_name="my-dataset")
-        mock_client.delete_dataset.assert_called_once_with(
-            dataset_id=str(dataset.id)
-        )
+        mock_client.delete_dataset.assert_called_once_with(dataset_id=str(dataset.id))
 
 
 def test_datasets_delete_by_uuid(runner):
@@ -514,9 +512,7 @@ def test_datasets_delete_table_output(runner):
         dataset = create_dataset(name="my-dataset")
         mock_client.read_dataset.return_value = dataset
 
-        result = runner.invoke(
-            cli, ["datasets", "delete", "my-dataset", "--confirm"]
-        )
+        result = runner.invoke(cli, ["datasets", "delete", "my-dataset", "--confirm"])
         assert result.exit_code == 0
         output = strip_ansi(result.output)
         assert "Deleted" in output
@@ -545,9 +541,7 @@ def test_datasets_delete_requires_confirmation(runner):
         mock_client = MockClient.return_value
 
         # Simulate user saying 'n' to confirmation
-        result = runner.invoke(
-            cli, ["datasets", "delete", "my-dataset"], input="n\n"
-        )
+        result = runner.invoke(cli, ["datasets", "delete", "my-dataset"], input="n\n")
         # Should abort
         assert result.exit_code != 0
         mock_client.delete_dataset.assert_not_called()

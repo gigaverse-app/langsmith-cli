@@ -536,7 +536,14 @@ def test_prompts_pull_with_fields(runner):
 
         result = runner.invoke(
             cli,
-            ["--json", "prompts", "pull", "my-prompt", "--fields", "commit_hash,manifest"],
+            [
+                "--json",
+                "prompts",
+                "pull",
+                "my-prompt",
+                "--fields",
+                "commit_hash,manifest",
+            ],
         )
         assert result.exit_code == 0
         data = json.loads(result.output)
@@ -550,7 +557,9 @@ def test_prompts_pull_table_output(runner):
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
 
-        commit = create_prompt_commit(owner="my-org", repo="greeting", commit_hash="abc123")
+        commit = create_prompt_commit(
+            owner="my-org", repo="greeting", commit_hash="abc123"
+        )
         mock_client.pull_prompt_commit.return_value = commit
 
         result = runner.invoke(cli, ["prompts", "pull", "greeting"])
@@ -603,9 +612,7 @@ def test_prompts_delete_table_output(runner):
     with patch("langsmith.Client") as MockClient:
         MockClient.return_value
 
-        result = runner.invoke(
-            cli, ["prompts", "delete", "my-prompt", "--confirm"]
-        )
+        result = runner.invoke(cli, ["prompts", "delete", "my-prompt", "--confirm"])
         assert result.exit_code == 0
         output = strip_ansi(result.output)
         assert "Deleted" in output
@@ -635,9 +642,7 @@ def test_prompts_delete_requires_confirmation(runner):
         mock_client = MockClient.return_value
 
         # Simulate user saying 'n' to confirmation
-        result = runner.invoke(
-            cli, ["prompts", "delete", "my-prompt"], input="n\n"
-        )
+        result = runner.invoke(cli, ["prompts", "delete", "my-prompt"], input="n\n")
         # Should abort
         assert result.exit_code != 0
         mock_client.delete_prompt.assert_not_called()
@@ -709,9 +714,7 @@ def test_prompts_create_already_exists(runner):
             "Prompt already exists"
         )
 
-        result = runner.invoke(
-            cli, ["--json", "prompts", "create", "existing"]
-        )
+        result = runner.invoke(cli, ["--json", "prompts", "create", "existing"])
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert data["status"] == "error"
@@ -768,9 +771,7 @@ def test_prompts_commits_with_limit(runner):
         mock_client = MockClient.return_value
         mock_client.list_prompt_commits.return_value = iter([])
 
-        result = runner.invoke(
-            cli, ["prompts", "commits", "my-prompt", "--limit", "5"]
-        )
+        result = runner.invoke(cli, ["prompts", "commits", "my-prompt", "--limit", "5"])
         assert result.exit_code == 0
         call_kwargs = mock_client.list_prompt_commits.call_args[1]
         assert call_kwargs["limit"] == 5
@@ -849,7 +850,10 @@ def test_prompts_get_empty_prompt_no_commits(runner):
         # Should NOT contain raw internal URL paths
         assert "/commits/-/" not in data.get("message", "")
         # Should contain helpful guidance
-        assert "not found" in data["message"].lower() or "no commits" in data["message"].lower()
+        assert (
+            "not found" in data["message"].lower()
+            or "no commits" in data["message"].lower()
+        )
 
 
 def test_prompts_pull_empty_prompt_no_commits(runner):

@@ -504,7 +504,9 @@ def test_examples_update_inputs_json(runner):
     """INVARIANT: examples update should update inputs and return result."""
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
-        mock_client.update_example.return_value = {"id": "3442bd7c-27a2-437b-a38c-f278e455d87b"}
+        mock_client.update_example.return_value = {
+            "id": "3442bd7c-27a2-437b-a38c-f278e455d87b"
+        }
 
         result = runner.invoke(
             cli,
@@ -576,7 +578,9 @@ def test_examples_update_requires_at_least_one_option(runner):
     with patch("langsmith.Client"):
         result = runner.invoke(cli, ["examples", "update", "test-id"])
         assert result.exit_code != 0
-        assert "required" in result.output.lower() or "at least" in result.output.lower()
+        assert (
+            "required" in result.output.lower() or "at least" in result.output.lower()
+        )
 
 
 def test_examples_update_table_output(runner):
@@ -674,9 +678,7 @@ def test_examples_delete_requires_confirmation(runner):
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
 
-        result = runner.invoke(
-            cli, ["examples", "delete", "test-id"], input="n\n"
-        )
+        result = runner.invoke(cli, ["examples", "delete", "test-id"], input="n\n")
         assert result.exit_code != 0
         mock_client.delete_example.assert_not_called()
 
@@ -686,9 +688,7 @@ def test_examples_delete_table_output(runner):
     with patch("langsmith.Client") as MockClient:
         MockClient.return_value
 
-        result = runner.invoke(
-            cli, ["examples", "delete", "id-1", "id-2", "--confirm"]
-        )
+        result = runner.invoke(cli, ["examples", "delete", "id-1", "id-2", "--confirm"])
         assert result.exit_code == 0
         output = strip_ansi(result.output)
         assert "Deleted" in output
@@ -752,14 +752,18 @@ def test_examples_from_run_table_output(runner):
         run = create_run(name="test-run")
         mock_client.read_run.return_value = run
 
-        example = create_example(
-            id_str="3442bd7c-27a2-437b-a38c-f278e455d87b"
-        )
+        example = create_example(id_str="3442bd7c-27a2-437b-a38c-f278e455d87b")
         mock_client.create_example_from_run.return_value = example
 
         result = runner.invoke(
             cli,
-            ["examples", "from-run", "12345678-1234-5678-1234-567812345678", "--dataset", "ds"],
+            [
+                "examples",
+                "from-run",
+                "12345678-1234-5678-1234-567812345678",
+                "--dataset",
+                "ds",
+            ],
         )
         assert result.exit_code == 0
         output = strip_ansi(result.output)
@@ -770,8 +774,6 @@ def test_examples_from_run_table_output(runner):
 def test_examples_from_run_requires_dataset(runner):
     """INVARIANT: --dataset is required for from-run."""
     with patch("langsmith.Client"):
-        result = runner.invoke(
-            cli, ["examples", "from-run", "some-run-id"]
-        )
+        result = runner.invoke(cli, ["examples", "from-run", "some-run-id"])
         assert result.exit_code != 0
         assert "dataset" in result.output.lower() or "required" in result.output.lower()

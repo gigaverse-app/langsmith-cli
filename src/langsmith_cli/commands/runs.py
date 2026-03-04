@@ -2745,9 +2745,7 @@ def export_runs(
         last=last,
     )
 
-    logger.info(
-        f"Fetching up to {limit} runs from project(s)..."
-    )
+    logger.info(f"Fetching up to {limit} runs from project(s)...")
 
     # Fetch runs using the shared fetch_from_projects helper
     def _fetch_runs(c: Any, proj: str | None, **kw: Any) -> Any:
@@ -2778,7 +2776,11 @@ def export_runs(
 
     if not all_runs:
         if ctx.obj.get("json"):
-            click.echo(json_dumps({"status": "success", "exported": 0, "directory": str(out_dir)}))
+            click.echo(
+                json_dumps(
+                    {"status": "success", "exported": 0, "directory": str(out_dir)}
+                )
+            )
         else:
             logger.warning("No runs found matching filters.")
         return
@@ -2803,9 +2805,7 @@ def export_runs(
     # Validate filename pattern before the loop
     _valid_pattern_vars = {"run_id", "trace_id", "index", "name"}
     try:
-        filename_pattern.format(
-            run_id="test", trace_id="test", index=0, name="test"
-        )
+        filename_pattern.format(run_id="test", trace_id="test", index=0, name="test")
     except KeyError as e:
         raise click.ClickException(
             f"Invalid filename pattern variable {e}. "

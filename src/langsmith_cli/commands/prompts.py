@@ -259,7 +259,9 @@ def delete_prompt(ctx, name, confirm):
         client.delete_prompt(name)
     except LangSmithNotFoundError:
         if ctx.obj.get("json"):
-            click.echo(json_dumps({"status": "error", "message": f"Prompt '{name}' not found"}))
+            click.echo(
+                json_dumps({"status": "error", "message": f"Prompt '{name}' not found"})
+            )
         else:
             logger.warning(f"Prompt '{name}' not found.")
         return
@@ -302,7 +304,11 @@ def create_prompt_cmd(ctx, name, description, tags, is_public):
             logger.success(f"Created prompt '{prompt.full_name}'")
     except LangSmithConflictError:
         if ctx.obj.get("json"):
-            click.echo(json_dumps({"status": "error", "message": f"Prompt '{name}' already exists"}))
+            click.echo(
+                json_dumps(
+                    {"status": "error", "message": f"Prompt '{name}' already exists"}
+                )
+            )
         else:
             logger.warning(f"Prompt '{name}' already exists.")
 

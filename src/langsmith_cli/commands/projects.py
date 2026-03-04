@@ -1,3 +1,7 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 import click
 from rich.console import Console
 from rich.table import Table
@@ -22,15 +26,19 @@ from langsmith_cli.utils import (
     json_dumps,
 )
 
+if TYPE_CHECKING:
+    import langsmith
+    from langsmith.schemas import TracerSessionResult
+
 console = Console()
 
 
 def resolve_project(
-    client: object,
+    client: "langsmith.Client",
     name_or_id: str,
     *,
     include_stats: bool = False,
-) -> object:
+) -> "TracerSessionResult":
     """Resolve a project by name or UUID, with smart UUID auto-detection.
 
     Tries name first (unless input looks like a UUID), then falls back.
@@ -49,9 +57,7 @@ def resolve_project(
 
     # Otherwise, try name first, fall back to ID
     try:
-        return client.read_project(
-            project_name=name_or_id, include_stats=include_stats
-        )
+        return client.read_project(project_name=name_or_id, include_stats=include_stats)
     except LangSmithNotFoundError:
         try:
             return client.read_project(
@@ -180,9 +186,7 @@ def list_projects(
     # Filter by projects with runs
     if has_runs:
         projects_list = [
-            p
-            for p in projects_list
-            if p.run_count is not None and p.run_count > 0
+            p for p in projects_list if p.run_count is not None and p.run_count > 0
         ]
 
     # Client-side sorting for table output
@@ -328,7 +332,9 @@ def create_project(ctx, name, description):
 @projects.command("get")
 @click.argument("name_or_id")
 @click.option(
-    "--include-stats/--no-stats", default=True, help="Include/exclude run statistics (default: include)."
+    "--include-stats/--no-stats",
+    default=True,
+    help="Include/exclude run statistics (default: include).",
 )
 @fields_option()
 @output_option()
@@ -386,9 +392,7 @@ def update_project(ctx, name_or_id, new_name, description):
     client = get_or_create_client(ctx)
     project = resolve_project(client, name_or_id)
 
-    updated = client.update_project(
-        project.id, name=new_name, description=description
-    )
+    updated = client.update_project(project.id, name=new_name, description=description)
 
     if ctx.obj.get("json"):
         click.echo(json_dumps(updated.model_dump(mode="json")))

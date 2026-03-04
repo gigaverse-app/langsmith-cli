@@ -804,7 +804,9 @@ def test_projects_update_requires_at_least_one_option(runner):
     with patch("langsmith.Client"):
         result = runner.invoke(cli, ["projects", "update", "my-project"])
         assert result.exit_code != 0
-        assert "required" in result.output.lower() or "at least" in result.output.lower()
+        assert (
+            "required" in result.output.lower() or "at least" in result.output.lower()
+        )
 
 
 def test_projects_update_not_found(runner):
@@ -868,9 +870,7 @@ def test_projects_delete_table_output(runner):
         project = create_project(name="my-project")
         mock_client.read_project.return_value = project
 
-        result = runner.invoke(
-            cli, ["projects", "delete", "my-project", "--confirm"]
-        )
+        result = runner.invoke(cli, ["projects", "delete", "my-project", "--confirm"])
         assert result.exit_code == 0
         output = strip_ansi(result.output)
         assert "Deleted" in output
@@ -886,9 +886,7 @@ def test_projects_delete_not_found(runner):
         # resolve_project fails: name lookup fails, ID fallback also fails
         mock_client.read_project.side_effect = LangSmithNotFoundError("Not found")
 
-        result = runner.invoke(
-            cli, ["projects", "delete", "missing", "--confirm"]
-        )
+        result = runner.invoke(cli, ["projects", "delete", "missing", "--confirm"])
         assert result.exit_code != 0
         assert "not found" in result.output.lower()
 
@@ -900,9 +898,7 @@ def test_projects_delete_requires_confirmation(runner):
         project = create_project(name="my-project")
         mock_client.read_project.return_value = project
 
-        result = runner.invoke(
-            cli, ["projects", "delete", "my-project"], input="n\n"
-        )
+        result = runner.invoke(cli, ["projects", "delete", "my-project"], input="n\n")
         assert result.exit_code != 0
         mock_client.delete_project.assert_not_called()
 

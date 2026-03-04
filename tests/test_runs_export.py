@@ -277,7 +277,9 @@ def test_export_limit_applied(runner, tmp_path):
 
         # Create 10 runs but limit to 3
         runs = [
-            create_run(name=f"run-{i}", id_str=f"0000000{i}-0000-0000-0000-000000000000")
+            create_run(
+                name=f"run-{i}", id_str=f"0000000{i}-0000-0000-0000-000000000000"
+            )
             for i in range(10)
         ]
         mock_client.list_runs.return_value = runs
