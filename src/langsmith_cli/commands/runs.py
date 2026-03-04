@@ -2800,6 +2800,18 @@ def export_runs(
             safe = safe[:200]
         return safe or "unnamed"
 
+    # Validate filename pattern before the loop
+    _valid_pattern_vars = {"run_id", "trace_id", "index", "name"}
+    try:
+        filename_pattern.format(
+            run_id="test", trace_id="test", index=0, name="test"
+        )
+    except KeyError as e:
+        raise click.ClickException(
+            f"Invalid filename pattern variable {e}. "
+            f"Valid variables: {{{', '.join(sorted(_valid_pattern_vars))}}}"
+        )
+
     # Export runs sequentially (local file I/O is fast, no need for threads)
     exported_files: list[str] = []
     errors: list[dict[str, str]] = []

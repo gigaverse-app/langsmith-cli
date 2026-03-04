@@ -450,3 +450,104 @@ def test_datasets_push_uses_filename_as_default_dataset(runner, tmp_path):
         call_kwargs = mock_client.create_examples.call_args[1]
         # Should use filename without extension as dataset name
         assert call_kwargs["dataset_name"] == "my-examples"
+
+
+# ===== datasets delete tests =====
+
+
+def test_datasets_delete_by_name_json(runner):
+    """INVARIANT: datasets delete with --confirm and --json should return success."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        dataset = create_dataset(name="my-dataset")
+        mock_client.read_dataset.return_value = dataset
+
+        result = runner.invoke(
+            cli, ["--json", "datasets", "delete", "my-dataset", "--confirm"]
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["status"] == "success"
+        assert data["name"] == "my-dataset"
+        # Should resolve by name then delete by ID
+        mock_client.read_dataset.assert_called_once_with(dataset_name="my-dataset")
+        mock_client.delete_dataset.assert_called_once_with(
+            dataset_id=str(dataset.id)
+        )
+
+
+def test_datasets_delete_by_uuid(runner):
+    """INVARIANT: UUID input should resolve directly by ID."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        dataset = create_dataset(name="my-dataset")
+        mock_client.read_dataset.return_value = dataset
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "datasets",
+                "delete",
+                "ae99b6fa-a6db-4f1c-8868-bc6764f4c29e",
+                "--confirm",
+            ],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["status"] == "success"
+        # UUID should be detected and resolved by ID directly
+        mock_client.read_dataset.assert_called_once_with(
+            dataset_id="ae99b6fa-a6db-4f1c-8868-bc6764f4c29e"
+        )
+
+
+def test_datasets_delete_table_output(runner):
+    """INVARIANT: datasets delete without --json should show success message."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        from conftest import strip_ansi
+
+        dataset = create_dataset(name="my-dataset")
+        mock_client.read_dataset.return_value = dataset
+
+        result = runner.invoke(
+            cli, ["datasets", "delete", "my-dataset", "--confirm"]
+        )
+        assert result.exit_code == 0
+        output = strip_ansi(result.output)
+        assert "Deleted" in output
+        assert "my-dataset" in output
+
+
+def test_datasets_delete_not_found(runner):
+    """INVARIANT: Deleting nonexistent dataset should show friendly error."""
+    from langsmith.utils import LangSmithNotFoundError
+
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.read_dataset.side_effect = LangSmithNotFoundError("Not found")
+
+        result = runner.invoke(
+            cli, ["--json", "datasets", "delete", "nonexistent", "--confirm"]
+        )
+        assert result.exit_code != 0
+        data = json.loads(result.output)
+        assert "not found" in data["message"].lower()
+
+
+def test_datasets_delete_requires_confirmation(runner):
+    """INVARIANT: Without --confirm, delete should prompt for confirmation."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        # Simulate user saying 'n' to confirmation
+        result = runner.invoke(
+            cli, ["datasets", "delete", "my-dataset"], input="n\n"
+        )
+        # Should abort
+        assert result.exit_code != 0
+        mock_client.delete_dataset.assert_not_called()

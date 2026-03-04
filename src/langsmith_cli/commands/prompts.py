@@ -95,6 +95,8 @@ def list_prompts(ctx, limit, is_public, exclude, fields, count, output):
 @click.pass_context
 def get_prompt(ctx, name, commit, fields, output):
     """Fetch a prompt template."""
+    from langsmith.utils import LangSmithNotFoundError
+
     logger = ctx.obj["logger"]
     is_machine_readable = ctx.obj.get("json") or fields or output
     logger.use_stderr = is_machine_readable
@@ -103,7 +105,13 @@ def get_prompt(ctx, name, commit, fields, output):
 
     client = get_or_create_client(ctx)
     # pull_prompt returns the prompt object (might be LangChain PromptTemplate)
-    prompt_obj = client.pull_prompt(name + (f":{commit}" if commit else ""))
+    try:
+        prompt_obj = client.pull_prompt(name + (f":{commit}" if commit else ""))
+    except LangSmithNotFoundError:
+        raise click.ClickException(
+            f"Prompt '{name}' not found or has no commits. "
+            "Push content first with `langsmith-cli prompts push`."
+        )
 
     # Convert prompt object to dict
     try:
@@ -157,13 +165,19 @@ def push_prompt(ctx, name, file_path, description, tags, is_public):
     tags_list = parse_comma_separated_list(tags)
 
     # Push prompt with metadata
-    client.push_prompt(
-        prompt_identifier=name,
-        object=content,
-        description=description,
-        tags=tags_list,
-        is_public=is_public,
-    )
+    try:
+        client.push_prompt(
+            prompt_identifier=name,
+            object=content,
+            description=description,
+            tags=tags_list,
+            is_public=is_public,
+        )
+    except ImportError:
+        raise click.ClickException(
+            "Prompt push requires the langchain-core package. "
+            "Install with: pip install langchain-core"
+        )
 
     if ctx.obj.get("json"):
         click.echo(json_dumps({"status": "success", "name": name}))
@@ -185,6 +199,8 @@ def push_prompt(ctx, name, file_path, description, tags, is_public):
 @click.pass_context
 def pull_prompt(ctx, name, commit, include_model, fields, output):
     """Pull a prompt's raw commit data (manifest, metadata) from LangSmith."""
+    from langsmith.utils import LangSmithNotFoundError
+
     logger = ctx.obj["logger"]
     is_machine_readable = ctx.obj.get("json") or fields or output
     logger.use_stderr = is_machine_readable
@@ -193,9 +209,15 @@ def pull_prompt(ctx, name, commit, include_model, fields, output):
     logger.debug(f"Pulling prompt commit: {identifier}")
 
     client = get_or_create_client(ctx)
-    prompt_commit = client.pull_prompt_commit(
-        identifier, include_model=include_model
-    )
+    try:
+        prompt_commit = client.pull_prompt_commit(
+            identifier, include_model=include_model
+        )
+    except LangSmithNotFoundError:
+        raise click.ClickException(
+            f"Prompt '{name}' not found or has no commits. "
+            "Push content first with `langsmith-cli prompts push`."
+        )
 
     data = filter_fields(prompt_commit, fields)
 

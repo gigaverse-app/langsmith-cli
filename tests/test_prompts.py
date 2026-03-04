@@ -825,3 +825,72 @@ def test_prompts_commits_empty(runner):
 
         result = runner.invoke(cli, ["prompts", "commits", "my-prompt"])
         assert result.exit_code == 0
+
+
+# ===== Bug fix tests =====
+
+
+def test_prompts_get_empty_prompt_no_commits(runner):
+    """INVARIANT: prompts get on a prompt with 0 commits should show a friendly error,
+    not a raw SDK NotFoundError with internal URL paths."""
+    from langsmith.utils import LangSmithNotFoundError
+
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        # SDK raises NotFoundError when there are no commits
+        mock_client.pull_prompt.side_effect = LangSmithNotFoundError(
+            "Resource not found for /commits/-/my-prompt/latest"
+        )
+
+        result = runner.invoke(cli, ["--json", "prompts", "get", "my-prompt"])
+        assert result.exit_code != 0
+        data = json.loads(result.output)
+        assert "error" in data
+        # Should NOT contain raw internal URL paths
+        assert "/commits/-/" not in data.get("message", "")
+        # Should contain helpful guidance
+        assert "not found" in data["message"].lower() or "no commits" in data["message"].lower()
+
+
+def test_prompts_pull_empty_prompt_no_commits(runner):
+    """INVARIANT: prompts pull on a prompt with 0 commits should show a friendly error."""
+    from langsmith.utils import LangSmithNotFoundError
+
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.pull_prompt_commit.side_effect = LangSmithNotFoundError(
+            "Resource not found for /commits/-/my-prompt/latest"
+        )
+
+        result = runner.invoke(cli, ["--json", "prompts", "pull", "my-prompt"])
+        assert result.exit_code != 0
+        data = json.loads(result.output)
+        assert "error" in data
+        assert "/commits/-/" not in data.get("message", "")
+
+
+def test_prompts_push_import_error_friendly_message(runner, tmp_path):
+    """INVARIANT: prompts push without langchain-core should show a friendly message,
+    not the raw SDK ImportError with typo."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        # SDK raises ImportError with a typo: "langchain-corepackage"
+        mock_client.push_prompt.side_effect = ImportError(
+            "The client.create_commit function requires the langchain-corepackage to run.\n"
+            "Install with `pip install langchain-core`"
+        )
+
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("Hello, {name}!")
+
+        result = runner.invoke(
+            cli,
+            ["--json", "prompts", "push", "my-prompt", str(prompt_file)],
+        )
+        assert result.exit_code != 0
+        data = json.loads(result.output)
+        assert "error" in data
+        # Should NOT contain the raw SDK message with typo
+        assert "langchain-corepackage" not in data.get("message", "")
+        # Should contain helpful install instructions
+        assert "langchain-core" in data["message"]

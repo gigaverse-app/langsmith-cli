@@ -334,6 +334,40 @@ def test_export_sanitizes_filename(runner, tmp_path):
         assert "my_chain_name.json" in files
 
 
+def test_export_invalid_filename_pattern(runner, tmp_path):
+    """INVARIANT: Invalid filename pattern variables should produce a friendly error,
+    not a raw KeyError."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        project = create_project(name="test-proj")
+        mock_client.read_project.return_value = project
+
+        run1 = create_run(name="run-1", id_str="11111111-1111-1111-1111-111111111111")
+        mock_client.list_runs.return_value = [run1]
+
+        out_dir = tmp_path / "traces"
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "export",
+                str(out_dir),
+                "--project",
+                "test-proj",
+                "--filename-pattern",
+                "{name}_{id}.json",  # {id} is invalid, should be {run_id}
+            ],
+        )
+        assert result.exit_code != 0
+        data = parse_json_output(result.output)
+        assert "error" in data
+        # Should mention valid pattern variables, not just "KeyError: 'id'"
+        assert "run_id" in data["message"]
+        assert "trace_id" in data["message"] or "name" in data["message"]
+
+
 def test_export_with_time_filter(runner, tmp_path):
     """INVARIANT: --last and --since should filter exported runs."""
     with patch("langsmith.Client") as MockClient:
