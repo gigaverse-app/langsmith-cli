@@ -1,11 +1,10 @@
-from __future__ import annotations
-
-from typing import TYPE_CHECKING
+import os
 
 import click
+import langsmith
+from langsmith.schemas import Dataset
 from rich.console import Console
 from rich.table import Table
-import os
 from langsmith_cli.utils import (
     _looks_like_uuid,
     apply_exclude_filter,
@@ -23,10 +22,6 @@ from langsmith_cli.utils import (
     safe_model_dump,
     write_output_to_file,
 )
-
-if TYPE_CHECKING:
-    import langsmith
-    from langsmith.schemas import Dataset
 
 console = Console()
 
@@ -258,9 +253,9 @@ def push_dataset(ctx, file_path, dataset):
 
 
 def resolve_dataset(
-    client: "langsmith.Client",
+    client: langsmith.Client,
     name_or_id: str,
-) -> "Dataset":
+) -> Dataset:
     """Resolve a dataset by name or UUID, with smart UUID auto-detection.
 
     Tries name first (unless input looks like a UUID), then falls back.

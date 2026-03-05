@@ -1,14 +1,12 @@
 """Utility functions shared across commands."""
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable, Generic, Protocol, TypeVar, overload
+from typing import Any, Callable, Generic, Protocol, TypeVar, overload
 import click
 import json
 import langsmith
+from langsmith.schemas import Run
 from pydantic import BaseModel, Field
-
-if TYPE_CHECKING:
-    from langsmith.schemas import Run
 
 T = TypeVar("T")
 ModelT = TypeVar("ModelT", bound=BaseModel)
@@ -188,7 +186,7 @@ class ProjectQuery:
 
 
 def fetch_from_projects(
-    client: Any,
+    client: langsmith.Client,
     project_names: list[str],
     fetch_func: Callable[..., Any],
     *,
@@ -1165,7 +1163,7 @@ def get_matching_items(
 
 
 def get_matching_projects(
-    client: Any,
+    client: langsmith.Client,
     *,
     project: str | None = None,
     name: str | None = None,
@@ -1268,7 +1266,7 @@ def _looks_like_uuid(value: str) -> bool:
 
 
 def get_project_suggestions(
-    client: Any,
+    client: langsmith.Client,
     failed_name: str,
     max_suggestions: int = 5,
 ) -> list[str]:
@@ -1303,6 +1301,8 @@ def get_project_suggestions(
     scored: list[tuple[float, str]] = []
     for proj in all_projects:
         name = proj.name
+        if name is None:
+            continue
         name_lower = name.lower()
 
         # Exact match — shouldn't happen but skip
@@ -1330,8 +1330,8 @@ def get_project_suggestions(
 
 
 def raise_if_all_failed_with_suggestions(
-    result: "FetchResult[Any]",
-    client: Any,
+    result: FetchResult[Any],
+    client: langsmith.Client,
     project_query: ProjectQuery,
     logger: Any | None = None,
     entity_name: str = "runs",
@@ -1364,7 +1364,7 @@ def raise_if_all_failed_with_suggestions(
 
 
 def resolve_project_filters(
-    client: Any,
+    client: langsmith.Client,
     *,
     project: str | None = None,
     project_id: str | None = None,

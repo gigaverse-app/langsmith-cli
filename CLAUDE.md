@@ -155,41 +155,26 @@ main.py (entry point)
 
 ### Key Design Patterns
 
-**1. Lazy Loading Performance Pattern**
+**1. Direct Imports for Strong Types**
 ```python
-# ❌ BAD - Top-level import (loads SDK immediately)
-from langsmith import Client
+# ✅ GOOD - Direct imports of langsmith types for strong typing
+import langsmith
+from langsmith.schemas import Dataset, TracerSessionResult, Run
 
-# ✅ GOOD - Import inside command function
-@runs.command("list")
-def list_runs(...):
-    import langsmith  # Only loads when command executes
-    client = langsmith.Client()
-```
-
-**1b. Strong Types Without Circular Imports (TYPE_CHECKING Pattern)**
-```python
-# Problem: We want strong types for langsmith.Client and SDK models,
-# but top-level imports break the lazy loading pattern.
-# Solution: Use TYPE_CHECKING + from __future__ import annotations
-
-from __future__ import annotations
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    import langsmith
-    from langsmith.schemas import Dataset, TracerSessionResult
-
-# Now use string-style annotations (evaluated lazily thanks to __future__)
 def resolve_dataset(client: langsmith.Client, name: str) -> Dataset:
     ...
 
-# ❌ BAD - using `object` as type (loses all type safety)
+# ❌ BAD - using `object` or `Any` as type (loses all type safety)
 def resolve_dataset(client: object, name: str) -> object: ...
 
-# ❌ BAD - top-level import (breaks lazy loading)
-from langsmith import Client
+# ❌ BAD - TYPE_CHECKING / __future__ annotations workaround (unnecessary complexity)
+from __future__ import annotations
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    import langsmith  # Don't do this
 ```
+
+**Note on CLI startup performance:** `utils.py` already imports `langsmith` at module level (needed for shared helpers), and every command module imports `utils.py`. Since the cost is already paid at startup, import langsmith types directly everywhere — no lazy loading workarounds needed for type annotations. If a module does NOT import utils.py and doesn't need langsmith at import time, keep heavy imports inside command functions.
 
 **2. Dual Output Pattern (JSON vs Rich Tables)**
 ```python
@@ -664,6 +649,8 @@ safe = safe.strip(". ")
 5. **Duplicated utility logic** → Extract to helpers (e.g., `normalize_split()`)
 6. **`--flag default=True is_flag=True`** → No-op; use `--flag/--no-flag` pair
 7. **ThreadPoolExecutor for local file I/O** → Sequential is faster (no GIL benefit)
+8. **`TYPE_CHECKING` / `__future__` annotations workaround** → Import types directly; langsmith is already loaded at startup
+9. **`client: object` or `client: Any`** → Use `client: langsmith.Client` for strong types
 
 ## Engineering Standards (from docs/AGENTS.md)
 
@@ -677,10 +664,13 @@ safe = safe.strip(". ")
 - ✅ Never create duplicate response models - reuse SDK models with field selection
 - **Current Status**: Fully implemented - all commands use SDK Pydantic models with type-safe attribute access
 
-### 2. Performance (100ms Rule)
-- ❌ NO top-level imports of heavy libraries (langsmith, rich, pandas)
-- ✅ Libraries imported inside command functions (lazy loading)
-- **Current Status**: Properly implemented
+### 2. Performance (Keep CLI Fast)
+- ❌ Don't add new top-level imports of heavy libraries to modules that don't already need them
+- ❌ Don't introduce new heavy dependencies without measuring CLI startup impact
+- ✅ `langsmith` and `rich` are already loaded at startup (via utils.py) — use them directly for strong types
+- ✅ If adding a new module that doesn't need langsmith at import time, keep heavy imports inside functions
+- ✅ Always prefer strong types over lazy loading workarounds — don't sacrifice type safety for startup time
+- **Current Status**: langsmith/rich load at startup (~300ms). Acceptable. Don't make it worse.
 
 ### 3. Architecture (Pure Logic vs View)
 - Logic Layer: Returns Pydantic models/typed objects, never prints

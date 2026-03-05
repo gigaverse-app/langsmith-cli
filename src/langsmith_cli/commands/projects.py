@@ -1,8 +1,6 @@
-from __future__ import annotations
-
-from typing import TYPE_CHECKING
-
 import click
+import langsmith
+from langsmith.schemas import TracerSessionResult
 from rich.console import Console
 from rich.table import Table
 from langsmith_cli.utils import (
@@ -26,19 +24,15 @@ from langsmith_cli.utils import (
     json_dumps,
 )
 
-if TYPE_CHECKING:
-    import langsmith
-    from langsmith.schemas import TracerSessionResult
-
 console = Console()
 
 
 def resolve_project(
-    client: "langsmith.Client",
+    client: langsmith.Client,
     name_or_id: str,
     *,
     include_stats: bool = False,
-) -> "TracerSessionResult":
+) -> TracerSessionResult:
     """Resolve a project by name or UUID, with smart UUID auto-detection.
 
     Tries name first (unless input looks like a UUID), then falls back.
