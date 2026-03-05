@@ -10,21 +10,43 @@ langsmith-cli --json runs list [OPTIONS]
 
 **Options:**
 - `--project TEXT` - Project name (default: "default")
-- `--project-id TEXT` - Project UUID
+- `--project-id TEXT` - Project UUID (bypasses name resolution, fastest lookup)
+- `--project-name TEXT` - Substring/contains match for project names
+- `--project-name-exact TEXT` - Exact project name match
+- `--project-name-pattern TEXT` - Wildcard pattern for project names (e.g., `'dev/*'`)
+- `--project-name-regex TEXT` - Regex pattern for project names
 - `--limit INTEGER` - Maximum results (default: 10)
-- `--status TEXT` - Filter by status: `success` or `error`
+- `--status [success|error]` - Filter by status
+- `--failed` - Show only failed/error runs (shorthand for `--status error`)
+- `--succeeded` - Show only successful runs (shorthand for `--status success`)
+- `--slow` - Filter to slow runs (latency > 5s)
+- `--recent` - Filter to recent runs (last hour)
+- `--today` - Filter to today's runs
 - `--run-type TEXT` - Filter by type: `llm`, `chain`, `tool`, `retriever`, `prompt`, `parser`
 - `--is-root BOOLEAN` - Filter for root traces only: `true` or `false`
+- `--roots` - Show only root traces (shorthand for `--is-root true`)
 - `--trace-id UUID` - Get all runs in a specific trace tree
 - `--filter TEXT` - Advanced FQL query (see Filter Query Language section)
 - `--trace-filter TEXT` - Filter applied to root run of trace
 - `--tree-filter TEXT` - Filter applied to any run in trace tree
 - `--reference-example-id UUID` - Filter runs by reference example ID
 - `--tag TEXT` - Filter by tag (repeatable for AND logic)
-- `--roots` - Show only root traces (shorthand for `--is-root true`)
-- `--since TEXT` - Show runs since timestamp or relative time
-- `--last TEXT` - Show runs from last duration (e.g. `24h`, `7d`)
-- `--query TEXT` - Client-side text search across run content
+- `--name-pattern TEXT` - Wildcard filter on run names (client-side, e.g., `'*auth*'`)
+- `--name-regex TEXT` - Regex filter on run names (client-side)
+- `--model TEXT` - Filter by model name (e.g., `gpt-4`, `claude-3`)
+- `--since TEXT` - Show runs since timestamp or relative time (ISO, `3d`, `3 days ago`)
+- `--last TEXT` - Show runs from last duration (e.g., `24h`, `7d`, `30m`, `2w`)
+- `--min-latency TEXT` - Minimum latency (e.g., `2s`, `500ms`)
+- `--max-latency TEXT` - Maximum latency (e.g., `10s`, `2000ms`)
+- `--query TEXT` - Server-side full-text search (fast, first ~250 chars)
+- `--grep TEXT` - Client-side content search (unlimited, supports regex)
+- `--grep-ignore-case` - Case-insensitive grep
+- `--grep-regex` - Treat grep pattern as regex
+- `--grep-in TEXT` - Comma-separated fields to search in (e.g., `inputs,outputs,error`)
+- `--fetch INTEGER` - Override automatic fetch multiplier for client-side filters
+- `--sort-by TEXT` - Sort by field (name, status, latency, start_time). Prefix `-` for descending
+- `--format [table|json|csv|yaml]` - Output format
+- `--no-truncate` - Show full content in table columns
 - `--fields TEXT` - Comma-separated field names to include
 - `--exclude TEXT` - Exclude items containing substring (repeatable)
 - `--count` - Output only the count of results
@@ -155,9 +177,55 @@ langsmith-cli --json runs stats [OPTIONS]
 langsmith-cli --json runs stats --project myapp
 ```
 
+### `runs get-latest`
+
+Get the most recent run matching filters. Eliminates the need for piping `runs list` into `jq` and then `runs get`.
+
+```bash
+langsmith-cli --json runs get-latest [OPTIONS]
+```
+
+**Options:**
+- `--project TEXT` - Project name (default: "default")
+- `--project-id TEXT` - Project UUID
+- `--project-name TEXT` - Substring match for project names
+- `--project-name-exact TEXT` - Exact project name match
+- `--project-name-pattern TEXT` - Wildcard pattern (e.g., `'prd/*'`)
+- `--project-name-regex TEXT` - Regex pattern for project names
+- `--status [success|error]` - Filter by status
+- `--failed` - Show only failed runs (shorthand for `--status error`)
+- `--succeeded` - Show only successful runs (shorthand for `--status success`)
+- `--roots` - Get latest root trace only
+- `--tag TEXT` - Filter by tag (repeatable)
+- `--model TEXT` - Filter by model name (e.g., `gpt-4`, `claude-3`)
+- `--slow` - Filter to slow runs (latency > 5s)
+- `--recent` - Filter to recent runs (last hour)
+- `--today` - Filter to today's runs
+- `--min-latency TEXT` - Minimum latency (e.g., `2s`, `500ms`)
+- `--max-latency TEXT` - Maximum latency (e.g., `10s`)
+- `--since TEXT` - Since time (ISO or relative like `1 hour ago`)
+- `--last TEXT` - From last duration (e.g., `24h`, `7d`)
+- `--filter TEXT` - Custom FQL filter string
+- `--fields TEXT` - Comma-separated field names (reduces context)
+- `--output TEXT` - Write output to file
+
+**Output:** Single run object (or pruned object if `--fields` specified)
+
+**Examples:**
+```bash
+# Get latest run with inputs/outputs
+langsmith-cli --json runs get-latest --project my-project --fields inputs,outputs
+
+# Get latest error from production projects
+langsmith-cli --json runs get-latest --project-name-pattern "prd/*" --failed --fields id,name,error
+
+# Get latest slow run from last hour
+langsmith-cli --json runs get-latest --project my-project --slow --recent --fields name,latency
+```
+
 ### `runs search`
 
-Search runs by content (experimental).
+Full-text search across runs in one or more projects.
 
 ```bash
 langsmith-cli --json runs search <query> [OPTIONS]
@@ -168,13 +236,32 @@ langsmith-cli --json runs search <query> [OPTIONS]
 
 **Options:**
 - `--project TEXT` - Project name (default: "default")
+- `--project-id TEXT` - Project UUID
+- `--project-name TEXT` - Substring match for project names
+- `--project-name-exact TEXT` - Exact project name match
+- `--project-name-pattern TEXT` - Wildcard pattern (e.g., `'prod-*'`)
+- `--project-name-regex TEXT` - Regex pattern for project names
 - `--limit INTEGER` - Maximum results (default: 10)
+- `--roots` - Show only root traces
+- `--in [all|inputs|outputs|error]` - Where to search (default: all fields)
+- `--input-contains TEXT` - Filter by content in inputs
+- `--output-contains TEXT` - Filter by content in outputs
+- `--since TEXT` - Since time (ISO, `3d`, or `3 days ago`)
+- `--last TEXT` - From last duration (e.g., `24h`, `7d`)
+- `--format [table|json|csv|yaml]` - Output format
 
 **Output:** List of runs matching query
 
-**Example:**
+**Examples:**
 ```bash
+# Search for errors
 langsmith-cli --json runs search "database connection error" --project myapp
+
+# Search only in error field
+langsmith-cli --json runs search "timeout" --in error
+
+# Search across production projects
+langsmith-cli --json runs search "user_123" --project-name-pattern "prod-*" --in inputs
 ```
 
 ### `runs open`
@@ -255,4 +342,159 @@ langsmith-cli runs export ./traces --project my-project \
 # Custom filenames
 langsmith-cli runs export ./traces --project my-project \
   --filename-pattern "{name}_{run_id}.json"
+```
+
+### `runs sample`
+
+Stratified sampling of runs by tags or metadata.
+
+```bash
+langsmith-cli --json runs sample [OPTIONS]
+```
+
+**Options:**
+- `--project TEXT` - Project name (default: "default")
+- Multi-project: `--project-name`, `--project-name-pattern`, `--project-name-regex`, etc.
+- `--stratify-by TEXT` - Grouping field (e.g., `tag:length_category`, `metadata:user_tier`). Comma-separated for multi-dimensional.
+- `--values TEXT` - Stratum values to sample from (comma-separated). For multi-dimensional: colon-separated combinations.
+- `--dimension-values TEXT` - Cartesian product sampling (pipe-separated per dimension, comma-separated dimensions).
+- `--samples-per-stratum INTEGER` - Samples per stratum (default: 10)
+- `--samples-per-combination INTEGER` - Alias for `--samples-per-stratum` in multi-dimensional mode
+- `--since TEXT` / `--last TEXT` - Time filters
+- `--fields TEXT` - Comma-separated fields to include
+- `--output TEXT` - Write to JSONL file (recommended for data extraction)
+
+**Examples:**
+```bash
+# Single dimension
+langsmith-cli runs sample --project my-project \
+  --stratify-by "tag:length_category" --values "short,medium,long" \
+  --samples-per-stratum 20 --output samples.jsonl
+
+# Multi-dimensional (Cartesian product)
+langsmith-cli runs sample --project my-project \
+  --stratify-by "tag:length,tag:content_type" \
+  --dimension-values "short|medium|long,news|gaming" \
+  --samples-per-combination 5 --output multi.jsonl
+```
+
+### `runs analyze`
+
+Group runs and compute aggregate metrics.
+
+```bash
+langsmith-cli --json runs analyze [OPTIONS]
+```
+
+**Options:**
+- `--project TEXT` - Project name (default: "default")
+- Multi-project: `--project-name`, `--project-name-pattern`, `--project-name-regex`, etc.
+- `--group-by TEXT` - Grouping field (e.g., `tag:length_category`, `metadata:user_tier`)
+- `--metrics TEXT` - Metrics to compute (comma-separated). Available: `count`, `error_rate`, `p50_latency`, `p95_latency`, `p99_latency`, `avg_latency`, `total_tokens`, `avg_cost`
+- `--sample-size INTEGER` - Number of recent runs to analyze (default: 300, use 0 for all)
+- `--filter TEXT` - Additional FQL filter
+- `--format [table|json|csv|yaml]` - Output format
+
+**Examples:**
+```bash
+langsmith-cli --json runs analyze --project my-project \
+  --group-by "tag:schema" --metrics "count,error_rate,p95_latency"
+
+langsmith-cli --json runs analyze --project my-project \
+  --group-by "tag:schema" --sample-size 1000
+```
+
+### `runs tags`
+
+Discover structured tag patterns (key:value format) in recent runs.
+
+```bash
+langsmith-cli --json runs tags [OPTIONS]
+```
+
+**Options:**
+- `--project TEXT` - Project name (default: "default")
+- Multi-project: `--project-name`, `--project-name-pattern`, `--project-name-regex`, etc.
+- `--since TEXT` / `--last TEXT` - Time filters
+- `--sample-size INTEGER` - Runs to sample (default: 1000)
+
+**Output:** `{"tag_patterns": {"key1": ["val1", "val2"], ...}}`
+
+### `runs metadata-keys`
+
+Discover metadata keys used in recent runs.
+
+```bash
+langsmith-cli --json runs metadata-keys [OPTIONS]
+```
+
+**Options:**
+- `--project TEXT` - Project name (default: "default")
+- Multi-project: `--project-name`, `--project-name-pattern`, `--project-name-regex`, etc.
+- `--since TEXT` / `--last TEXT` - Time filters
+- `--sample-size INTEGER` - Runs to sample (default: 1000)
+
+**Output:** `{"metadata_keys": ["key1", "key2", ...]}`
+
+### `runs fields`
+
+Discover all field paths, types, presence rates, and language distribution.
+
+```bash
+langsmith-cli --json runs fields [OPTIONS]
+```
+
+**Options:**
+- `--project TEXT` - Project name (default: "default")
+- Multi-project: `--project-name`, `--project-name-pattern`, `--project-name-regex`, etc.
+- `--since TEXT` / `--last TEXT` - Time filters
+- `--sample-size INTEGER` - Runs to sample (default: 100)
+- `--include TEXT` - Only include fields starting with these paths (comma-separated)
+- `--exclude TEXT` - Exclude fields starting with these paths (comma-separated)
+- `--no-language` - Skip language detection (faster)
+
+**Output:** `{"fields": [{"path": "inputs.query", "type": "string", "present_pct": 98.0, ...}], "total_runs": 100}`
+
+**Examples:**
+```bash
+langsmith-cli --json runs fields --project my-project --include inputs,outputs
+langsmith-cli --json runs fields --no-language --sample-size 50
+```
+
+### `runs describe`
+
+Detailed field statistics with length/numeric stats. Like `runs fields` but includes min/max/avg/p50 for string lengths, numeric values, and list element counts.
+
+```bash
+langsmith-cli --json runs describe [OPTIONS]
+```
+
+**Options:** Same as `runs fields`.
+
+**Examples:**
+```bash
+langsmith-cli --json runs describe --include inputs,outputs
+langsmith-cli --json runs describe --project my-project --no-language
+```
+
+### `runs view-file`
+
+View runs from JSONL files with table display. Use this to read files created by `--output`.
+
+```bash
+langsmith-cli runs view-file <pattern> [OPTIONS]
+```
+
+**Arguments:**
+- `pattern` (required) - File path or glob pattern (e.g., `samples.jsonl`, `data/*.jsonl`)
+
+**Options:**
+- `--fields TEXT` - Comma-separated field names (critical for context efficiency)
+- `--no-truncate` - Show full content in table columns
+
+**Examples:**
+```bash
+langsmith-cli runs view-file samples.jsonl
+langsmith-cli --json runs view-file samples.jsonl --fields id,name,status
+langsmith-cli runs view-file "data/*.jsonl" --no-truncate
 ```

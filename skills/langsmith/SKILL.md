@@ -99,10 +99,21 @@ langsmith-cli --json runs list --project my-project --limit 5 2>&1
 
 ## API Reference
 
+### Authentication
+- `langsmith-cli auth login`: Configure API key (saves to global config).
+  - `--local`: Save to `.env` in current directory instead.
+
 ### Projects
 - `langsmith-cli --json projects list [OPTIONS]`: List all projects.
+  - `--limit <n>`: Max results (default: 100, use 0 for no limit)
+  - `--name <text>`: Filter by exact name
+  - `--name-pattern <pattern>`: Wildcard filter (e.g., `'*prod*'`)
+  - `--name-regex <regex>`: Regex filter
+  - `--has-runs`: Show only projects with runs
+  - `--sort-by <field>`: Sort by field (name, run_count). Prefix `-` for descending
   - `--fields <comma-separated>`: Select specific fields (e.g., `id,name`)
   - `--output <file>`: Write to file instead of stdout
+  - See [Projects Reference](references/projects.md) for full options and output fields.
 - `langsmith-cli --json projects get <name-or-id>`: Get project details (UUID auto-detected).
   - `--include-stats/--no-stats`: Include/exclude run statistics (default: include)
   - `--fields <comma-separated>`: Select fields
@@ -114,9 +125,24 @@ langsmith-cli --json runs list --project my-project --limit 5 2>&1
 - `langsmith-cli --json runs list [OPTIONS]`: List recent runs.
   - `--project <name>`: Filter by project name (default: "default").
   - `--project-id <uuid>`: Filter by project UUID (bypasses name resolution, faster).
+  - **Multi-project:** `--project-name <text>`, `--project-name-exact <text>`, `--project-name-pattern <pattern>`, `--project-name-regex <regex>`
   - `--limit <n>`: Max results (default 10, keep it small).
   - `--status <success|error>`: Filter by status.
+  - **Convenience shortcuts:** `--failed`, `--succeeded`, `--slow` (>5s), `--recent` (last hour), `--today`
   - `--filter <string>`: Advanced FQL query string (see FQL examples below).
+  - `--roots`: Show only root traces (recommended for cleaner output).
+  - `--trace-id <uuid>`: Get all runs in a specific trace tree.
+  - `--run-type <type>`: Filter by type (llm, chain, tool, retriever, etc).
+  - `--tag <tag>`: Filter by tag (repeatable for AND logic).
+  - `--name-pattern <pattern>`: Wildcard filter on run names (client-side).
+  - `--name-regex <regex>`: Regex filter on run names (client-side).
+  - `--model <name>`: Filter by model name (e.g., `gpt-4`, `claude-3`).
+  - `--since <time>`: Runs since time (ISO, `3d`, or `3 days ago`).
+  - `--last <duration>`: Runs from last duration (e.g., `24h`, `7d`).
+  - `--min-latency <dur>` / `--max-latency <dur>`: Latency range (e.g., `2s`, `500ms`).
+  - `--trace-filter <fql>` / `--tree-filter <fql>`: Filter on root trace / any run in tree.
+  - `--sort-by <field>`: Sort by field (name, status, latency, start_time). Prefix `-` for descending.
+  - `--format <table|json|csv|yaml>`: Output format.
   - **Content Search Options:**
     - `--query <text>`: Server-side full-text search (fast, but only first ~250 chars indexed).
     - `--grep <pattern>`: Client-side content search (unlimited content, supports regex).
@@ -126,7 +152,7 @@ langsmith-cli --json runs list --project my-project --limit 5 2>&1
   - `--fields <comma-separated>`: Reduce output size (e.g., `id,name,status,error`).
   - `--output <file>`: Write to file (JSONL format) instead of stdout.
   - `--no-truncate`: Show full content in table columns (only affects table output, not JSON).
-  - `--roots`: Show only root traces (recommended for cleaner output).
+  - See [Runs Reference](references/runs.md) for full field list and examples.
 - `langsmith-cli --json runs get <id> [OPTIONS]`: Get details of a single run.
   - `--fields <comma-separated>`: Only return specific fields (e.g., `inputs,outputs,error`).
 - `langsmith-cli --json runs get-latest [OPTIONS]`: Get the most recent run matching filters.
@@ -139,6 +165,21 @@ langsmith-cli --json runs list --project my-project --limit 5 2>&1
   - Example: `langsmith-cli --json runs get-latest --project-name-pattern "prd/*" --succeeded --roots`
   - **Before (complex):** `langsmith-cli --json runs list --project X --limit 1 --roots | jq -r '.[0].id' | xargs langsmith-cli --json runs get --fields inputs,outputs`
   - **After (simple):** `langsmith-cli --json runs get-latest --project X --roots --fields inputs,outputs`
+- `langsmith-cli --json runs search <query> [OPTIONS]`: Full-text search across runs.
+  - `--project <name>`: Project name (default: "default").
+  - Multi-project: `--project-name-pattern`, `--project-name-regex`, etc.
+  - `--limit <n>`: Max results (default: 10).
+  - `--roots`: Show only root traces.
+  - `--in <all|inputs|outputs|error>`: Where to search (default: all).
+  - `--input-contains <text>`: Filter by content in inputs.
+  - `--output-contains <text>`: Filter by content in outputs.
+  - `--since <time>` / `--last <duration>`: Time filters.
+  - `--format <table|json|csv|yaml>`: Output format.
+  - Example: `langsmith-cli --json runs search "timeout" --in error --project myapp`
+- `langsmith-cli runs watch [OPTIONS]`: Live monitoring dashboard (interactive, no `--json`).
+  - `--project <name>`: Project to monitor (default: "default").
+  - Multi-project: `--project-name-pattern`, `--project-name-regex`, etc.
+  - `--interval <seconds>`: Refresh interval (default: 2).
 - `langsmith-cli runs view-file <pattern> [OPTIONS]`: View runs from JSONL files with table display.
   - **Use this to read files created by `--output`** - don't use the Read tool on JSONL files (they can be 30K+ tokens).
   - `<pattern>`: File path or glob pattern (e.g., `samples.jsonl`, `data/*.jsonl`).
@@ -215,16 +256,29 @@ langsmith-cli --json runs list --project my-project --limit 5 2>&1
   - `--output <file>`: Write to file instead of stdout
 - `langsmith-cli --json datasets get <id> [--fields id,name,description]`: Get dataset details.
 - `langsmith-cli --json datasets create <name>`: Create a dataset.
+  - `--description <text>`: Dataset description.
+  - `--type [kv|llm|chat]`: Dataset type (default: kv).
 - `langsmith-cli --json datasets delete <name-or-id> --confirm`: Delete a dataset.
 - `langsmith-cli --json datasets push <file.jsonl> --dataset <name>`: Upload examples from JSONL.
+- See [Datasets Reference](references/datasets.md) for full options and output fields.
 - `langsmith-cli --json examples list --dataset <name> [OPTIONS]`: List examples in a dataset.
+  - `--limit <n>` / `--offset <n>`: Pagination.
+  - `--splits <comma-separated>`: Filter by splits (e.g., `train,test`).
+  - `--as-of <tag-or-timestamp>`: Version snapshot.
+  - `--filter <fql>`: Advanced FQL query.
+  - `--metadata <json>`: Filter by metadata.
   - `--fields <comma-separated>`: Select fields (e.g., `id,inputs,outputs`)
   - `--output <file>`: Write to file instead of stdout
 - `langsmith-cli --json examples get <id> [--fields id,inputs,outputs]`: Get example details.
 - `langsmith-cli --json examples create --dataset <name> --inputs <json> --outputs <json>`: Add an example.
+  - `--metadata <json>`: Custom metadata.
+  - `--split <name>`: Split name (e.g., `train`, `test`).
 - `langsmith-cli --json examples update <id> --inputs <json> --outputs <json>`: Update an example.
+  - `--metadata <json>`: New metadata.
+  - `--split <name>`: New split name.
 - `langsmith-cli --json examples delete <id> [<id>...] --confirm`: Delete examples (supports bulk).
 - `langsmith-cli --json examples from-run <run-id> --dataset <name>`: Create example from a run.
+- See [Examples Reference](references/examples.md) for full options and output fields.
 
 ### Prompts
 - `langsmith-cli --json prompts list [OPTIONS]`: List prompt repositories.
@@ -235,9 +289,20 @@ langsmith-cli --json runs list --project my-project --limit 5 2>&1
   - `--include-model`: Include model configuration
   - `--fields <comma-separated>`: Select fields
 - `langsmith-cli --json prompts push <name> <file_path>`: Push a local file as a prompt.
+  - `--description <text>`: Prompt description.
+  - `--tags <comma-separated>`: Tags.
+  - `--is-public <bool>`: Make public.
 - `langsmith-cli --json prompts create <name> [--description <text>]`: Create a new prompt.
+  - `--tags <comma-separated>`: Tags.
+  - `--is-public <bool>`: Make public.
 - `langsmith-cli --json prompts delete <name> --confirm`: Delete a prompt.
 - `langsmith-cli --json prompts commits <name> [--limit N]`: List prompt versions.
+  - `--offset <n>`: Skip N commits.
+  - `--include-model`: Include model configuration.
+  - `--fields <comma-separated>`: Select fields.
+  - `--count`: Return only the count of commits.
+  - `--output <file>`: Write to file.
+- See [Prompts Reference](references/prompts.md) for full options and output fields.
 
 ### Self (Installation Management)
 - `langsmith-cli self detect`: Show installation details (version, install method, paths).
@@ -295,7 +360,7 @@ langsmith-cli --json projects list | jq -r '.[].name' | grep -E "(prd|stg)/"
 langsmith-cli --json projects list --name-regex "^(prd|stg)/" --fields name
 ```
 
-### Pattern 2: Get Latest Run Without Nested Commands
+### Pattern 3: Get Latest Run Without Nested Commands
 ```bash
 # ❌ BAD (requires jq + nested command)
 langsmith-cli --json runs get $(
@@ -307,7 +372,7 @@ langsmith-cli --json runs get $(
 langsmith-cli --json runs get-latest --project X --roots --fields inputs,outputs
 ```
 
-### Pattern 3: Get Latest Error from Production
+### Pattern 4: Get Latest Error from Production
 ```bash
 # ❌ BAD (complex piping)
 for project in $(langsmith-cli --json projects list | jq -r '.[].name' | grep "prd/"); do
@@ -318,7 +383,7 @@ done | jq -s '.[0]'
 langsmith-cli --json runs get-latest --project-name-pattern "prd/*" --failed --fields id,name,error
 ```
 
-### Pattern 4: Filter Projects by Pattern
+### Pattern 5: Filter Projects by Pattern
 ```bash
 # Filter by substring
 langsmith-cli --json projects list --name "production" --fields name
@@ -330,7 +395,7 @@ langsmith-cli --json projects list --name-pattern "*prod*" --fields name
 langsmith-cli --json projects list --name-regex "^(prd|stg)/.*" --fields name
 ```
 
-### Pattern 5: Get Latest Successful Run from Multiple Projects
+### Pattern 6: Get Latest Successful Run from Multiple Projects
 ```bash
 # Searches across all matching projects
 langsmith-cli --json runs get-latest \
