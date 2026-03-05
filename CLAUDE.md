@@ -889,6 +889,68 @@ def test_mycommand_list(runner):
 
 **Python Version:** >=3.12
 
+## Releasing
+
+### ALWAYS Use the Release Script
+
+**Never manually bump versions or create tags/releases.** Use `scripts/release.sh` which handles everything:
+
+```bash
+# Patch bump (0.4.0 → 0.4.1) — default
+./scripts/release.sh
+
+# Minor bump (0.4.0 → 0.5.0)
+./scripts/release.sh minor
+
+# Major bump (0.4.0 → 1.0.0)
+./scripts/release.sh major
+
+# Explicit version
+./scripts/release.sh 0.5.0
+
+# Skip tests for docs-only releases
+./scripts/release.sh --skip-tests
+
+# Auto-confirm (no prompts)
+./scripts/release.sh -y
+```
+
+### What the Release Script Does
+
+1. **Bumps version in all 4 files simultaneously:**
+   - `pyproject.toml`
+   - `.claude-plugin/plugin.json`
+   - `.claude-plugin/marketplace.json` (both `metadata.version` and `plugins[0].version`)
+   - `uv.lock`
+2. **Runs quality checks:** ruff lint, ruff format, pyright
+3. **Runs tests** (unless `--skip-tests`)
+4. **Creates git commit and annotated tag**
+5. **Pushes to remote** (triggers CI → PyPI publish → GitHub release)
+
+### Version Files — Never Edit Manually
+
+These files contain version strings that **must stay in sync**:
+- `pyproject.toml` — PyPI package version
+- `.claude-plugin/plugin.json` — Plugin version for Claude Code
+- `.claude-plugin/marketplace.json` — Marketplace listing version (2 locations)
+- `uv.lock` — Auto-updated by the script
+
+Editing any of these manually creates version drift. The release script is the **single source of truth** for version bumps.
+
+### When to Release
+
+- **Code changes:** Always use `./scripts/release.sh` (runs tests by default)
+- **Docs/skill-only changes:** Use `./scripts/release.sh --skip-tests` (still bumps version)
+- **After updating SKILL.md:** A release is needed for plugin users to get the updated skill
+
+### CI/CD Pipeline (Automated)
+
+On tag push (`v*`), GitHub Actions automatically:
+1. Runs full test suite
+2. Builds wheel and sdist
+3. Publishes to PyPI (Trusted Publishing, no tokens)
+4. Creates GitHub release with artifacts
+
 ## Git Workflow
 
 Per docs/dev/SESSION_DIRECTIVES.md:
