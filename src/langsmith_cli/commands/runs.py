@@ -2663,6 +2663,38 @@ def _get_project_name(run: Run) -> str:
     return "unknown"
 
 
+def _extract_input_context(run: Run) -> dict[str, str]:
+    """Extract structured context from run inputs.
+
+    Looks for known patterns like channel_info JSON embedded in inputs,
+    and returns a flat dict of extracted key-value pairs.
+    """
+    import json as json_mod
+
+    result: dict[str, str] = {}
+    inputs = run.inputs or {}
+
+    # Look for channel_info (common pattern: JSON string in inputs)
+    channel_info = inputs.get("channel_info", "")
+    if isinstance(channel_info, str) and channel_info.strip().startswith("{"):
+        try:
+            parsed = json_mod.loads(channel_info)
+            if isinstance(parsed, dict):
+                for key in ("community_name", "channel_id", "channel_name"):
+                    val = parsed.get(key)
+                    if val:
+                        result[key] = str(val)
+        except (json_mod.JSONDecodeError, ValueError):
+            pass
+    elif isinstance(channel_info, dict):
+        for key in ("community_name", "channel_id", "channel_name"):
+            val = channel_info.get(key)
+            if val:
+                result[key] = str(val)
+
+    return result
+
+
 def _truncate_hour(dt: Any) -> str:
     """Truncate a datetime to the hour, return as ISO string."""
     from datetime import datetime, timezone
@@ -2817,6 +2849,7 @@ def usage_runs(
     # Fetch runs - either from cache or API
     all_runs: list[Run] = []
     run_project_map: dict[str, str] = {}  # run.id -> project_name
+    trace_context: dict[str, dict[str, str]] = {}  # trace_id -> {field: value}
 
     if from_cache:
         from langsmith_cli.cache import load_runs_from_cache
@@ -2845,6 +2878,30 @@ def usage_runs(
             for src, err in result.failed_sources[:3]:
                 logger.warning(f"  {src}: {err}")
 
+        # Build trace context map from all runs (for group-by propagation)
+        # When LLM runs lack a metadata field, we can look it up from root/chain runs
+        if group_by:
+            for run in result.items:
+                tid = str(run.trace_id) if run.trace_id else None
+                if not tid:
+                    continue
+                # Extract context from metadata
+                meta = {}
+                if run.extra and isinstance(run.extra, dict):
+                    meta = run.extra.get("metadata", {}) or {}
+                if run.metadata and isinstance(run.metadata, dict):
+                    meta.update(run.metadata)
+                # Extract context from inputs (e.g. channel_info JSON)
+                input_ctx = _extract_input_context(run)
+                # Merge (prefer root/chain data = runs with no parent)
+                if tid not in trace_context:
+                    trace_context[tid] = {}
+                # Root runs (no parent) get priority
+                is_root = run.parent_run_id is None
+                for k, v in {**meta, **input_ctx}.items():
+                    if v and (is_root or k not in trace_context[tid]):
+                        trace_context[tid][k] = str(v)
+
         # Client-side filter: only LLM runs
         for run in result.items:
             if run.run_type != "llm":
@@ -2854,14 +2911,22 @@ def usage_runs(
             for src in result.successful_sources:
                 run_project_map[str(run.id)] = src
 
-        # Apply metadata filters client-side
+        # Apply metadata filters client-side (check trace context too)
         for mf in metadata_filters:
             if "=" not in mf:
                 continue
             key, value = mf.split("=", 1)
-            all_runs = [
-                r for r in all_runs if extract_group_value(r, "metadata", key) == value
-            ]
+            filtered: list[Run] = []
+            for r in all_runs:
+                direct = extract_group_value(r, "metadata", key)
+                if direct == value:
+                    filtered.append(r)
+                    continue
+                # Fallback to trace context
+                tid = str(r.trace_id) if r.trace_id else None
+                if tid and trace_context.get(tid, {}).get(key) == value:
+                    filtered.append(r)
+            all_runs = filtered
 
         if not all_runs and not result.successful_sources:
             raise click.ClickException(
@@ -2974,10 +3039,15 @@ def usage_runs(
     for run in model_runs:
         time_key = _bucket_key(run)
 
-        # Group value
+        # Group value (with trace context fallback for cached runs)
         group_val = "all"
         if group_type and group_field:
             extracted = extract_group_value(run, group_type, group_field)
+            if not extracted and from_cache:
+                # Fallback: look up from trace context (root/chain runs)
+                tid = str(run.trace_id) if run.trace_id else None
+                if tid and tid in trace_context:
+                    extracted = trace_context[tid].get(group_field)
             group_val = extracted or "ungrouped"
 
         # Breakdown values
