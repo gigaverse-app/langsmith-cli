@@ -212,6 +212,32 @@ langsmith-cli --json runs list --project my-project --limit 5 2>&1
 - `langsmith-cli --json prompts get <name> [--commit <hash>]`: Fetch a prompt template.
 - `langsmith-cli --json prompts push <name> <file_path>`: Push a local file as a prompt.
 
+### Token Usage & Pricing
+- `langsmith-cli runs usage [OPTIONS]`: Analyze token usage over time with grouping and breakdowns.
+  - `--group-by <field>`: Group by metadata/tag (e.g., `metadata:channel_id`, `metadata:community_name`).
+  - `--breakdown <dim>`: Breakdown by `model` and/or `project` (repeatable).
+  - `--interval <hour|day>`: Time bucket size (default: hour).
+  - `--active-only`: Only show time buckets with activity.
+  - `--from-cache`: Use local cache instead of API (fast, offline).
+  - `--metadata key=value`: Filter by metadata (repeatable).
+  - `--sample-size <n>`: Limit runs per project.
+  - Example: `langsmith-cli --json runs usage --project-name-pattern "prd/*" --last 7d --breakdown model`
+  - Example: `langsmith-cli runs usage --from-cache --group-by metadata:community_name --breakdown project --interval day`
+- `langsmith-cli runs pricing [OPTIONS]`: Check model pricing coverage and look up missing prices.
+  - Scans runs to find models with/without cost data in LangSmith.
+  - Looks up missing prices from OpenRouter API automatically.
+  - `--from-cache`: Analyze cached runs (fast).
+  - `--no-lookup`: Skip OpenRouter price lookup.
+  - Example: `langsmith-cli runs pricing --project-name-pattern "prd/*" --from-cache`
+  - Example: `langsmith-cli --json runs pricing --project-name-pattern "prd/*" --from-cache`
+- `langsmith-cli runs cache download [OPTIONS]`: Download runs to local JSONL cache.
+  - `--last <duration>`: Time range (e.g., `7d`, `24h`).
+  - `--full`: Force full re-download (clear existing cache).
+  - `--run-type <type>`: Filter by run type (optional, downloads all by default).
+  - Example: `langsmith-cli runs cache download --project-name-pattern "prd/*" --last 7d`
+- `langsmith-cli runs cache list`: List cached projects with run counts and sizes.
+- `langsmith-cli runs cache clear [--project <name>] [--yes]`: Clear cached data.
+
 ### Self (Installation Management)
 - `langsmith-cli self detect`: Show installation details (version, install method, paths).
   - Reports: version, install method (uv tool, pipx, pip, editable), install path, executable path, Python version.
