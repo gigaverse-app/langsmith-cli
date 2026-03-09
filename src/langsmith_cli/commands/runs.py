@@ -2636,3 +2636,423 @@ def describe_fields(
         no_language=no_language,
         show_detailed_stats=True,
     )
+
+
+def _get_model_name(run: Run) -> str:
+    """Extract model name from a run, checking multiple locations."""
+    extra = run.extra or {}
+    metadata = extra.get("metadata", {}) or {}
+    model = metadata.get("ls_model_name")
+    if model:
+        return str(model)
+    invocation = extra.get("invocation_params", {}) or {}
+    model = invocation.get("model") or invocation.get("model_name")
+    if model:
+        return str(model)
+    return "unknown"
+
+
+def _get_project_name(run: Run) -> str:
+    """Extract project name from a run, handling missing attribute when using select."""
+    try:
+        name = run.session_name
+        if name:
+            return name
+    except AttributeError:
+        pass
+    return "unknown"
+
+
+def _truncate_hour(dt: Any) -> str:
+    """Truncate a datetime to the hour, return as ISO string."""
+    from datetime import datetime, timezone
+
+    if isinstance(dt, str):
+        dt = datetime.fromisoformat(dt)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.strftime("%Y-%m-%dT%H:00Z")
+
+
+@runs.command("usage")
+@add_project_filter_options
+@add_time_filter_options
+@click.option(
+    "--group-by",
+    help="Group by a metadata or tag field (e.g., 'metadata:channel_id', 'tag:env'). "
+    "Shows per-group breakdown.",
+)
+@click.option(
+    "--breakdown",
+    multiple=True,
+    type=click.Choice(["model", "project"]),
+    help="Add breakdown dimensions (can specify multiple: --breakdown model --breakdown project).",
+)
+@click.option(
+    "--interval",
+    default="hour",
+    type=click.Choice(["hour", "day"]),
+    help="Time bucket interval (default: hour).",
+)
+@click.option(
+    "--active-only",
+    is_flag=True,
+    help="Only show time buckets with non-zero token usage.",
+)
+@click.option(
+    "--sample-size",
+    default=0,
+    type=int,
+    help="Number of runs to analyze (default: 0 = all runs in time range).",
+)
+@click.option(
+    "--metadata",
+    "metadata_filters",
+    multiple=True,
+    help="Filter by metadata key=value (server-side, fast). "
+    "Can specify multiple: --metadata channel_id=chat:foo --metadata user_id=123",
+)
+@click.option(
+    "--filter",
+    "additional_filter",
+    help="Additional FQL filter (e.g., 'eq(run_type, \"llm\")').",
+)
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["table", "json", "csv", "yaml"]),
+    help="Output format (default: table, or json if --json flag used).",
+)
+@click.pass_context
+def usage_runs(
+    ctx: click.Context,
+    project: str | None,
+    project_id: str | None,
+    project_name: str | None,
+    project_name_exact: str | None,
+    project_name_pattern: str | None,
+    project_name_regex: str | None,
+    since: str | None,
+    last: str | None,
+    group_by: str | None,
+    breakdown: tuple[str, ...],
+    interval: str,
+    active_only: bool,
+    sample_size: int,
+    metadata_filters: tuple[str, ...],
+    additional_filter: str | None,
+    output_format: str | None,
+) -> None:
+    """Analyze token usage over time with flexible grouping and breakdowns.
+
+    Fetches LLM runs and aggregates token usage into time buckets (hour/day),
+    with optional grouping by metadata fields and breakdowns by model/project.
+
+    Only counts run_type="llm" runs with ls_model_name set to avoid
+    double-counting tokens from parent chain runs.
+
+    Examples:
+        # Token usage per hour across all prd/* projects
+        langsmith-cli runs usage --project-name-pattern "prd/*" --last 7d
+
+        # Per channel_id breakdown with model detail
+        langsmith-cli runs usage \\
+          --project-name-pattern "prd/*" \\
+          --group-by metadata:channel_id \\
+          --breakdown model \\
+          --last 7d --active-only
+
+        # Session analysis: filter by specific channel_id
+        langsmith-cli runs usage \\
+          --project-name-pattern "prd/*" \\
+          --metadata channel_id=chat:MyRoom-abc123 \\
+          --breakdown model --breakdown project
+
+        # Per project, per model, last 24 hours
+        langsmith-cli runs usage \\
+          --project-name-pattern "prd/*" \\
+          --breakdown model --breakdown project \\
+          --last 24h --active-only
+
+        # JSON output for further processing
+        langsmith-cli --json runs usage \\
+          --project-name-pattern "prd/*" \\
+          --group-by metadata:channel_id \\
+          --breakdown model \\
+          --last 7d --active-only
+    """
+    from collections import defaultdict
+    from datetime import timezone
+
+    logger = ctx.obj["logger"]
+    is_machine_readable = ctx.obj.get("json") or output_format in ["csv", "yaml"]
+    logger.use_stderr = is_machine_readable
+
+    # Build filters: only LLM runs (to avoid double-counting from chains)
+    time_filters = build_time_fql_filters(since=since, last=last)
+    base_filters = time_filters.copy()
+    base_filters.append('eq(run_type, "llm")')
+
+    # Add metadata filters (server-side, fast)
+    for mf in metadata_filters:
+        if "=" not in mf:
+            raise click.BadParameter(
+                f"Invalid metadata filter: {mf}. Use key=value format."
+            )
+        key, value = mf.split("=", 1)
+        base_filters.append(
+            f'and(in(metadata_key, ["{key}"]), eq(metadata_value, "{value}"))'
+        )
+
+    if additional_filter:
+        base_filters.append(additional_filter)
+    combined_filter = combine_fql_filters(base_filters)
+
+    client = get_or_create_client(ctx)
+
+    # Resolve projects
+    pq = resolve_project_filters(
+        client,
+        project=project,
+        project_id=project_id,
+        name=project_name,
+        name_exact=project_name_exact,
+        name_pattern=project_name_pattern,
+        name_regex=project_name_regex,
+    )
+
+    logger.info(f"Fetching LLM runs from {len(pq.names)} project(s)...")
+
+    # Fields needed for usage analysis
+    # Note: session_name is not a valid select field, so we include session_id
+    # and the project name is known from the query source
+    select_fields = [
+        "start_time",
+        "total_tokens",
+        "prompt_tokens",
+        "completion_tokens",
+        "total_cost",
+        "extra",
+        "run_type",
+    ]
+
+    # Fetch runs - track which project each run came from
+    all_runs: list[Run] = []
+    run_project_map: dict[str, str] = {}  # run.id -> project_name
+    failed_projects: list[tuple[str, str]] = []
+
+    sources: list[tuple[str, dict[str, Any]]] = []
+    if pq.use_id:
+        sources = [(f"id:{pq.project_id}", {"project_id": pq.project_id})]
+    else:
+        sources = [(name, {"project_name": name}) for name in pq.names]
+
+    for source_label, proj_kwargs in sources:
+        try:
+            runs_iter = client.list_runs(
+                **proj_kwargs,
+                filter=combined_filter,
+                limit=None,
+                select=select_fields,
+            )
+            collected = 0
+            for run in runs_iter:
+                all_runs.append(run)
+                run_project_map[str(run.id)] = source_label
+                collected += 1
+                if sample_size > 0 and collected >= sample_size:
+                    break
+        except Exception as e:
+            failed_projects.append((source_label, str(e)))
+
+    if failed_projects and len(all_runs) == 0:
+        logger.warning("All projects failed to fetch:")
+        for proj, error_msg in failed_projects[:3]:
+            short = error_msg[:100] + "..." if len(error_msg) > 100 else error_msg
+            logger.warning(f"  {proj}: {short}")
+        raise click.ClickException("No runs fetched. Check project names and API key.")
+
+    # Filter to only runs with a model name (avoids counting non-LLM chain wrappers)
+    model_runs = [r for r in all_runs if _get_model_name(r) != "unknown"]
+    logger.info(f"Fetched {len(all_runs)} LLM runs ({len(model_runs)} with model info)")
+
+    if not model_runs:
+        logger.warning("No LLM runs with model info found in the selected time range.")
+        return
+
+    # Parse group-by if provided
+    group_type: str | None = None
+    group_field: str | None = None
+    if group_by:
+        parsed = parse_grouping_field(group_by)
+        if isinstance(parsed, list):
+            raise click.BadParameter(
+                "Multi-dimensional grouping not supported for usage. Use a single dimension."
+            )
+        group_type, group_field = parsed
+
+    # Build bucket key function
+    def _bucket_key(run: Run) -> str:
+        if interval == "day":
+            dt = run.start_time
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.strftime("%Y-%m-%d")
+        return _truncate_hour(run.start_time)
+
+    # Aggregate into buckets
+    # Key: (time_bucket, group_value, *breakdown_values) -> metrics
+    UsageBucket = dict[str, float | int | str]
+    buckets: dict[tuple[str, ...], UsageBucket] = defaultdict(
+        lambda: {
+            "total_tokens": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_cost": 0.0,
+            "run_count": 0,
+        }
+    )
+
+    for run in model_runs:
+        time_key = _bucket_key(run)
+
+        # Group value
+        group_val = "all"
+        if group_type and group_field:
+            extracted = extract_group_value(run, group_type, group_field)
+            group_val = extracted or "ungrouped"
+
+        # Breakdown values
+        breakdown_vals: list[str] = []
+        for dim in breakdown:
+            if dim == "model":
+                breakdown_vals.append(_get_model_name(run))
+            elif dim == "project":
+                breakdown_vals.append(
+                    run_project_map.get(str(run.id), _get_project_name(run))
+                )
+
+        key = (time_key, group_val, *breakdown_vals)
+
+        bucket = buckets[key]
+        bucket["total_tokens"] = int(bucket["total_tokens"]) + (run.total_tokens or 0)
+        bucket["prompt_tokens"] = int(bucket["prompt_tokens"]) + (
+            run.prompt_tokens or 0
+        )
+        bucket["completion_tokens"] = int(bucket["completion_tokens"]) + (
+            run.completion_tokens or 0
+        )
+        bucket["total_cost"] = float(bucket["total_cost"]) + float(
+            run.total_cost or 0.0
+        )
+        bucket["run_count"] = int(bucket["run_count"]) + 1
+
+    # Build results list
+    results: list[dict[str, Any]] = []
+    for key, metrics in buckets.items():
+        row: dict[str, Any] = {
+            "time": key[0],
+            "group": key[1],
+        }
+        # Add breakdown columns
+        for i, dim in enumerate(breakdown):
+            row[dim] = key[2 + i]
+
+        row.update(metrics)
+        results.append(row)
+
+    # Sort by time, then group
+    results.sort(key=lambda r: (r["time"], r["group"]))
+
+    # Filter active-only
+    if active_only:
+        results = [r for r in results if r["total_tokens"] > 0]
+
+    if not results:
+        logger.warning("No usage data found for the selected filters.")
+        return
+
+    # Compute summary stats
+    unique_groups = {r["group"] for r in results}
+    unique_times = {r["time"] for r in results}
+    total_tokens_all = sum(r["total_tokens"] for r in results)
+    total_cost_all = sum(r["total_cost"] for r in results)
+
+    # Concurrent groups per time bucket
+    groups_per_bucket: dict[str, set[str]] = defaultdict(set)
+    for r in results:
+        groups_per_bucket[r["time"]].add(r["group"])
+    max_concurrent = (
+        max(len(v) for v in groups_per_bucket.values()) if groups_per_bucket else 0
+    )
+    avg_concurrent = (
+        sum(len(v) for v in groups_per_bucket.values()) / len(groups_per_bucket)
+        if groups_per_bucket
+        else 0
+    )
+
+    # Determine output format
+    format_type = determine_output_format(output_format, ctx.obj.get("json"))
+
+    if format_type != "table":
+        output_data = {
+            "summary": {
+                "total_tokens": total_tokens_all,
+                "total_cost": round(total_cost_all, 6),
+                "active_buckets": len(unique_times),
+                "unique_groups": len(unique_groups),
+                "max_concurrent_groups": max_concurrent,
+                "avg_concurrent_groups": round(avg_concurrent, 1),
+                "interval": interval,
+                "run_count": sum(r["run_count"] for r in results),
+            },
+            "buckets": results,
+        }
+        output_formatted_data(output_data, format_type)
+        return
+
+    # Print summary
+    group_label = group_field or "group"
+    console.print("\n[bold]Token Usage Summary[/bold]")
+    console.print(f"  Total tokens: [cyan]{total_tokens_all:,}[/cyan]")
+    console.print(f"  Total cost: [cyan]${total_cost_all:.4f}[/cyan]")
+    console.print(f"  Active {interval}s: [cyan]{len(unique_times)}[/cyan]")
+    if group_by:
+        console.print(f"  Unique {group_label}s: [cyan]{len(unique_groups)}[/cyan]")
+        console.print(f"  Max concurrent {group_label}s: [cyan]{max_concurrent}[/cyan]")
+        console.print(
+            f"  Avg concurrent {group_label}s: [cyan]{avg_concurrent:.1f}[/cyan]"
+        )
+    console.print()
+
+    # Build table
+    table = Table(title=f"Token Usage by {interval.title()}")
+    table.add_column("Time", style="cyan")
+    if group_by:
+        table.add_column(group_label.title(), style="green")
+    for dim in breakdown:
+        table.add_column(dim.title(), style="yellow")
+    table.add_column("Runs", justify="right")
+    table.add_column("Total Tokens", justify="right", style="bold")
+    table.add_column("Prompt", justify="right")
+    table.add_column("Completion", justify="right")
+    table.add_column("Cost", justify="right")
+
+    for r in results:
+        row_values = [r["time"]]
+        if group_by:
+            row_values.append(str(r["group"]))
+        for dim in breakdown:
+            row_values.append(str(r.get(dim, "")))
+        row_values.extend(
+            [
+                str(r["run_count"]),
+                f"{r['total_tokens']:,}",
+                f"{r['prompt_tokens']:,}",
+                f"{r['completion_tokens']:,}",
+                f"${r['total_cost']:.4f}",
+            ]
+        )
+        table.add_row(*row_values)
+
+    console.print(table)
