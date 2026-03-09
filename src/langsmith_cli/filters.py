@@ -12,11 +12,41 @@ The design separates concerns:
 - Client-side: Applied after fetching data (for features SDK doesn't support)
 """
 
+from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
 from langsmith_cli.utils import combine_fql_filters
+
+
+def parse_time_filter(
+    since: str | None = None,
+    last: str | None = None,
+) -> tuple[datetime | None, datetime | None]:
+    """Parse time filter options into datetime range for client-side filtering.
+
+    Returns:
+        Tuple of (since_dt, until_dt). Either or both may be None.
+    """
+    from datetime import datetime, timezone
+
+    from langsmith_cli.utils import parse_relative_time
+
+    since_dt: datetime | None = None
+    until_dt: datetime | None = None
+
+    if since:
+        try:
+            since_dt = datetime.fromisoformat(since)
+            if since_dt.tzinfo is None:
+                since_dt = since_dt.replace(tzinfo=timezone.utc)
+        except ValueError:
+            since_dt = parse_relative_time(since)
+    elif last:
+        since_dt = parse_relative_time(last)
+
+    return since_dt, until_dt
 
 
 class StatusFilter(BaseModel):

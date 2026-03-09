@@ -2718,6 +2718,11 @@ def _truncate_hour(dt: Any) -> str:
     help="Additional FQL filter (e.g., 'eq(run_type, \"llm\")').",
 )
 @click.option(
+    "--from-cache",
+    is_flag=True,
+    help="Read runs from local cache instead of API. Use 'runs cache download' first.",
+)
+@click.option(
     "--format",
     "output_format",
     type=click.Choice(["table", "json", "csv", "yaml"]),
@@ -2741,6 +2746,7 @@ def usage_runs(
     sample_size: int,
     metadata_filters: tuple[str, ...],
     additional_filter: str | None,
+    from_cache: bool,
     output_format: str | None,
 ) -> None:
     """Analyze token usage over time with flexible grouping and breakdowns.
@@ -2768,11 +2774,11 @@ def usage_runs(
           --metadata channel_id=chat:MyRoom-abc123 \\
           --breakdown model --breakdown project
 
-        # Per project, per model, last 24 hours
+        # From cache (fast, offline)
         langsmith-cli runs usage \\
           --project-name-pattern "prd/*" \\
-          --breakdown model --breakdown project \\
-          --last 24h --active-only
+          --from-cache --group-by metadata:channel_id \\
+          --breakdown model --active-only
 
         # JSON output for further processing
         langsmith-cli --json runs usage \\
@@ -2808,73 +2814,125 @@ def usage_runs(
         base_filters.append(additional_filter)
     combined_filter = combine_fql_filters(base_filters)
 
-    client = get_or_create_client(ctx)
-
-    # Resolve projects
-    pq = resolve_project_filters(
-        client,
-        project=project,
-        project_id=project_id,
-        name=project_name,
-        name_exact=project_name_exact,
-        name_pattern=project_name_pattern,
-        name_regex=project_name_regex,
-    )
-
-    logger.info(f"Fetching LLM runs from {len(pq.names)} project(s)...")
-
-    # Fields needed for usage analysis
-    # Note: session_name is not a valid select field, so we include session_id
-    # and the project name is known from the query source
-    select_fields = [
-        "start_time",
-        "total_tokens",
-        "prompt_tokens",
-        "completion_tokens",
-        "total_cost",
-        "extra",
-        "run_type",
-    ]
-
-    # Fetch runs - track which project each run came from
+    # Fetch runs - either from cache or API
     all_runs: list[Run] = []
     run_project_map: dict[str, str] = {}  # run.id -> project_name
-    failed_projects: list[tuple[str, str]] = []
 
-    sources: list[tuple[str, dict[str, Any]]] = []
-    if pq.use_id:
-        sources = [(f"id:{pq.project_id}", {"project_id": pq.project_id})]
-    else:
-        sources = [(name, {"project_name": name}) for name in pq.names]
+    if from_cache:
+        from langsmith_cli.cache import load_runs_from_cache
 
-    for source_label, proj_kwargs in sources:
-        try:
-            runs_iter = client.list_runs(
-                **proj_kwargs,
-                filter=combined_filter,
-                limit=None,
-                select=select_fields,
+        # Resolve project names (need client for pattern matching)
+        client = get_or_create_client(ctx)
+        pq = resolve_project_filters(
+            client,
+            project=project,
+            project_id=project_id,
+            name=project_name,
+            name_exact=project_name_exact,
+            name_pattern=project_name_pattern,
+            name_regex=project_name_regex,
+        )
+        project_names = pq.names if not pq.use_id else [f"id:{pq.project_id}"]
+
+        # Parse time filters for client-side filtering
+        from langsmith_cli.filters import parse_time_filter
+
+        since_dt, until_dt = parse_time_filter(since=since, last=last)
+
+        logger.info(f"Loading from cache: {len(project_names)} project(s)...")
+        result = load_runs_from_cache(project_names, since=since_dt, until=until_dt)
+        if result.has_failures:
+            for src, err in result.failed_sources[:3]:
+                logger.warning(f"  {src}: {err}")
+
+        # Client-side filter: only LLM runs
+        for run in result.items:
+            if run.run_type != "llm":
+                continue
+            all_runs.append(run)
+            # Determine project from successful_sources or run
+            for src in result.successful_sources:
+                run_project_map[str(run.id)] = src
+
+        # Apply metadata filters client-side
+        for mf in metadata_filters:
+            if "=" not in mf:
+                continue
+            key, value = mf.split("=", 1)
+            all_runs = [
+                r for r in all_runs if extract_group_value(r, "metadata", key) == value
+            ]
+
+        if not all_runs and not result.successful_sources:
+            raise click.ClickException(
+                "No cached data found. Run 'runs cache download' first."
             )
-            collected = 0
-            for run in runs_iter:
-                all_runs.append(run)
-                run_project_map[str(run.id)] = source_label
-                collected += 1
-                if sample_size > 0 and collected >= sample_size:
-                    break
-        except Exception as e:
-            failed_projects.append((source_label, str(e)))
+    else:
+        client = get_or_create_client(ctx)
 
-    if failed_projects and len(all_runs) == 0:
-        logger.warning("All projects failed to fetch:")
-        for proj, error_msg in failed_projects[:3]:
-            short = error_msg[:100] + "..." if len(error_msg) > 100 else error_msg
-            logger.warning(f"  {proj}: {short}")
-        raise click.ClickException("No runs fetched. Check project names and API key.")
+        pq = resolve_project_filters(
+            client,
+            project=project,
+            project_id=project_id,
+            name=project_name,
+            name_exact=project_name_exact,
+            name_pattern=project_name_pattern,
+            name_regex=project_name_regex,
+        )
+
+        logger.info(f"Fetching LLM runs from {len(pq.names)} project(s)...")
+
+        select_fields = [
+            "start_time",
+            "total_tokens",
+            "prompt_tokens",
+            "completion_tokens",
+            "total_cost",
+            "extra",
+            "run_type",
+        ]
+
+        failed_projects: list[tuple[str, str]] = []
+        sources: list[tuple[str, dict[str, Any]]] = []
+        if pq.use_id:
+            sources = [(f"id:{pq.project_id}", {"project_id": pq.project_id})]
+        else:
+            sources = [(name, {"project_name": name}) for name in pq.names]
+
+        for source_label, proj_kwargs in sources:
+            try:
+                runs_iter = client.list_runs(
+                    **proj_kwargs,
+                    filter=combined_filter,
+                    limit=None,
+                    select=select_fields,
+                )
+                collected = 0
+                for run in runs_iter:
+                    all_runs.append(run)
+                    run_project_map[str(run.id)] = source_label
+                    collected += 1
+                    if sample_size > 0 and collected >= sample_size:
+                        break
+            except Exception as e:
+                failed_projects.append((source_label, str(e)))
+
+        if failed_projects and len(all_runs) == 0:
+            logger.warning("All projects failed to fetch:")
+            for proj, error_msg in failed_projects[:3]:
+                short = error_msg[:100] + "..." if len(error_msg) > 100 else error_msg
+                logger.warning(f"  {proj}: {short}")
+            raise click.ClickException(
+                "No runs fetched. Check project names and API key."
+            )
 
     # Filter to only runs with a model name (avoids counting non-LLM chain wrappers)
     model_runs = [r for r in all_runs if _get_model_name(r) != "unknown"]
-    logger.info(f"Fetched {len(all_runs)} LLM runs ({len(model_runs)} with model info)")
+    source_label_str = "cache" if from_cache else "API"
+    logger.info(
+        f"Loaded {len(all_runs)} LLM runs ({len(model_runs)} with model info) "
+        f"from {source_label_str}"
+    )
 
     if not model_runs:
         logger.warning("No LLM runs with model info found in the selected time range.")
@@ -3056,3 +3114,233 @@ def usage_runs(
         table.add_row(*row_values)
 
     console.print(table)
+
+
+# Cache commands
+
+
+@runs.group("cache")
+def cache_group():
+    """Manage local JSONL cache of runs for fast offline analysis."""
+    pass
+
+
+@cache_group.command("download")
+@add_project_filter_options
+@add_time_filter_options
+@click.option(
+    "--filter",
+    "additional_filter",
+    help="Additional FQL filter to apply.",
+)
+@click.option(
+    "--run-type",
+    help="Filter by run type (llm, chain, tool, etc).",
+)
+@click.option(
+    "--full",
+    is_flag=True,
+    help="Force full re-download (clear existing cache for these projects).",
+)
+@click.pass_context
+def cache_download(
+    ctx: click.Context,
+    project: str | None,
+    project_id: str | None,
+    project_name: str | None,
+    project_name_exact: str | None,
+    project_name_pattern: str | None,
+    project_name_regex: str | None,
+    since: str | None,
+    last: str | None,
+    additional_filter: str | None,
+    run_type: str | None,
+    full: bool,
+) -> None:
+    """Download runs to local JSONL cache for fast offline analysis.
+
+    By default, incrementally fetches only new runs since last download.
+    Use --full to re-download everything.
+
+    Examples:
+        # Cache all runs from prd/* for last 7 days
+        langsmith-cli runs cache download --project-name-pattern "prd/*" --last 7d
+
+        # Incremental update (only new runs since last download)
+        langsmith-cli runs cache download --project-name-pattern "prd/*"
+
+        # Full re-download
+        langsmith-cli runs cache download --project prd/video_moderation_service --full
+
+        # Cache only LLM runs
+        langsmith-cli runs cache download --project-name-pattern "prd/*" --run-type llm
+    """
+    from langsmith_cli.cache import (
+        append_runs_to_cache,
+        clear_cache,
+        get_cache_path,
+        read_cache_metadata,
+    )
+
+    logger = ctx.obj["logger"]
+    logger.use_stderr = False
+
+    client = get_or_create_client(ctx)
+
+    # Resolve projects
+    pq = resolve_project_filters(
+        client,
+        project=project,
+        project_id=project_id,
+        name=project_name,
+        name_exact=project_name_exact,
+        name_pattern=project_name_pattern,
+        name_regex=project_name_regex,
+    )
+
+    project_names = pq.names if not pq.use_id else [f"id:{pq.project_id}"]
+    logger.info(f"Caching runs from {len(project_names)} project(s)...")
+
+    # Build filters
+    time_filters = build_time_fql_filters(since=since, last=last)
+    base_filters = time_filters.copy()
+    if additional_filter:
+        base_filters.append(additional_filter)
+    if run_type:
+        base_filters.append(f'eq(run_type, "{run_type}")')
+
+    for proj_name in project_names:
+        # Handle incremental vs full
+        if full:
+            clear_cache(proj_name)
+            logger.info(f"  Cleared cache for {proj_name}")
+
+        # Check for incremental update
+        existing_meta = read_cache_metadata(proj_name)
+        incremental_filters = base_filters.copy()
+        if existing_meta and existing_meta.newest_run_start_time and not full:
+            newest = existing_meta.newest_run_start_time.isoformat()
+            incremental_filters.append(f'gt(start_time, "{newest}")')
+            logger.info(
+                f"  {proj_name}: incremental from "
+                f"{existing_meta.newest_run_start_time.strftime('%Y-%m-%d %H:%M')}"
+            )
+        else:
+            logger.info(f"  {proj_name}: full download")
+
+        combined_filter = combine_fql_filters(incremental_filters)
+
+        # Fetch runs (no select - full run objects)
+        try:
+            proj_kwargs: dict[str, Any] = {}
+            if proj_name.startswith("id:"):
+                proj_kwargs["project_id"] = proj_name[3:]
+            else:
+                proj_kwargs["project_name"] = proj_name
+
+            fetched_runs: list[Run] = list(
+                client.list_runs(
+                    **proj_kwargs,
+                    filter=combined_filter,
+                    limit=None,
+                )
+            )
+
+            if fetched_runs:
+                meta = append_runs_to_cache(proj_name, fetched_runs)
+                cache_path = get_cache_path(proj_name)
+                size_mb = cache_path.stat().st_size / (1024 * 1024)
+                logger.success(
+                    f"  {proj_name}: cached {len(fetched_runs)} new runs "
+                    f"(total: {meta.run_count}, {size_mb:.1f}MB)"
+                )
+            else:
+                logger.info(f"  {proj_name}: no new runs")
+
+        except Exception as e:
+            short = str(e)[:100]
+            logger.warning(f"  {proj_name}: failed - {short}")
+
+
+@cache_group.command("list")
+@click.pass_context
+def cache_list(ctx: click.Context) -> None:
+    """Show cached projects and their stats.
+
+    Examples:
+        langsmith-cli runs cache list
+        langsmith-cli --json runs cache list
+    """
+    from langsmith_cli.cache import get_cache_path, list_cached_projects
+
+    logger = ctx.obj["logger"]
+
+    projects = list_cached_projects()
+    if not projects:
+        logger.info("No cached projects. Use 'runs cache download' to cache runs.")
+        return
+
+    if ctx.obj.get("json"):
+        data = [p.model_dump(mode="json") for p in projects]
+        click.echo(json.dumps(data, default=str))
+        return
+
+    table = Table(title="Cached Projects")
+    table.add_column("Project", style="cyan")
+    table.add_column("Runs", justify="right")
+    table.add_column("Time Range", style="green")
+    table.add_column("Size", justify="right")
+    table.add_column("Last Updated", style="yellow")
+
+    for p in projects:
+        cache_path = get_cache_path(p.project_name)
+        size_mb = (
+            cache_path.stat().st_size / (1024 * 1024) if cache_path.exists() else 0
+        )
+
+        time_range = ""
+        if p.oldest_run_start_time and p.newest_run_start_time:
+            oldest = p.oldest_run_start_time.strftime("%m-%d %H:%M")
+            newest = p.newest_run_start_time.strftime("%m-%d %H:%M")
+            time_range = f"{oldest} → {newest}"
+
+        updated = p.last_updated.strftime("%Y-%m-%d %H:%M") if p.last_updated else ""
+
+        table.add_row(
+            p.project_name,
+            str(p.run_count),
+            time_range,
+            f"{size_mb:.1f}MB",
+            updated,
+        )
+
+    console.print(table)
+
+
+@cache_group.command("clear")
+@click.option("--project", help="Clear cache for a specific project only.")
+@click.option("--yes", is_flag=True, help="Skip confirmation prompt.")
+@click.pass_context
+def cache_clear(ctx: click.Context, project: str | None, yes: bool) -> None:
+    """Clear cached run data.
+
+    Examples:
+        # Clear specific project
+        langsmith-cli runs cache clear --project prd/video_moderation_service
+
+        # Clear all cached data
+        langsmith-cli runs cache clear --yes
+    """
+    from langsmith_cli.cache import clear_cache as do_clear
+
+    logger = ctx.obj["logger"]
+
+    if not project and not yes:
+        click.confirm("Clear ALL cached run data?", abort=True)
+
+    deleted = do_clear(project)
+    if deleted:
+        target = project or "all projects"
+        logger.success(f"Cleared cache for {target} ({deleted} files)")
+    else:
+        logger.info("No cache files to clear.")
