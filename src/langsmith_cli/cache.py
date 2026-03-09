@@ -87,9 +87,12 @@ def read_cached_runs(
         if not line:
             continue
         run = Run.model_validate(json.loads(line))
-        if since and run.start_time < since:
+        start = run.start_time
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=timezone.utc)
+        if since and start < since:
             continue
-        if until and run.start_time > until:
+        if until and start > until:
             continue
         runs.append(run)
     return runs
