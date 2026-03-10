@@ -69,6 +69,20 @@ langsmith-cli --json runs list --project my-project --limit 5 2>&1
 
 **Note:** When piping to other processes (`| jq`, `| python3`), prefer using `--output` to write to a file first, then read the file. This avoids potential buffering issues.
 
+## ⚡ MANDATORY: Always Use --json
+
+**When called by an AI agent (not a human), you MUST pass `--json` as the FIRST argument to every `langsmith-cli` command** (except `auth login` and `runs watch` which are interactive).
+
+Without `--json`, the CLI outputs Rich tables designed for human terminals — these are unparseable, waste tokens, and break automated workflows.
+
+```bash
+# ✅ CORRECT (agent usage)
+langsmith-cli --json runs list --project my-project --limit 5
+
+# ❌ WRONG (agent gets unparseable Rich table output)
+langsmith-cli runs list --project my-project --limit 5
+```
+
 ## ⚡ Efficient Usage Guidelines (READ THIS)
 1. **Machine Output:** ALWAYS add `--json` as the FIRST argument to `langsmith-cli` (e.g. `langsmith-cli --json runs list ...`) to get parseable output. Never use table output for agents.
 2. **Context Saving:** Use `--fields` on ALL list/get commands to reduce token usage (~90% reduction).
@@ -129,7 +143,8 @@ langsmith-cli --json runs list --project my-project --limit 5 2>&1
   - `--limit <n>`: Max results (default 10, keep it small).
   - `--status <success|error>`: Filter by status.
   - `--since <time>`: Show runs since this time (ISO, relative like `7d`, or `3 days ago`).
-  - `--last <duration>`: Show runs from last duration (e.g., `24h`, `7d`). Combined with `--since`, creates a time window: `--since 2026-02-17 --last 72h` = Feb 17-20.
+  - `--before <time>`: Show runs before this time (ISO, relative like `3d`, or `3 days ago`). Upper bound for time window.
+  - `--last <duration>`: Show runs from last duration (e.g., `24h`, `7d`). Combinable: `--since + --last` = forward window, `--before + --last` = backward window, `--since + --before` = explicit window.
   - **Convenience shortcuts:** `--failed`, `--succeeded`, `--slow` (>5s), `--recent` (last hour), `--today`
   - `--filter <string>`: Advanced FQL query string (see FQL examples below).
   - `--roots`: Show only root traces (recommended for cleaner output).
@@ -139,8 +154,7 @@ langsmith-cli --json runs list --project my-project --limit 5 2>&1
   - `--name-pattern <pattern>`: Wildcard filter on run names (client-side).
   - `--name-regex <regex>`: Regex filter on run names (client-side).
   - `--model <name>`: Filter by model name (e.g., `gpt-4`, `claude-3`).
-  - `--since <time>`: Runs since time (ISO, `3d`, or `3 days ago`).
-  - `--last <duration>`: Runs from last duration (e.g., `24h`, `7d`).
+  - `--since <time>`: Runs since time (ISO, `3d`, or `3 days ago`). *(Also listed above with `--before`.)*
   - `--min-latency <dur>` / `--max-latency <dur>`: Latency range (e.g., `2s`, `500ms`).
   - `--trace-filter <fql>` / `--tree-filter <fql>`: Filter on root trace / any run in tree.
   - `--sort-by <field>`: Sort by field (name, status, latency, start_time). Prefix `-` for descending.
@@ -175,7 +189,7 @@ langsmith-cli --json runs list --project my-project --limit 5 2>&1
   - `--in <all|inputs|outputs|error>`: Where to search (default: all).
   - `--input-contains <text>`: Filter by content in inputs.
   - `--output-contains <text>`: Filter by content in outputs.
-  - `--since <time>` / `--last <duration>`: Time filters.
+  - `--since <time>` / `--before <time>` / `--last <duration>`: Time filters (combinable for time windows).
   - `--format <table|json|csv|yaml>`: Output format.
   - Example: `langsmith-cli --json runs search "timeout" --in error --project myapp`
 - `langsmith-cli runs watch [OPTIONS]`: Live monitoring dashboard (interactive, no `--json`).
@@ -326,9 +340,12 @@ langsmith-cli --json runs list --project my-project --limit 5 2>&1
   - Example: `langsmith-cli --json runs pricing --project-name-pattern "prd/*" --from-cache`
 - `langsmith-cli runs cache download [OPTIONS]`: Download runs to local JSONL cache.
   - `--last <duration>`: Time range (e.g., `7d`, `24h`).
+  - `--since <time>` / `--before <time>`: Time bounds (combinable with `--last` for windows).
   - `--full`: Force full re-download (clear existing cache).
   - `--run-type <type>`: Filter by run type (optional, downloads all by default).
+  - `--workers <n>`: Parallel workers (default: min(4, num_projects)).
   - Example: `langsmith-cli runs cache download --project-name-pattern "prd/*" --last 7d`
+  - Example: `langsmith-cli runs cache download --project my-project --since 2025-02-17 --before 2025-02-20`
 - `langsmith-cli runs cache list`: List cached projects with run counts and sizes.
 - `langsmith-cli runs cache clear [--project <name>] [--yes]`: Clear cached data.
 

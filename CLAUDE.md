@@ -711,10 +711,11 @@ The CLI provides 100% feature parity with the official LangSmith MCP server. See
 
 ### Skill Definition
 The plugin is defined in `skills/langsmith/SKILL.md` which teaches Claude how to use the CLI efficiently:
-- Always use `--json` as first argument for parseable output
-- Use `--fields` to reduce context size
+- **MANDATORY for agents:** Always pass `--json` as the FIRST argument to every `langsmith-cli` command (except `auth login` and `runs watch`). Without it, the CLI outputs Rich tables that are unparseable and waste tokens.
+- Use `--fields` to reduce context size (~90% token reduction)
 - Use `--status error` for quick debugging
 - Keep `--limit` small (default 10)
+- Use `--before` / `--since` / `--last` for time windows (no raw FQL needed)
 
 ### Plugin Manifests
 The repository contains two manifest files:
