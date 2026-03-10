@@ -37,6 +37,7 @@ from langsmith_cli.utils import (
     parse_time_input,
     build_time_fql_filters,
     combine_fql_filters,
+    parse_time_range,
     write_output_to_file,
 )
 
@@ -1244,6 +1245,91 @@ class TestBuildTimeFqlFilters:
         """INVARIANT: Invalid --before value raises BadParameter."""
         with pytest.raises(click.BadParameter):
             build_time_fql_filters(before="invalid")
+
+
+class TestParseTimeRange:
+    """Tests for parse_time_range - shared time range parsing logic."""
+
+    def test_no_args_returns_none_none(self):
+        """No arguments returns (None, None)."""
+        since_dt, until_dt = parse_time_range()
+        assert since_dt is None
+        assert until_dt is None
+
+    def test_since_alone_sets_lower_bound(self):
+        """--since alone sets since_dt, until_dt is None."""
+        since_dt, until_dt = parse_time_range(since="2025-02-17T00:00:00Z")
+        assert since_dt is not None
+        assert until_dt is None
+        assert since_dt.year == 2025
+        assert since_dt.month == 2
+        assert since_dt.day == 17
+
+    def test_before_alone_sets_upper_bound(self):
+        """--before alone sets until_dt, since_dt is None."""
+        since_dt, until_dt = parse_time_range(before="2025-02-20T00:00:00Z")
+        assert since_dt is None
+        assert until_dt is not None
+        assert until_dt.year == 2025
+        assert until_dt.month == 2
+        assert until_dt.day == 20
+
+    def test_last_alone_sets_lower_bound(self):
+        """--last alone sets since_dt relative to now."""
+        from datetime import timedelta
+
+        since_dt, until_dt = parse_time_range(last="24h")
+        assert since_dt is not None
+        assert until_dt is None
+        expected = datetime.now(timezone.utc) - timedelta(hours=24)
+        assert abs((since_dt - expected).total_seconds()) < 5
+
+    def test_since_and_before_creates_explicit_window(self):
+        """--since + --before creates an explicit time window."""
+        since_dt, until_dt = parse_time_range(
+            since="2025-02-17T00:00:00Z", before="2025-02-20T00:00:00Z"
+        )
+        assert since_dt is not None
+        assert until_dt is not None
+        assert since_dt.day == 17
+        assert until_dt.day == 20
+
+    def test_since_and_last_creates_forward_window(self):
+        """--since + --last creates window from since to since + duration."""
+        from datetime import timedelta
+
+        since_dt, until_dt = parse_time_range(since="2025-02-17T00:00:00Z", last="72h")
+        assert since_dt is not None
+        assert until_dt is not None
+        assert since_dt.day == 17
+        assert until_dt == since_dt + timedelta(hours=72)
+        assert until_dt.day == 20
+
+    def test_before_and_last_creates_backward_window(self):
+        """--before + --last creates window from before - duration to before."""
+        from datetime import timedelta
+
+        since_dt, until_dt = parse_time_range(before="2025-02-20T00:00:00Z", last="72h")
+        assert since_dt is not None
+        assert until_dt is not None
+        assert until_dt.day == 20
+        assert since_dt == until_dt - timedelta(hours=72)
+        assert since_dt.day == 17
+
+    def test_all_three_raises_error(self):
+        """--since + --before + --last is ambiguous and raises error."""
+        with pytest.raises(click.BadParameter):
+            parse_time_range(since="2025-02-17", before="2025-02-20", last="3d")
+
+    def test_invalid_since_raises_error(self):
+        """Invalid --since value raises BadParameter."""
+        with pytest.raises(click.BadParameter):
+            parse_time_range(since="invalid")
+
+    def test_invalid_before_raises_error(self):
+        """Invalid --before value raises BadParameter."""
+        with pytest.raises(click.BadParameter):
+            parse_time_range(before="invalid")
 
 
 class TestCombineFqlFilters:

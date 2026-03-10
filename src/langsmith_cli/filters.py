@@ -27,36 +27,14 @@ def parse_time_filter(
 ) -> tuple[datetime | None, datetime | None]:
     """Parse time filter options into datetime range for client-side filtering.
 
-    Supports --since, --before, --last and their combinations
-    (mirrors build_time_fql_filters logic for local datetime ranges).
+    Delegates to parse_time_range() for the actual parsing logic.
 
     Returns:
         Tuple of (since_dt, until_dt). Either or both may be None.
     """
-    from langsmith_cli.utils import parse_time_duration, parse_time_input
+    from langsmith_cli.utils import parse_time_range
 
-    since_dt: datetime | None = None
-    until_dt: datetime | None = None
-
-    if since and before:
-        since_dt = parse_time_input(since)
-        until_dt = parse_time_input(before)
-    elif since and last:
-        since_dt = parse_time_input(since)
-        duration = parse_time_duration(last)
-        until_dt = since_dt + duration
-    elif before and last:
-        until_dt = parse_time_input(before)
-        duration = parse_time_duration(last)
-        since_dt = until_dt - duration
-    elif since:
-        since_dt = parse_time_input(since)
-    elif before:
-        until_dt = parse_time_input(before)
-    elif last:
-        since_dt = parse_time_input(last)
-
-    return since_dt, until_dt
+    return parse_time_range(since=since, last=last, before=before)
 
 
 class StatusFilter(BaseModel):

@@ -1,6 +1,7 @@
 """Utility functions shared across commands."""
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Callable, Generic, Protocol, TypeVar, overload
 import click
 import json
@@ -1561,6 +1562,62 @@ def parse_time_duration(time_str: str) -> Any:
     )
 
 
+def parse_time_range(
+    since: str | None = None,
+    last: str | None = None,
+    before: str | None = None,
+) -> tuple[datetime | None, datetime | None]:
+    """Parse time filter options into a (since_dt, until_dt) datetime range.
+
+    This is the shared logic for time range parsing, used by both
+    build_time_fql_filters() (server-side FQL) and parse_time_filter() (client-side).
+
+    Supports flexible time windows:
+    - --since alone: lower bound only
+    - --before alone: upper bound only
+    - --last alone: lower bound relative to now
+    - --since + --last: window from since to since + duration
+    - --before + --last: window from before - duration to before
+    - --since + --before: explicit window
+    - --since + --before + --last: error (ambiguous)
+
+    Returns:
+        Tuple of (since_dt, until_dt). Either or both may be None.
+
+    Raises:
+        click.BadParameter: If time format is invalid or conflicting options given
+    """
+    if since and before and last:
+        raise click.BadParameter(
+            "Cannot use --since, --before, and --last together (ambiguous). "
+            "Use --since + --before for an explicit window, or "
+            "--since + --last / --before + --last for a duration-based window."
+        )
+
+    since_dt: datetime | None = None
+    until_dt: datetime | None = None
+
+    if since and before:
+        since_dt = parse_time_input(since)
+        until_dt = parse_time_input(before)
+    elif since and last:
+        since_dt = parse_time_input(since)
+        duration = parse_time_duration(last)
+        until_dt = since_dt + duration
+    elif before and last:
+        until_dt = parse_time_input(before)
+        duration = parse_time_duration(last)
+        since_dt = until_dt - duration
+    elif since:
+        since_dt = parse_time_input(since)
+    elif before:
+        until_dt = parse_time_input(before)
+    elif last:
+        since_dt = parse_time_input(last)
+
+    return since_dt, until_dt
+
+
 def build_time_fql_filters(
     since: str | None = None,
     last: str | None = None,
@@ -1568,14 +1625,8 @@ def build_time_fql_filters(
 ) -> list[str]:
     """Build FQL filter expressions for time-based filtering.
 
-    Supports flexible time windows via combinations of --since, --before, and --last:
-    - --since alone: gt(start_time, ...)
-    - --before alone: lt(start_time, ...)
-    - --last alone: gt(start_time, now - duration)
-    - --since + --last: window from since to since + duration
-    - --before + --last: window from before - duration to before
-    - --since + --before: explicit window
-    - --since + --before + --last: error (ambiguous)
+    Delegates to parse_time_range() for time parsing, then converts
+    the resulting datetime range to FQL gt/lt expressions.
 
     Args:
         since: Show items since this time (ISO format, relative, or natural language)
@@ -1588,41 +1639,13 @@ def build_time_fql_filters(
     Raises:
         click.BadParameter: If time format is invalid or conflicting options given
     """
+    since_dt, until_dt = parse_time_range(since=since, last=last, before=before)
+
     fql_filters: list[str] = []
-
-    if since and before and last:
-        raise click.BadParameter(
-            "Cannot use --since, --before, and --last together (ambiguous). "
-            "Use --since + --before for an explicit window, or "
-            "--since + --last / --before + --last for a duration-based window."
-        )
-
-    if since and before:
-        start_timestamp = parse_time_input(since)
-        end_timestamp = parse_time_input(before)
-        fql_filters.append(f'gt(start_time, "{start_timestamp.isoformat()}")')
-        fql_filters.append(f'lt(start_time, "{end_timestamp.isoformat()}")')
-    elif since and last:
-        start_timestamp = parse_time_input(since)
-        duration = parse_time_duration(last)
-        end_timestamp = start_timestamp + duration
-        fql_filters.append(f'gt(start_time, "{start_timestamp.isoformat()}")')
-        fql_filters.append(f'lt(start_time, "{end_timestamp.isoformat()}")')
-    elif before and last:
-        end_timestamp = parse_time_input(before)
-        duration = parse_time_duration(last)
-        start_timestamp = end_timestamp - duration
-        fql_filters.append(f'gt(start_time, "{start_timestamp.isoformat()}")')
-        fql_filters.append(f'lt(start_time, "{end_timestamp.isoformat()}")')
-    elif since:
-        timestamp = parse_time_input(since)
-        fql_filters.append(f'gt(start_time, "{timestamp.isoformat()}")')
-    elif before:
-        timestamp = parse_time_input(before)
-        fql_filters.append(f'lt(start_time, "{timestamp.isoformat()}")')
-    elif last:
-        timestamp = parse_time_input(last)
-        fql_filters.append(f'gt(start_time, "{timestamp.isoformat()}")')
+    if since_dt:
+        fql_filters.append(f'gt(start_time, "{since_dt.isoformat()}")')
+    if until_dt:
+        fql_filters.append(f'lt(start_time, "{until_dt.isoformat()}")')
 
     return fql_filters
 
