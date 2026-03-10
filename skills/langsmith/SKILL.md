@@ -337,15 +337,18 @@ langsmith-cli runs list --project my-project --limit 5
   - `--interval <hour|day>`: Time bucket size (default: hour).
   - `--active-only`: Only show time buckets with activity.
   - `--from-cache`: Use local cache instead of API (fast, offline).
+  - `--tag <tag>`: Filter by tag (repeatable for AND logic). Works with both API and `--from-cache`.
   - `--metadata key=value`: Filter by metadata (repeatable).
   - `--sample-size <n>`: Limit runs per project.
   - `--since <time>` / `--before <time>` / `--last <duration>`: Time filters (combinable for time windows).
   - Example: `langsmith-cli --json runs usage --project-name-pattern "prd/*" --last 7d --breakdown model`
+  - Example: `langsmith-cli --json runs usage --from-cache --tag "env:prod" --breakdown model`
   - Example: `langsmith-cli runs usage --from-cache --group-by metadata:community_name --breakdown project --interval day`
 - `langsmith-cli runs pricing [OPTIONS]`: Check model pricing coverage and look up missing prices.
   - Scans runs to find models with/without cost data in LangSmith.
   - Looks up missing prices from OpenRouter API automatically.
   - `--from-cache`: Analyze cached runs (fast).
+  - `--tag <tag>`: Filter by tag (repeatable for AND logic). Works with both API and `--from-cache`.
   - `--no-lookup`: Skip OpenRouter price lookup.
   - `--since <time>` / `--before <time>` / `--last <duration>`: Time filters.
   - Example: `langsmith-cli runs pricing --project-name-pattern "prd/*" --from-cache`
@@ -630,6 +633,7 @@ langsmith-cli --json runs analyze \
 | Flag | Where | What It Does |
 |------|-------|--------------|
 | `--from-cache` | `runs usage`, `runs pricing` | Read from local JSONL cache (fast, offline, no API calls) |
+| `--tag <tag>` | `runs usage`, `runs pricing` | Filter by tag (repeatable, AND logic). Works with API and `--from-cache` |
 | `--metadata key=value` | `runs usage` | Filter runs by metadata field (repeatable) |
 | `--group-by metadata:<field>` | `runs usage`, `runs analyze` | Group results by a metadata or tag field |
 | `--breakdown model` | `runs usage` | Add model dimension to aggregation |
