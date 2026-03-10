@@ -540,11 +540,11 @@ langsmith-cli runs list --filter 'eq(name, "extractor")' --trace-filter 'and(eq(
 - `has(tags, "value")` - Tag contains value
 - `search("text")` - Full-text search in run data
 
-## IMPORTANT: Never Write Inline Python Scripts for Analysis
+## Prefer CLI Commands Over Inline Scripts
 
-**The CLI has built-in commands for cost analysis, token aggregation, time distribution, and metadata filtering. NEVER write inline Python scripts to read JSONL cache files or compute aggregations manually.**
+**Before writing an inline Python script, check if the CLI already handles it.** The CLI has built-in commands for cost analysis, token aggregation, time distribution, and metadata filtering that are faster, less error-prone, and produce structured output.
 
-If you find yourself about to write a Python script that:
+If you find yourself about to write a script that:
 - Reads `.jsonl` files from the cache directory → Use `--from-cache` flag instead
 - Loops over runs and sums tokens/costs → Use `runs usage` instead
 - Groups by metadata/model/project → Use `--group-by` and `--breakdown` instead
@@ -552,7 +552,7 @@ If you find yourself about to write a Python script that:
 - Filters by metadata values → Use `--metadata key=value` instead
 - Filters by content substring → Use `--grep` instead
 
-**STOP and use the CLI commands below instead.**
+**Try the CLI commands below first.** Only fall back to scripts for analysis that genuinely has no CLI equivalent (e.g., custom multi-dimensional joins, bespoke visualizations).
 
 ## Cost & Token Analysis Recipes
 

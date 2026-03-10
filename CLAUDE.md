@@ -718,7 +718,7 @@ The plugin is defined in `skills/langsmith/SKILL.md` which teaches Claude how to
 - Use `--before` / `--since` / `--last` for time windows (no raw FQL needed)
 - Use `runs usage --from-cache` for cost/token analysis (NOT inline Python scripts)
 - Use `--group-by`, `--breakdown`, `--interval`, `--metadata` for aggregation
-- **NEVER let agents write inline Python to read JSONL cache files or compute aggregations** — the CLI has built-in commands for all common analysis patterns (see "Cost & Token Analysis Recipes" in SKILL.md)
+- **Prefer CLI commands over inline scripts** for analysis — the CLI has built-in commands for cost/token aggregation, time distribution, and metadata filtering (see "Cost & Token Analysis Recipes" in SKILL.md). Only fall back to scripts for genuinely unsupported analysis.
 
 ### Plugin Manifests
 The repository contains two manifest files:
