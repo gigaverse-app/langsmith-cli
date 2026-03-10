@@ -21,6 +21,13 @@ from langsmith_cli.utils import (
 console = Console()
 
 
+def normalize_split(split: str | None) -> list[str] | None:
+    """Normalize a split string to the list format expected by the SDK."""
+    if not split:
+        return None
+    return [split] if isinstance(split, str) else split
+
+
 @click.group()
 def examples():
     """Manage dataset examples."""
@@ -194,17 +201,12 @@ def create_example(ctx, dataset, inputs, outputs, metadata, split):
     output_dict = parse_json_string(outputs, "outputs")
     metadata_dict = parse_json_string(metadata, "metadata")
 
-    # Handle split - can be a single string or list
-    split_value = None
-    if split:
-        split_value = [split] if isinstance(split, str) else split
-
     example = client.create_example(
         inputs=input_dict,
         outputs=output_dict,
         dataset_name=dataset,
         metadata=metadata_dict,
-        split=split_value,
+        split=normalize_split(split),
     )
 
     if ctx.obj.get("json"):
@@ -213,3 +215,120 @@ def create_example(ctx, dataset, inputs, outputs, metadata, split):
         return
 
     logger.success(f"Created example (ID: {example.id}) in dataset {dataset}")
+
+
+@examples.command("update")
+@click.argument("example_id")
+@click.option("--inputs", help="JSON string of new inputs.")
+@click.option("--outputs", help="JSON string of new outputs.")
+@click.option("--metadata", help="JSON string of new metadata.")
+@click.option("--split", help="Dataset split (e.g., train, test, validation).")
+@click.pass_context
+def update_example(ctx, example_id, inputs, outputs, metadata, split):
+    """Update an existing example's inputs, outputs, or metadata."""
+    logger = ctx.obj["logger"]
+    is_machine_readable = ctx.obj.get("json")
+    logger.use_stderr = is_machine_readable
+
+    if not any([inputs, outputs, metadata, split]):
+        raise click.UsageError(
+            "At least one of --inputs, --outputs, --metadata, or --split is required."
+        )
+
+    logger.debug(f"Updating example: {example_id}")
+
+    client = get_or_create_client(ctx)
+
+    input_dict = parse_json_string(inputs, "inputs")
+    output_dict = parse_json_string(outputs, "outputs")
+    metadata_dict = parse_json_string(metadata, "metadata")
+
+    result = client.update_example(
+        example_id,
+        inputs=input_dict,
+        outputs=output_dict,
+        metadata=metadata_dict,
+        split=normalize_split(split),
+    )
+
+    if ctx.obj.get("json"):
+        click.echo(json_dumps(result))
+    else:
+        logger.success(f"Updated example {example_id}")
+
+
+@examples.command("delete")
+@click.argument("example_ids", nargs=-1, required=True)
+@click.option("--confirm", is_flag=True, help="Skip confirmation prompt.")
+@click.pass_context
+def delete_examples(ctx, example_ids, confirm):
+    """Delete one or more examples by ID."""
+    logger = ctx.obj["logger"]
+    is_machine_readable = ctx.obj.get("json")
+    logger.use_stderr = is_machine_readable
+
+    if not confirm:
+        count = len(example_ids)
+        click.confirm(
+            f"Are you sure you want to delete {count} example(s)?", abort=True
+        )
+
+    logger.debug(f"Deleting {len(example_ids)} example(s)")
+
+    client = get_or_create_client(ctx)
+
+    from langsmith.utils import LangSmithError, LangSmithNotFoundError
+
+    deleted = []
+    errors = []
+    for eid in example_ids:
+        try:
+            client.delete_example(eid)
+            deleted.append(eid)
+        except (LangSmithNotFoundError, LangSmithError) as e:
+            errors.append({"id": eid, "error": str(e)})
+
+    if ctx.obj.get("json"):
+        click.echo(
+            json_dumps({"status": "success", "deleted": deleted, "errors": errors})
+        )
+    else:
+        if deleted:
+            logger.success(f"Deleted {len(deleted)} example(s)")
+        if errors:
+            for err in errors:
+                logger.warning(f"Failed to delete {err['id']}: {err['error']}")
+
+
+@examples.command("from-run")
+@click.argument("run_id")
+@click.option("--dataset", required=True, help="Dataset name to add the example to.")
+@click.pass_context
+def example_from_run(ctx, run_id, dataset):
+    """Create an example from a run's inputs/outputs."""
+    logger = ctx.obj["logger"]
+    is_machine_readable = ctx.obj.get("json")
+    logger.use_stderr = is_machine_readable
+
+    logger.debug(f"Creating example from run {run_id} in dataset {dataset}")
+
+    client = get_or_create_client(ctx)
+
+    from langsmith.utils import LangSmithNotFoundError
+
+    # Read the run first
+    try:
+        run = client.read_run(run_id)
+    except LangSmithNotFoundError:
+        raise click.ClickException(f"Run '{run_id}' not found.")
+
+    # Create example from the run
+    example = client.create_example_from_run(run, dataset_name=dataset)
+
+    if ctx.obj.get("json"):
+        data = safe_model_dump(example)
+        click.echo(json_dumps(data))
+    else:
+        logger.success(
+            f"Created example (ID: {example.id}) from run {run_id} in dataset '{dataset}'"
+        )

@@ -107,7 +107,10 @@ main.py (entry point)
 │   └── login
 ├── projects (group)
 │   ├── list
-│   └── create
+│   ├── get
+│   ├── create
+│   ├── update
+│   └── delete
 ├── runs (group)
 │   ├── list
 │   ├── get
@@ -133,15 +136,23 @@ main.py (entry point)
 │   ├── list
 │   ├── get
 │   ├── create
+│   ├── delete
 │   └── push
 ├── examples (group)
 │   ├── list
 │   ├── get
-│   └── create
+│   ├── create
+│   ├── update
+│   ├── delete
+│   └── from-run
 ├── prompts (group)
 │   ├── list
 │   ├── get
-│   └── push
+│   ├── pull
+│   ├── push
+│   ├── create
+│   ├── delete
+│   └── commits
 └── self (group)
     ├── detect
     └── update
@@ -149,17 +160,26 @@ main.py (entry point)
 
 ### Key Design Patterns
 
-**1. Lazy Loading Performance Pattern**
+**1. Direct Imports for Strong Types**
 ```python
-# ❌ BAD - Top-level import (loads SDK immediately)
-from langsmith import Client
+# ✅ GOOD - Direct imports of langsmith types for strong typing
+import langsmith
+from langsmith.schemas import Dataset, TracerSessionResult, Run
 
-# ✅ GOOD - Import inside command function
-@runs.command("list")
-def list_runs(...):
-    import langsmith  # Only loads when command executes
-    client = langsmith.Client()
+def resolve_dataset(client: langsmith.Client, name: str) -> Dataset:
+    ...
+
+# ❌ BAD - using `object` or `Any` as type (loses all type safety)
+def resolve_dataset(client: object, name: str) -> object: ...
+
+# ❌ BAD - TYPE_CHECKING / __future__ annotations workaround (unnecessary complexity)
+from __future__ import annotations
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    import langsmith  # Don't do this
 ```
+
+**Note on CLI startup performance:** `utils.py` already imports `langsmith` at module level (needed for shared helpers), and every command module imports `utils.py`. Since the cost is already paid at startup, import langsmith types directly everywhere — no lazy loading workarounds needed for type annotations. If a module does NOT import utils.py and doesn't need langsmith at import time, keep heavy imports inside command functions.
 
 **2. Dual Output Pattern (JSON vs Rich Tables)**
 ```python
@@ -536,6 +556,107 @@ def create_dataset(name="test", example_count=10) -> Dataset:
 - E2E tests validate full SDK interaction (require API key)
 - Aim for 100% coverage of new code
 
+### Handling Mixed stdout/stderr in Tests (CliRunner)
+
+Click's `CliRunner` mixes stdout and stderr. When commands use `logger.info()` before JSON output, the `--json` test output may contain non-JSON lines. Use the shared `parse_json_output()` helper from conftest:
+
+```python
+from conftest import parse_json_output
+
+def test_json_output(runner, tmp_path):
+    result = runner.invoke(cli, ["--json", "runs", "export", str(tmp_path), ...])
+    data = parse_json_output(result.output)  # Finds last JSON line
+    assert data["status"] == "success"
+```
+
+**Anti-pattern:** Don't use `json.loads(result.output)` directly when commands emit progress messages — it will fail with `JSONDecodeError`.
+
+### SDK Exception Types in Tests
+
+Always use real SDK exception types in test side_effects, never bare `Exception`:
+
+```python
+# ❌ BAD - bare Exception won't be caught by specific handlers
+mock_client.delete_example.side_effect = Exception("Not found")
+
+# ✅ GOOD - matches the actual exception hierarchy
+from langsmith.utils import LangSmithNotFoundError
+mock_client.delete_example.side_effect = LangSmithNotFoundError("Not found")
+```
+
+## Reusable Patterns Across Commands
+
+### Name-or-ID Resolution (`resolve_project()`, `resolve_dataset()`)
+
+When a command accepts a name or ID argument, use the existing resolve helpers:
+- `projects.py: resolve_project(client, name_or_id, include_stats=True)`
+- `datasets.py: resolve_dataset(client, name_or_id)`
+
+These helpers follow a consistent pattern:
+1. Auto-detect UUIDs via `_looks_like_uuid()` to save an API call
+2. Fall back from name to ID lookup
+3. Catch `(LangSmithNotFoundError, LangSmithError, ValueError)` for friendly errors
+4. Raise `click.ClickException` on not-found
+
+```python
+from langsmith_cli.commands.projects import resolve_project
+
+project = resolve_project(client, name_or_id, include_stats=True)
+```
+
+### Shared Filter Building (utils.py: `build_runs_list_filter()`)
+
+Never manually reconstruct status/tag/time filters. Use the canonical helper:
+
+```python
+combined_filter, error_filter = build_runs_list_filter(
+    filter_=filter_, status=status, tag=tag, since=since, last=last
+)
+```
+
+### Shared Multi-Project Fetching (utils.py: `fetch_from_projects()`)
+
+Never write manual project iteration loops. Use `fetch_from_projects()`:
+
+```python
+def _fetch_runs(c, proj, **kw):
+    if proj is not None:
+        return c.list_runs(project_name=proj, **kw)
+    return c.list_runs(**kw)
+
+result = fetch_from_projects(client, projects, _fetch_runs, project_query=pq, ...)
+raise_if_all_failed_with_suggestions(result, client, pq, logger, "runs")
+```
+
+### Destructive Operations Pattern
+
+For delete/destructive commands, follow this pattern:
+1. Require `--confirm` flag (skip with `click.confirm(abort=True)`)
+2. Resolve entity first (verify it exists), then perform the operation
+3. Use specific SDK exceptions (`LangSmithNotFoundError`), never broad `except Exception`
+4. In JSON mode, return `{"status": "success", ...}` on success
+
+### Filename Sanitization
+
+When writing user-controlled filenames, sanitize with regex:
+```python
+import re
+safe = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name)
+safe = safe.strip(". ")
+```
+
+### Common Anti-Patterns to Avoid
+
+1. **`hasattr()` on Pydantic models** → Use `p.field is not None` instead
+2. **Broad `except Exception`** in loops → Catch specific SDK exceptions
+3. **Manual filter construction** → Use `build_runs_list_filter()`
+4. **Manual project iteration** → Use `fetch_from_projects()`
+5. **Duplicated utility logic** → Extract to helpers (e.g., `normalize_split()`)
+6. **`--flag default=True is_flag=True`** → No-op; use `--flag/--no-flag` pair
+7. **ThreadPoolExecutor for local file I/O** → Sequential is faster (no GIL benefit)
+8. **`TYPE_CHECKING` / `__future__` annotations workaround** → Import types directly; langsmith is already loaded at startup
+9. **`client: object` or `client: Any`** → Use `client: langsmith.Client` for strong types
+
 ## Engineering Standards (from docs/AGENTS.md)
 
 ### 1. Type Safety (Zero Tolerance for Weak Types)
@@ -548,10 +669,13 @@ def create_dataset(name="test", example_count=10) -> Dataset:
 - ✅ Never create duplicate response models - reuse SDK models with field selection
 - **Current Status**: Fully implemented - all commands use SDK Pydantic models with type-safe attribute access
 
-### 2. Performance (100ms Rule)
-- ❌ NO top-level imports of heavy libraries (langsmith, rich, pandas)
-- ✅ Libraries imported inside command functions (lazy loading)
-- **Current Status**: Properly implemented
+### 2. Performance (Keep CLI Fast)
+- ❌ Don't add new top-level imports of heavy libraries to modules that don't already need them
+- ❌ Don't introduce new heavy dependencies without measuring CLI startup impact
+- ✅ `langsmith` and `rich` are already loaded at startup (via utils.py) — use them directly for strong types
+- ✅ If adding a new module that doesn't need langsmith at import time, keep heavy imports inside functions
+- ✅ Always prefer strong types over lazy loading workarounds — don't sacrifice type safety for startup time
+- **Current Status**: langsmith/rich load at startup (~300ms). Acceptable. Don't make it worse.
 
 ### 3. Architecture (Pure Logic vs View)
 - Logic Layer: Returns Pydantic models/typed objects, never prints
@@ -769,6 +893,68 @@ def test_mycommand_list(runner):
 - pre-commit >=4.5.1 - Git hooks
 
 **Python Version:** >=3.12
+
+## Releasing
+
+### ALWAYS Use the Release Script
+
+**Never manually bump versions or create tags/releases.** Use `scripts/release.sh` which handles everything:
+
+```bash
+# Patch bump (0.4.0 → 0.4.1) — default
+./scripts/release.sh
+
+# Minor bump (0.4.0 → 0.5.0)
+./scripts/release.sh minor
+
+# Major bump (0.4.0 → 1.0.0)
+./scripts/release.sh major
+
+# Explicit version
+./scripts/release.sh 0.5.0
+
+# Skip tests for docs-only releases
+./scripts/release.sh --skip-tests
+
+# Auto-confirm (no prompts)
+./scripts/release.sh -y
+```
+
+### What the Release Script Does
+
+1. **Bumps version in all 4 files simultaneously:**
+   - `pyproject.toml`
+   - `.claude-plugin/plugin.json`
+   - `.claude-plugin/marketplace.json` (both `metadata.version` and `plugins[0].version`)
+   - `uv.lock`
+2. **Runs quality checks:** ruff lint, ruff format, pyright
+3. **Runs tests** (unless `--skip-tests`)
+4. **Creates git commit and annotated tag**
+5. **Pushes to remote** (triggers CI → PyPI publish → GitHub release)
+
+### Version Files — Never Edit Manually
+
+These files contain version strings that **must stay in sync**:
+- `pyproject.toml` — PyPI package version
+- `.claude-plugin/plugin.json` — Plugin version for Claude Code
+- `.claude-plugin/marketplace.json` — Marketplace listing version (2 locations)
+- `uv.lock` — Auto-updated by the script
+
+Editing any of these manually creates version drift. The release script is the **single source of truth** for version bumps.
+
+### When to Release
+
+- **Code changes:** Always use `./scripts/release.sh` (runs tests by default)
+- **Docs/skill-only changes:** Use `./scripts/release.sh --skip-tests` (still bumps version)
+- **After updating SKILL.md:** A release is needed for plugin users to get the updated skill
+
+### CI/CD Pipeline (Automated)
+
+On tag push (`v*`), GitHub Actions automatically:
+1. Runs full test suite
+2. Builds wheel and sdist
+3. Publishes to PyPI (Trusted Publishing, no tokens)
+4. Creates GitHub release with artifacts
 
 ## Git Workflow
 

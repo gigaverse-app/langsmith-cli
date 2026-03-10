@@ -1,8 +1,12 @@
+import os
+
 import click
+import langsmith
+from langsmith.schemas import Dataset
 from rich.console import Console
 from rich.table import Table
-import os
 from langsmith_cli.utils import (
+    _looks_like_uuid,
     apply_exclude_filter,
     count_option,
     exclude_option,
@@ -246,3 +250,60 @@ def push_dataset(ctx, file_path, dataset):
         logger.success(
             f"Successfully pushed {len(examples)} examples to dataset '{dataset}'"
         )
+
+
+def resolve_dataset(
+    client: langsmith.Client,
+    name_or_id: str,
+) -> Dataset:
+    """Resolve a dataset by name or UUID, with smart UUID auto-detection.
+
+    Tries name first (unless input looks like a UUID), then falls back.
+    Raises click.ClickException if neither resolves.
+    """
+    from langsmith.utils import LangSmithError, LangSmithNotFoundError
+
+    # Optimization: if it looks like a UUID, try by ID first
+    if _looks_like_uuid(name_or_id):
+        try:
+            return client.read_dataset(dataset_id=name_or_id)
+        except (LangSmithNotFoundError, LangSmithError, ValueError):
+            raise click.ClickException(f"Dataset '{name_or_id}' not found.")
+
+    # Otherwise, try name first, fall back to ID
+    try:
+        return client.read_dataset(dataset_name=name_or_id)
+    except LangSmithNotFoundError:
+        try:
+            return client.read_dataset(dataset_id=name_or_id)
+        except (LangSmithNotFoundError, LangSmithError, ValueError):
+            raise click.ClickException(f"Dataset '{name_or_id}' not found.")
+
+
+@datasets.command("delete")
+@click.argument("name_or_id")
+@click.option("--confirm", is_flag=True, help="Skip confirmation prompt.")
+@click.pass_context
+def delete_dataset(ctx, name_or_id, confirm):
+    """Delete a dataset by name or ID."""
+    logger = ctx.obj["logger"]
+    is_machine_readable = ctx.obj.get("json")
+    logger.use_stderr = is_machine_readable
+
+    if not confirm:
+        click.confirm(
+            f"Are you sure you want to delete dataset '{name_or_id}'?", abort=True
+        )
+
+    logger.debug(f"Deleting dataset: {name_or_id}")
+
+    client = get_or_create_client(ctx)
+
+    # Resolve first, then delete by ID (consistent pattern)
+    dataset = resolve_dataset(client, name_or_id)
+    client.delete_dataset(dataset_id=str(dataset.id))
+
+    if ctx.obj.get("json"):
+        click.echo(json_dumps({"status": "success", "name": dataset.name}))
+    else:
+        logger.success(f"Deleted dataset '{dataset.name}'")

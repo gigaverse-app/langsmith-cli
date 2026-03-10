@@ -1,4 +1,5 @@
 import os
+from typing import Any
 
 # Set COLUMNS before any imports to ensure Rich Console detects correct width
 # This must happen before importing any modules that create Console instances
@@ -10,7 +11,15 @@ from click.testing import CliRunner
 from datetime import datetime, timezone
 from decimal import Decimal
 from uuid import UUID, uuid4
-from langsmith.schemas import Dataset, Example, Prompt, TracerSessionResult, Run
+from langsmith.schemas import (
+    Dataset,
+    Example,
+    ListedPromptCommit,
+    Prompt,
+    PromptCommit,
+    TracerSessionResult,
+    Run,
+)
 
 
 @pytest.fixture(scope="module")
@@ -45,6 +54,30 @@ def strip_ansi(text: str) -> str:
         'Red text'
     """
     return unstyle(text)
+
+
+def parse_json_output(output: str) -> dict[str, Any]:
+    """Extract JSON from mixed stdout/stderr output.
+
+    Click's CliRunner mixes stdout and stderr, so logger messages
+    may appear before the JSON output. This finds the last JSON object/array.
+    """
+    import json
+
+    # Try parsing the whole output first
+    try:
+        return json.loads(output)
+    except json.JSONDecodeError:
+        pass
+    # Find the last line that starts with { or [
+    for line in reversed(output.strip().split("\n")):
+        line = line.strip()
+        if line.startswith("{") or line.startswith("["):
+            try:
+                return json.loads(line)
+            except json.JSONDecodeError:
+                continue
+    raise ValueError(f"No JSON found in output: {output!r}")
 
 
 def create_dataset(
@@ -257,6 +290,48 @@ def create_run(
         trace_id=trace_uuid,
         latency=latency,
         total_tokens=total_tokens,
+    )
+
+
+def create_prompt_commit(
+    owner: str = "owner",
+    repo: str = "test-prompt",
+    commit_hash: str = "abc123def456",
+    manifest: dict | None = None,
+    examples: list | None = None,
+) -> PromptCommit:
+    """Create a real PromptCommit Pydantic model instance."""
+    if manifest is None:
+        manifest = {"type": "prompt", "template": "Hello, {name}!"}
+    if examples is None:
+        examples = []
+    return PromptCommit(
+        owner=owner,
+        repo=repo,
+        commit_hash=commit_hash,
+        manifest=manifest,
+        examples=examples,
+    )
+
+
+def create_listed_prompt_commit(
+    id_str: str = "a9adf0cb-6238-453f-abab-f75361a39ea8",
+    owner: str = "owner",
+    repo: str = "test-prompt",
+    commit_hash: str = "abc123def456",
+    parent_commit_hash: str | None = None,
+    created_at: datetime | None = None,
+) -> ListedPromptCommit:
+    """Create a real ListedPromptCommit Pydantic model instance."""
+    if created_at is None:
+        created_at = datetime(2024, 7, 3, 9, 27, 16, tzinfo=timezone.utc)
+    return ListedPromptCommit(
+        id=UUID(id_str),
+        owner=owner,
+        repo=repo,
+        commit_hash=commit_hash,
+        parent_commit_hash=parent_commit_hash,
+        created_at=created_at,
     )
 
 

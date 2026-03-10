@@ -3,6 +3,7 @@ from unittest.mock import patch
 from conftest import create_project, strip_ansi
 import json
 import pytest
+from langsmith.schemas import TracerSession
 
 
 def test_projects_list(runner):
@@ -603,3 +604,328 @@ def test_projects_list_count(runner, total_projects, explicit_limit, expected_co
 
         # Verify count
         assert result.output.strip() == str(expected_count)
+
+
+# ===== projects get tests =====
+
+
+def test_projects_get_by_name_json(runner):
+    """INVARIANT: projects get by name should return project details."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        project = create_project(name="my-project", run_count=42)
+        mock_client.read_project.return_value = project
+
+        result = runner.invoke(cli, ["--json", "projects", "get", "my-project"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["name"] == "my-project"
+        assert data["run_count"] == 42
+
+
+def test_projects_get_by_name_table(runner):
+    """INVARIANT: projects get without --json should show formatted details."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        project = create_project(name="my-project", run_count=42, error_rate=0.05)
+        mock_client.read_project.return_value = project
+
+        result = runner.invoke(cli, ["projects", "get", "my-project"])
+        assert result.exit_code == 0
+        output = strip_ansi(result.output)
+        assert "my-project" in output
+        assert "42" in output
+        assert "5.0%" in output
+
+
+def test_projects_get_falls_back_to_id(runner):
+    """INVARIANT: projects get with UUID should resolve by ID directly."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        project = create_project(name="found-by-id")
+        # UUID auto-detected → read_project(project_id=...) called directly
+        mock_client.read_project.return_value = project
+
+        result = runner.invoke(
+            cli,
+            ["--json", "projects", "get", "f47ac10b-58cc-4372-a567-0e02b2c3d479"],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["name"] == "found-by-id"
+
+        # UUID detected → only one call with project_id
+        mock_client.read_project.assert_called_once_with(
+            project_id="f47ac10b-58cc-4372-a567-0e02b2c3d479", include_stats=True
+        )
+
+
+def test_projects_get_not_found(runner):
+    """INVARIANT: Non-existent project should raise error."""
+    from langsmith.utils import LangSmithNotFoundError
+
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.read_project.side_effect = LangSmithNotFoundError("Not found")
+
+        result = runner.invoke(cli, ["projects", "get", "nonexistent"])
+        assert result.exit_code != 0
+        assert "not found" in result.output.lower()
+
+
+def test_projects_get_not_found_langsmith_error(runner):
+    """INVARIANT: LangSmithError (e.g. LangSmithUserError for invalid UUID) should produce friendly error."""
+    from langsmith.utils import LangSmithError
+
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        # SDK raises LangSmithUserError (subclass of LangSmithError) when
+        # project_id is not a valid UUID. The first call (by name) raises
+        # LangSmithNotFoundError, the fallback (by ID) raises LangSmithError.
+        from langsmith.utils import LangSmithNotFoundError
+
+        mock_client.read_project.side_effect = [
+            LangSmithNotFoundError("Not found"),
+            LangSmithError("project_id must be a valid UUID"),
+        ]
+
+        result = runner.invoke(cli, ["projects", "get", "nonexistent"])
+        assert result.exit_code != 0
+        assert "not found" in result.output.lower()
+
+
+def test_projects_get_with_fields(runner):
+    """INVARIANT: --fields should limit returned fields."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        project = create_project(name="my-project", run_count=42)
+        mock_client.read_project.return_value = project
+
+        result = runner.invoke(
+            cli,
+            ["--json", "projects", "get", "my-project", "--fields", "name,id"],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert "name" in data
+        assert "id" in data
+        assert "run_count" not in data
+
+
+def test_projects_get_with_output_file(runner, tmp_path):
+    """INVARIANT: --output should write project data to file."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        project = create_project(name="my-project")
+        mock_client.read_project.return_value = project
+
+        output_file = str(tmp_path / "project.json")
+        result = runner.invoke(
+            cli,
+            ["--json", "projects", "get", "my-project", "--output", output_file],
+        )
+        assert result.exit_code == 0
+        with open(output_file) as f:
+            data = json.load(f)
+        assert data["name"] == "my-project"
+
+
+# ===== projects update tests =====
+
+
+def _create_tracer_session(name="updated-project"):
+    """Create a TracerSession for update_project return value."""
+    from uuid import UUID
+    from datetime import datetime, timezone
+
+    return TracerSession(
+        id=UUID("f47ac10b-58cc-4372-a567-0e02b2c3d479"),
+        name=name,
+        tenant_id=UUID("00000000-0000-0000-0000-000000000000"),
+        reference_dataset_id=None,
+        start_time=datetime(2024, 7, 3, 9, 27, 16, tzinfo=timezone.utc),
+    )
+
+
+def test_projects_update_name_json(runner):
+    """INVARIANT: projects update --name should rename and return JSON."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        project = create_project(name="old-name")
+        mock_client.read_project.return_value = project
+
+        updated = _create_tracer_session(name="new-name")
+        mock_client.update_project.return_value = updated
+
+        result = runner.invoke(
+            cli,
+            ["--json", "projects", "update", "old-name", "--name", "new-name"],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["name"] == "new-name"
+        mock_client.update_project.assert_called_once()
+
+
+def test_projects_update_description(runner):
+    """INVARIANT: projects update --description should update description."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        project = create_project(name="my-project")
+        mock_client.read_project.return_value = project
+
+        updated = _create_tracer_session(name="my-project")
+        mock_client.update_project.return_value = updated
+
+        result = runner.invoke(
+            cli,
+            [
+                "projects",
+                "update",
+                "my-project",
+                "--description",
+                "New description",
+            ],
+        )
+        assert result.exit_code == 0
+        call_kwargs = mock_client.update_project.call_args[1]
+        assert call_kwargs["description"] == "New description"
+
+
+def test_projects_update_requires_at_least_one_option(runner):
+    """INVARIANT: projects update without --name or --description should error."""
+    with patch("langsmith.Client"):
+        result = runner.invoke(cli, ["projects", "update", "my-project"])
+        assert result.exit_code != 0
+        assert (
+            "required" in result.output.lower() or "at least" in result.output.lower()
+        )
+
+
+def test_projects_update_not_found(runner):
+    """INVARIANT: Updating non-existent project should error."""
+    from langsmith.utils import LangSmithNotFoundError
+
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.read_project.side_effect = LangSmithNotFoundError("Not found")
+
+        result = runner.invoke(
+            cli, ["projects", "update", "nonexistent", "--name", "new"]
+        )
+        assert result.exit_code != 0
+        assert "not found" in result.output.lower()
+
+
+def test_projects_update_table_output(runner):
+    """INVARIANT: projects update without --json should show success message."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        project = create_project(name="my-project")
+        mock_client.read_project.return_value = project
+
+        updated = _create_tracer_session(name="renamed")
+        mock_client.update_project.return_value = updated
+
+        result = runner.invoke(
+            cli, ["projects", "update", "my-project", "--name", "renamed"]
+        )
+        assert result.exit_code == 0
+        output = strip_ansi(result.output)
+        assert "Updated" in output
+        assert "renamed" in output
+
+
+# ===== projects delete tests =====
+
+
+def test_projects_delete_with_confirm_json(runner):
+    """INVARIANT: projects delete --confirm should resolve then delete by ID."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        project = create_project(name="my-project")
+        mock_client.read_project.return_value = project
+
+        result = runner.invoke(
+            cli, ["--json", "projects", "delete", "my-project", "--confirm"]
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["status"] == "success"
+        mock_client.delete_project.assert_called_once_with(project_id=str(project.id))
+
+
+def test_projects_delete_table_output(runner):
+    """INVARIANT: projects delete should show success message."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        project = create_project(name="my-project")
+        mock_client.read_project.return_value = project
+
+        result = runner.invoke(cli, ["projects", "delete", "my-project", "--confirm"])
+        assert result.exit_code == 0
+        output = strip_ansi(result.output)
+        assert "Deleted" in output
+        assert "my-project" in output
+
+
+def test_projects_delete_not_found(runner):
+    """INVARIANT: Deleting non-existent project should raise error."""
+    from langsmith.utils import LangSmithNotFoundError
+
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        # resolve_project fails: name lookup fails, ID fallback also fails
+        mock_client.read_project.side_effect = LangSmithNotFoundError("Not found")
+
+        result = runner.invoke(cli, ["projects", "delete", "missing", "--confirm"])
+        assert result.exit_code != 0
+        assert "not found" in result.output.lower()
+
+
+def test_projects_delete_requires_confirmation(runner):
+    """INVARIANT: Without --confirm, delete should prompt for confirmation."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        project = create_project(name="my-project")
+        mock_client.read_project.return_value = project
+
+        result = runner.invoke(cli, ["projects", "delete", "my-project"], input="n\n")
+        assert result.exit_code != 0
+        mock_client.delete_project.assert_not_called()
+
+
+def test_projects_delete_falls_back_to_id(runner):
+    """INVARIANT: Delete with UUID should resolve by ID directly."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        project = create_project(name="my-project")
+        # UUID auto-detected → read_project(project_id=...) succeeds directly
+        mock_client.read_project.return_value = project
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "projects",
+                "delete",
+                "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+                "--confirm",
+            ],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["status"] == "success"
+        # resolve_project detects UUID, reads by ID, then deletes by ID
+        mock_client.read_project.assert_called_once_with(
+            project_id="f47ac10b-58cc-4372-a567-0e02b2c3d479", include_stats=False
+        )
+        mock_client.delete_project.assert_called_once_with(project_id=str(project.id))

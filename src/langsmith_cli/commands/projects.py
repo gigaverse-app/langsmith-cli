@@ -1,7 +1,10 @@
 import click
+import langsmith
+from langsmith.schemas import TracerSessionResult
 from rich.console import Console
 from rich.table import Table
 from langsmith_cli.utils import (
+    _looks_like_uuid,
     sort_items,
     apply_regex_filter,
     apply_wildcard_filter,
@@ -14,6 +17,7 @@ from langsmith_cli.utils import (
     count_option,
     exclude_option,
     output_option,
+    output_single_item,
     render_output,
     get_or_create_client,
     write_output_to_file,
@@ -21,6 +25,40 @@ from langsmith_cli.utils import (
 )
 
 console = Console()
+
+
+def resolve_project(
+    client: langsmith.Client,
+    name_or_id: str,
+    *,
+    include_stats: bool = False,
+) -> TracerSessionResult:
+    """Resolve a project by name or UUID, with smart UUID auto-detection.
+
+    Tries name first (unless input looks like a UUID), then falls back.
+    Raises click.ClickException if neither resolves.
+    """
+    from langsmith.utils import LangSmithError, LangSmithNotFoundError
+
+    # Optimization: if it looks like a UUID, try by ID first
+    if _looks_like_uuid(name_or_id):
+        try:
+            return client.read_project(
+                project_id=name_or_id, include_stats=include_stats
+            )
+        except (LangSmithNotFoundError, LangSmithError, ValueError):
+            raise click.ClickException(f"Project '{name_or_id}' not found.")
+
+    # Otherwise, try name first, fall back to ID
+    try:
+        return client.read_project(project_name=name_or_id, include_stats=include_stats)
+    except LangSmithNotFoundError:
+        try:
+            return client.read_project(
+                project_id=name_or_id, include_stats=include_stats
+            )
+        except (LangSmithNotFoundError, LangSmithError, ValueError):
+            raise click.ClickException(f"Project '{name_or_id}' not found.")
 
 
 @click.group()
@@ -142,9 +180,7 @@ def list_projects(
     # Filter by projects with runs
     if has_runs:
         projects_list = [
-            p
-            for p in projects_list
-            if hasattr(p, "run_count") and p.run_count and p.run_count > 0
+            p for p in projects_list if p.run_count is not None and p.run_count > 0
         ]
 
     # Client-side sorting for table output
@@ -152,9 +188,7 @@ def list_projects(
         # Map sort field to project attribute
         sort_key_map = {
             "name": lambda p: (p.name or "").lower(),
-            "run_count": lambda p: p.run_count
-            if hasattr(p, "run_count") and p.run_count
-            else 0,
+            "run_count": lambda p: p.run_count if p.run_count is not None else 0,
         }
         projects_list = sort_items(projects_list, sort_by, sort_key_map, console)
 
@@ -287,3 +321,104 @@ def create_project(ctx, name, description):
     except LangSmithConflictError:
         # Project already exists - handle gracefully for idempotency
         logger.warning(f"Project {name} already exists.")
+
+
+@projects.command("get")
+@click.argument("name_or_id")
+@click.option(
+    "--include-stats/--no-stats",
+    default=True,
+    help="Include/exclude run statistics (default: include).",
+)
+@fields_option()
+@output_option()
+@click.pass_context
+def get_project(ctx, name_or_id, include_stats, fields, output):
+    """Get details of a single project by name or ID."""
+    logger = ctx.obj["logger"]
+    is_machine_readable = ctx.obj.get("json") or bool(fields) or bool(output)
+    logger.use_stderr = is_machine_readable
+
+    logger.debug(f"Fetching project: {name_or_id}")
+
+    client = get_or_create_client(ctx)
+    project = resolve_project(client, name_or_id, include_stats=include_stats)
+
+    data = filter_fields(project, fields)
+
+    def render_project_details(data: dict, console: object) -> None:
+        from rich.console import Console as RichConsole
+
+        assert isinstance(console, RichConsole)
+        console.print(f"[bold]Project:[/bold] {data.get('name')}")
+        console.print(f"[bold]ID:[/bold] {data.get('id')}")
+        if data.get("description"):
+            console.print(f"[bold]Description:[/bold] {data.get('description')}")
+        if data.get("run_count") is not None:
+            console.print(f"[bold]Runs:[/bold] {data.get('run_count')}")
+        if data.get("error_rate") is not None:
+            rate = data["error_rate"]
+            console.print(f"[bold]Error Rate:[/bold] {rate * 100:.1f}%")
+        if data.get("total_cost") is not None and float(data["total_cost"]) > 0:
+            console.print(f"[bold]Cost:[/bold] ${float(data['total_cost']):.4f}")
+
+    output_single_item(
+        ctx, data, console, output=output, render_fn=render_project_details
+    )
+
+
+@projects.command("update")
+@click.argument("name_or_id")
+@click.option("--name", "new_name", help="New project name.")
+@click.option("--description", help="New project description.")
+@click.pass_context
+def update_project(ctx, name_or_id, new_name, description):
+    """Update a project's name or description."""
+    logger = ctx.obj["logger"]
+    is_machine_readable = ctx.obj.get("json")
+    logger.use_stderr = is_machine_readable
+
+    if not new_name and not description:
+        raise click.UsageError("At least one of --name or --description is required.")
+
+    logger.debug(f"Updating project: {name_or_id}")
+
+    client = get_or_create_client(ctx)
+    project = resolve_project(client, name_or_id)
+
+    updated = client.update_project(project.id, name=new_name, description=description)
+
+    if ctx.obj.get("json"):
+        click.echo(json_dumps(updated.model_dump(mode="json")))
+    else:
+        display_name = new_name or project.name
+        logger.success(f"Updated project '{display_name}' (ID: {project.id})")
+
+
+@projects.command("delete")
+@click.argument("name_or_id")
+@click.option("--confirm", is_flag=True, help="Skip confirmation prompt.")
+@click.pass_context
+def delete_project(ctx, name_or_id, confirm):
+    """Delete a project."""
+    logger = ctx.obj["logger"]
+    is_machine_readable = ctx.obj.get("json")
+    logger.use_stderr = is_machine_readable
+
+    if not confirm:
+        click.confirm(
+            f"Are you sure you want to delete project '{name_or_id}'?", abort=True
+        )
+
+    logger.debug(f"Deleting project: {name_or_id}")
+
+    client = get_or_create_client(ctx)
+
+    # Resolve first, then delete by ID (consistent pattern)
+    project = resolve_project(client, name_or_id)
+    client.delete_project(project_id=str(project.id))
+
+    if ctx.obj.get("json"):
+        click.echo(json_dumps({"status": "success", "name": name_or_id}))
+    else:
+        logger.success(f"Deleted project '{name_or_id}'")

@@ -11,7 +11,7 @@ langsmith.schemas, ensuring compatibility with the actual SDK.
 from langsmith_cli.main import cli
 from unittest.mock import patch
 import json
-from conftest import create_example
+from conftest import create_example, create_run, strip_ansi
 
 
 def test_examples_list(runner):
@@ -495,3 +495,285 @@ def test_examples_create_with_metadata_and_split(runner):
         call_kwargs = mock_client.create_example.call_args[1]
         assert call_kwargs["metadata"] == {"source": "test"}
         assert call_kwargs["split"] == ["train"]
+
+
+# ===== examples update tests =====
+
+
+def test_examples_update_inputs_json(runner):
+    """INVARIANT: examples update should update inputs and return result."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.update_example.return_value = {
+            "id": "3442bd7c-27a2-437b-a38c-f278e455d87b"
+        }
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "examples",
+                "update",
+                "3442bd7c-27a2-437b-a38c-f278e455d87b",
+                "--inputs",
+                '{"question": "Updated question"}',
+            ],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["id"] == "3442bd7c-27a2-437b-a38c-f278e455d87b"
+        mock_client.update_example.assert_called_once()
+        call_kwargs = mock_client.update_example.call_args[1]
+        assert call_kwargs["inputs"] == {"question": "Updated question"}
+
+
+def test_examples_update_outputs(runner):
+    """INVARIANT: examples update --outputs should update outputs."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.update_example.return_value = {"id": "test-id"}
+
+        result = runner.invoke(
+            cli,
+            [
+                "examples",
+                "update",
+                "test-id",
+                "--outputs",
+                '{"answer": "New answer"}',
+            ],
+        )
+        assert result.exit_code == 0
+        call_kwargs = mock_client.update_example.call_args[1]
+        assert call_kwargs["outputs"] == {"answer": "New answer"}
+
+
+def test_examples_update_metadata_and_split(runner):
+    """INVARIANT: --metadata and --split should be passed to SDK."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.update_example.return_value = {"id": "test-id"}
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "examples",
+                "update",
+                "test-id",
+                "--metadata",
+                '{"reviewed": true}',
+                "--split",
+                "test",
+            ],
+        )
+        assert result.exit_code == 0
+        call_kwargs = mock_client.update_example.call_args[1]
+        assert call_kwargs["metadata"] == {"reviewed": True}
+        assert call_kwargs["split"] == ["test"]
+
+
+def test_examples_update_requires_at_least_one_option(runner):
+    """INVARIANT: examples update without any option should error."""
+    with patch("langsmith.Client"):
+        result = runner.invoke(cli, ["examples", "update", "test-id"])
+        assert result.exit_code != 0
+        assert (
+            "required" in result.output.lower() or "at least" in result.output.lower()
+        )
+
+
+def test_examples_update_table_output(runner):
+    """INVARIANT: examples update without --json should show success message."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.update_example.return_value = {"id": "test-id"}
+
+        result = runner.invoke(
+            cli,
+            ["examples", "update", "test-id", "--inputs", '{"q": "new"}'],
+        )
+        assert result.exit_code == 0
+        output = strip_ansi(result.output)
+        assert "Updated" in output
+        assert "test-id" in output
+
+
+# ===== examples delete tests =====
+
+
+def test_examples_delete_single_json(runner):
+    """INVARIANT: examples delete should delete and return result."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "examples",
+                "delete",
+                "3442bd7c-27a2-437b-a38c-f278e455d87b",
+                "--confirm",
+            ],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["status"] == "success"
+        assert "3442bd7c-27a2-437b-a38c-f278e455d87b" in data["deleted"]
+        mock_client.delete_example.assert_called_once_with(
+            "3442bd7c-27a2-437b-a38c-f278e455d87b"
+        )
+
+
+def test_examples_delete_multiple(runner):
+    """INVARIANT: examples delete should handle multiple IDs."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "examples",
+                "delete",
+                "id-1",
+                "id-2",
+                "id-3",
+                "--confirm",
+            ],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert len(data["deleted"]) == 3
+        assert mock_client.delete_example.call_count == 3
+
+
+def test_examples_delete_partial_failure(runner):
+    """INVARIANT: Partial delete failures should report both successes and errors."""
+    from langsmith.utils import LangSmithNotFoundError
+
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        # First succeeds, second fails with SDK-specific exception
+        mock_client.delete_example.side_effect = [
+            None,
+            LangSmithNotFoundError("Not found"),
+        ]
+
+        result = runner.invoke(
+            cli,
+            ["--json", "examples", "delete", "good-id", "bad-id", "--confirm"],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert "good-id" in data["deleted"]
+        assert len(data["errors"]) == 1
+        assert data["errors"][0]["id"] == "bad-id"
+
+
+def test_examples_delete_requires_confirmation(runner):
+    """INVARIANT: Without --confirm, delete should prompt for confirmation."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        result = runner.invoke(cli, ["examples", "delete", "test-id"], input="n\n")
+        assert result.exit_code != 0
+        mock_client.delete_example.assert_not_called()
+
+
+def test_examples_delete_table_output(runner):
+    """INVARIANT: examples delete without --json shows success message."""
+    with patch("langsmith.Client") as MockClient:
+        MockClient.return_value
+
+        result = runner.invoke(cli, ["examples", "delete", "id-1", "id-2", "--confirm"])
+        assert result.exit_code == 0
+        output = strip_ansi(result.output)
+        assert "Deleted" in output
+        assert "2" in output  # "Deleted 2 example(s)"
+
+
+# ===== examples from-run tests =====
+
+
+def test_examples_from_run_json(runner):
+    """INVARIANT: examples from-run should create example from run and return JSON."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        # Create a run that will be read
+        run = create_run(
+            name="test-run",
+            inputs={"question": "What is AI?"},
+            outputs={"answer": "Artificial Intelligence"},
+        )
+        mock_client.read_run.return_value = run
+
+        # Create the resulting example
+        example = create_example(
+            id_str="3442bd7c-27a2-437b-a38c-f278e455d87b",
+            inputs={"question": "What is AI?"},
+            outputs={"answer": "Artificial Intelligence"},
+        )
+        mock_client.create_example_from_run.return_value = example
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "examples",
+                "from-run",
+                "12345678-1234-5678-1234-567812345678",
+                "--dataset",
+                "my-dataset",
+            ],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["id"] == "3442bd7c-27a2-437b-a38c-f278e455d87b"
+        assert data["inputs"]["question"] == "What is AI?"
+
+        # Verify the SDK calls
+        mock_client.read_run.assert_called_once_with(
+            "12345678-1234-5678-1234-567812345678"
+        )
+        mock_client.create_example_from_run.assert_called_once()
+        call_kwargs = mock_client.create_example_from_run.call_args[1]
+        assert call_kwargs["dataset_name"] == "my-dataset"
+
+
+def test_examples_from_run_table_output(runner):
+    """INVARIANT: examples from-run without --json shows success message."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        run = create_run(name="test-run")
+        mock_client.read_run.return_value = run
+
+        example = create_example(id_str="3442bd7c-27a2-437b-a38c-f278e455d87b")
+        mock_client.create_example_from_run.return_value = example
+
+        result = runner.invoke(
+            cli,
+            [
+                "examples",
+                "from-run",
+                "12345678-1234-5678-1234-567812345678",
+                "--dataset",
+                "ds",
+            ],
+        )
+        assert result.exit_code == 0
+        output = strip_ansi(result.output)
+        assert "Created" in output
+        assert "3442bd7c" in output
+
+
+def test_examples_from_run_requires_dataset(runner):
+    """INVARIANT: --dataset is required for from-run."""
+    with patch("langsmith.Client"):
+        result = runner.invoke(cli, ["examples", "from-run", "some-run-id"])
+        assert result.exit_code != 0
+        assert "dataset" in result.output.lower() or "required" in result.output.lower()
