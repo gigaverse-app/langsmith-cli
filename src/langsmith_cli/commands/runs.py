@@ -393,6 +393,10 @@ def compute_metrics(
     help="Show runs since time (ISO format, '3d', or '3 days ago').",
 )
 @click.option(
+    "--before",
+    help="Show runs before time (ISO format, '3d', or '3 days ago'). Upper bound for time window.",
+)
+@click.option(
     "--last",
     help="Show runs from last duration (e.g., '24h', '7d', '30m', '2w').",
 )
@@ -473,6 +477,7 @@ def list_runs(
     min_latency,
     max_latency,
     since,
+    before,
     last,
     query,
     grep,
@@ -614,7 +619,7 @@ def list_runs(
         fql_filters.append(f'lt(latency, "{duration}")')
 
     # Flexible time filters (supports ISO, relative shorthand, and natural language)
-    time_filters = build_time_fql_filters(since=since, last=last)
+    time_filters = build_time_fql_filters(since=since, last=last, before=before)
     fql_filters.extend(time_filters)
 
     # Combine all filters with AND logic
@@ -919,6 +924,10 @@ def get_run(ctx, run_id, fields, output):
 @click.option(
     "--since", help="Show runs since time (ISO or relative like '1 hour ago')."
 )
+@click.option(
+    "--before",
+    help="Show runs before time (ISO format, '3d', or '3 days ago'). Upper bound for time window.",
+)
 @click.option("--last", help="Show runs from last duration (e.g., '24h', '7d', '30m').")
 @click.option("--filter", "filter_", help="Custom FQL filter string.")
 @fields_option(
@@ -946,6 +955,7 @@ def get_latest_run(
     min_latency,
     max_latency,
     since,
+    before,
     last,
     filter_,
     fields,
@@ -1004,6 +1014,7 @@ def get_latest_run(
         min_latency=min_latency,
         max_latency=max_latency,
         since=since,
+        before=before,
         last=last,
     )
 
@@ -1433,6 +1444,7 @@ def search_runs(
     project_name_pattern,
     project_name_regex,
     since,
+    before,
     last,
     limit,
     roots,
@@ -1501,6 +1513,7 @@ def search_runs(
         min_latency=None,
         max_latency=None,
         since=since,  # Pass through time filters
+        before=before,  # Pass through time filters
         last=last,  # Pass through time filters
         sort_by=None,
         fields=None,  # Pass through fields parameter
@@ -1553,6 +1566,7 @@ def sample_runs(
     project_name_pattern,
     project_name_regex,
     since,
+    before,
     last,
     stratify_by,
     values,
@@ -1612,7 +1626,7 @@ def sample_runs(
     logger.debug(f"Sampling runs with stratify_by={stratify_by}, values={values}")
 
     # Build time filters and combine with additional_filter
-    time_filters = build_time_fql_filters(since=since, last=last)
+    time_filters = build_time_fql_filters(since=since, last=last, before=before)
     base_filters = time_filters.copy()
     if additional_filter:
         base_filters.append(additional_filter)
@@ -1814,6 +1828,7 @@ def analyze_runs(
     project_name_pattern,
     project_name_regex,
     since,
+    before,
     last,
     group_by,
     metrics,
@@ -1878,7 +1893,7 @@ def analyze_runs(
     )
 
     # Build time filters and combine with additional_filter
-    time_filters = build_time_fql_filters(since=since, last=last)
+    time_filters = build_time_fql_filters(since=since, last=last, before=before)
     base_filters = time_filters.copy()
     if additional_filter:
         base_filters.append(additional_filter)
@@ -2100,6 +2115,7 @@ def _fetch_runs_for_discovery(
     project_name_pattern: str | None,
     project_name_regex: str | None,
     since: str | None,
+    before: str | None,
     last: str | None,
     sample_size: int,
     select: list[str] | None = None,
@@ -2140,7 +2156,7 @@ def _fetch_runs_for_discovery(
     logger.debug(f"Running {cmd_name} with sample_size={sample_size}")
 
     # Build and combine time filters
-    time_filters = build_time_fql_filters(since=since, last=last)
+    time_filters = build_time_fql_filters(since=since, last=last, before=before)
     combined_filter = combine_fql_filters(time_filters)
 
     # Resolve project filters (--project-id bypasses name resolution)
@@ -2194,6 +2210,7 @@ def discover_tags(
     project_name_pattern,
     project_name_regex,
     since,
+    before,
     last,
     sample_size,
 ):
@@ -2224,6 +2241,7 @@ def discover_tags(
         project_name_pattern=project_name_pattern,
         project_name_regex=project_name_regex,
         since=since,
+        before=before,
         last=last,
         sample_size=sample_size,
         select=["tags"],
@@ -2291,6 +2309,7 @@ def discover_metadata_keys(
     project_name_pattern,
     project_name_regex,
     since,
+    before,
     last,
     sample_size,
 ):
@@ -2319,6 +2338,7 @@ def discover_metadata_keys(
         project_name_pattern=project_name_pattern,
         project_name_regex=project_name_regex,
         since=since,
+        before=before,
         last=last,
         sample_size=sample_size,
         select=["extra"],  # Metadata is stored in extra field
@@ -2371,6 +2391,7 @@ def _field_analysis_common(
     project_name_pattern: str | None,
     project_name_regex: str | None,
     since: str | None,
+    before: str | None,
     last: str | None,
     sample_size: int,
     include: str | None,
@@ -2419,6 +2440,7 @@ def _field_analysis_common(
         project_name_pattern=project_name_pattern,
         project_name_regex=project_name_regex,
         since=since,
+        before=before,
         last=last,
         sample_size=sample_size,
         select=None,  # Need full run data for field analysis
@@ -2552,6 +2574,7 @@ def discover_fields(
     project_name_pattern,
     project_name_regex,
     since,
+    before,
     last,
     sample_size,
     include,
@@ -2585,6 +2608,7 @@ def discover_fields(
         project_name_pattern=project_name_pattern,
         project_name_regex=project_name_regex,
         since=since,
+        before=before,
         last=last,
         sample_size=sample_size,
         include=include,
@@ -2608,6 +2632,7 @@ def describe_fields(
     project_name_pattern,
     project_name_regex,
     since,
+    before,
     last,
     sample_size,
     include,
@@ -2640,6 +2665,7 @@ def describe_fields(
         project_name_pattern=project_name_pattern,
         project_name_regex=project_name_regex,
         since=since,
+        before=before,
         last=last,
         sample_size=sample_size,
         include=include,
@@ -2781,6 +2807,7 @@ def usage_runs(
     project_name_pattern: str | None,
     project_name_regex: str | None,
     since: str | None,
+    before: str | None,
     last: str | None,
     group_by: str | None,
     breakdown: tuple[str, ...],
@@ -2838,7 +2865,7 @@ def usage_runs(
     logger.use_stderr = is_machine_readable
 
     # Build filters: only LLM runs (to avoid double-counting from chains)
-    time_filters = build_time_fql_filters(since=since, last=last)
+    time_filters = build_time_fql_filters(since=since, last=last, before=before)
     base_filters = time_filters.copy()
     base_filters.append('eq(run_type, "llm")')
 
@@ -2881,7 +2908,7 @@ def usage_runs(
         # Parse time filters for client-side filtering
         from langsmith_cli.filters import parse_time_filter
 
-        since_dt, until_dt = parse_time_filter(since=since, last=last)
+        since_dt, until_dt = parse_time_filter(since=since, last=last, before=before)
 
         logger.info(f"Loading from cache: {len(project_names)} project(s)...")
         result = load_runs_from_cache(project_names, since=since_dt, until=until_dt)
@@ -3239,6 +3266,7 @@ def cache_download(
     project_name_pattern: str | None,
     project_name_regex: str | None,
     since: str | None,
+    before: str | None,
     last: str | None,
     additional_filter: str | None,
     run_type: str | None,
@@ -3297,7 +3325,7 @@ def cache_download(
     num_workers = workers if workers else min(8, num_projects)
 
     # Build filters
-    time_filters = build_time_fql_filters(since=since, last=last)
+    time_filters = build_time_fql_filters(since=since, last=last, before=before)
     base_filters = time_filters.copy()
     if additional_filter:
         base_filters.append(additional_filter)
@@ -3624,6 +3652,7 @@ def pricing_check(
     project_name_pattern: str | None,
     project_name_regex: str | None,
     since: str | None,
+    before: str | None,
     last: str | None,
     from_cache: bool,
     lookup: bool,
@@ -3673,7 +3702,7 @@ def pricing_check(
             name_regex=project_name_regex,
         )
         project_names = pq.names if not pq.use_id else [f"id:{pq.project_id}"]
-        since_dt, until_dt = parse_time_filter(since=since, last=last)
+        since_dt, until_dt = parse_time_filter(since=since, last=last, before=before)
 
         logger.info(f"Scanning cached runs from {len(project_names)} project(s)...")
         result = load_runs_from_cache(project_names, since=since_dt, until=until_dt)
@@ -3690,7 +3719,7 @@ def pricing_check(
             name_regex=project_name_regex,
         )
 
-        time_filters = build_time_fql_filters(since=since, last=last)
+        time_filters = build_time_fql_filters(since=since, last=last, before=before)
         base_filters = time_filters.copy()
         base_filters.append('eq(run_type, "llm")')
         combined_filter = combine_fql_filters(base_filters)

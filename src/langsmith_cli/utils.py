@@ -1564,45 +1564,62 @@ def parse_time_duration(time_str: str) -> Any:
 def build_time_fql_filters(
     since: str | None = None,
     last: str | None = None,
+    before: str | None = None,
 ) -> list[str]:
     """Build FQL filter expressions for time-based filtering.
 
-    When both --since and --last are provided, they define a time window:
-    --since is the start time, --last is the duration forward from --since.
+    Supports flexible time windows via combinations of --since, --before, and --last:
+    - --since alone: gt(start_time, ...)
+    - --before alone: lt(start_time, ...)
+    - --last alone: gt(start_time, now - duration)
+    - --since + --last: window from since to since + duration
+    - --before + --last: window from before - duration to before
+    - --since + --before: explicit window
+    - --since + --before + --last: error (ambiguous)
 
     Args:
         since: Show items since this time (ISO format, relative, or natural language)
         last: Show items from last duration (e.g., '24h', '7d', '30m').
-              When used alone, shows items from the last N hours/days.
-              When used with --since, defines the window size forward from --since.
+        before: Show items before this time (ISO format, relative, or natural language).
 
     Returns:
         List of FQL filter expressions (may be empty)
 
     Raises:
-        click.BadParameter: If time format is invalid
-
-    Examples:
-        >>> filters = build_time_fql_filters(since="3 days ago")
-        >>> filters
-        ['gt(start_time, "2024-01-11T10:00:00+00:00")']
-
-        >>> filters = build_time_fql_filters(since="2026-02-17", last="72h")
-        >>> filters  # Window from Feb 17 to Feb 20
-        ['gt(start_time, "2026-02-17...")', 'lt(start_time, "2026-02-20...")']
+        click.BadParameter: If time format is invalid or conflicting options given
     """
     fql_filters: list[str] = []
 
-    if since and last:
-        # Both specified: create a time window (since -> since + duration)
+    if since and before and last:
+        raise click.BadParameter(
+            "Cannot use --since, --before, and --last together (ambiguous). "
+            "Use --since + --before for an explicit window, or "
+            "--since + --last / --before + --last for a duration-based window."
+        )
+
+    if since and before:
+        start_timestamp = parse_time_input(since)
+        end_timestamp = parse_time_input(before)
+        fql_filters.append(f'gt(start_time, "{start_timestamp.isoformat()}")')
+        fql_filters.append(f'lt(start_time, "{end_timestamp.isoformat()}")')
+    elif since and last:
         start_timestamp = parse_time_input(since)
         duration = parse_time_duration(last)
         end_timestamp = start_timestamp + duration
         fql_filters.append(f'gt(start_time, "{start_timestamp.isoformat()}")')
         fql_filters.append(f'lt(start_time, "{end_timestamp.isoformat()}")')
+    elif before and last:
+        end_timestamp = parse_time_input(before)
+        duration = parse_time_duration(last)
+        start_timestamp = end_timestamp - duration
+        fql_filters.append(f'gt(start_time, "{start_timestamp.isoformat()}")')
+        fql_filters.append(f'lt(start_time, "{end_timestamp.isoformat()}")')
     elif since:
         timestamp = parse_time_input(since)
         fql_filters.append(f'gt(start_time, "{timestamp.isoformat()}")')
+    elif before:
+        timestamp = parse_time_input(before)
+        fql_filters.append(f'lt(start_time, "{timestamp.isoformat()}")')
     elif last:
         timestamp = parse_time_input(last)
         fql_filters.append(f'gt(start_time, "{timestamp.isoformat()}")')
@@ -1661,6 +1678,10 @@ def add_time_filter_options(func: Callable[..., Any]) -> Callable[..., Any]:
     func = click.option(
         "--last",
         help="Show items from last duration (e.g., '24h', '7d', '30m', '2w').",
+    )(func)
+    func = click.option(
+        "--before",
+        help="Show items before time (ISO format, '3d', or '3 days ago'). Upper bound for time window.",
     )(func)
     func = click.option(
         "--since",
@@ -1976,6 +1997,7 @@ def build_runs_list_filter(
     min_latency: str | None = None,
     max_latency: str | None = None,
     since: str | None = None,
+    before: str | None = None,
     last: str | None = None,
 ) -> tuple[str | None, bool | None]:
     """Build FQL filter string and error filter from command options.
@@ -2065,7 +2087,7 @@ def build_runs_list_filter(
         fql_filters.append(f'lt(latency, "{duration}")')
 
     # Flexible time filters (supports ISO, relative shorthand, and natural language)
-    time_filters = build_time_fql_filters(since=since, last=last)
+    time_filters = build_time_fql_filters(since=since, last=last, before=before)
     fql_filters.extend(time_filters)
 
     # Combine all filters with AND logic

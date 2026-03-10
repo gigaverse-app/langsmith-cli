@@ -23,11 +23,12 @@ from langsmith_cli.utils import combine_fql_filters
 def parse_time_filter(
     since: str | None = None,
     last: str | None = None,
+    before: str | None = None,
 ) -> tuple[datetime | None, datetime | None]:
     """Parse time filter options into datetime range for client-side filtering.
 
-    When both --since and --last are provided, they define a time window:
-    --since is the start time, --last is the duration forward from --since.
+    Supports --since, --before, --last and their combinations
+    (mirrors build_time_fql_filters logic for local datetime ranges).
 
     Returns:
         Tuple of (since_dt, until_dt). Either or both may be None.
@@ -37,13 +38,21 @@ def parse_time_filter(
     since_dt: datetime | None = None
     until_dt: datetime | None = None
 
-    if since and last:
-        # Both specified: create a time window (since -> since + duration)
+    if since and before:
+        since_dt = parse_time_input(since)
+        until_dt = parse_time_input(before)
+    elif since and last:
         since_dt = parse_time_input(since)
         duration = parse_time_duration(last)
         until_dt = since_dt + duration
+    elif before and last:
+        until_dt = parse_time_input(before)
+        duration = parse_time_duration(last)
+        since_dt = until_dt - duration
     elif since:
         since_dt = parse_time_input(since)
+    elif before:
+        until_dt = parse_time_input(before)
     elif last:
         since_dt = parse_time_input(last)
 
