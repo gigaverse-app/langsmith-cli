@@ -110,6 +110,10 @@ langsmith-cli runs list --project my-project --limit 5
    - Example: `langsmith-cli --json -qq runs list | jq` (clean JSON, no diagnostics)
    - Example: `langsmith-cli -v runs list` (debug info for troubleshooting)
 8. **Error Handling:** See the "🚨 CRITICAL" section above. Use `--output` flag for data extraction, or `2>&1` for quick queries.
+9. **Long-Running Commands:** Commands like `runs cache download`, `runs list` with large `--limit`, and `runs export` can take minutes for large datasets. These commands emit progress messages to stderr (e.g., "Downloading project X... 500 runs fetched"). **When running long tasks, inform the user that the command may take a while and report progress updates from stderr.** Use `-v` for more detailed progress, or `-qq` to suppress all progress and just wait for completion.
+   - Example: `langsmith-cli runs cache download --project-name-pattern "prd/*" --last 7d` may take several minutes for many projects.
+   - Example: `langsmith-cli -v runs cache download --project my-project --last 30d` shows detailed download progress.
+10. **Client-Side Filtering Budget:** When using client-side filters (`--grep`, `--name-pattern`, `--name-regex`), the CLI fetches more runs than `--limit` to ensure enough matches. Use `--fetch <n>` to control the fetch budget (e.g., `--limit 10 --fetch 500` fetches 500 runs, returns up to 10 matches).
 
 ## API Reference
 
@@ -154,7 +158,7 @@ langsmith-cli runs list --project my-project --limit 5
   - `--name-pattern <pattern>`: Wildcard filter on run names (client-side).
   - `--name-regex <regex>`: Regex filter on run names (client-side).
   - `--model <name>`: Filter by model name (e.g., `gpt-4`, `claude-3`).
-  - `--since <time>`: Runs since time (ISO, `3d`, or `3 days ago`). *(Also listed above with `--before`.)*
+
   - `--min-latency <dur>` / `--max-latency <dur>`: Latency range (e.g., `2s`, `500ms`).
   - `--trace-filter <fql>` / `--tree-filter <fql>`: Filter on root trace / any run in tree.
   - `--sort-by <field>`: Sort by field (name, status, latency, start_time). Prefix `-` for descending.
@@ -173,7 +177,7 @@ langsmith-cli runs list --project my-project --limit 5
   - `--fields <comma-separated>`: Only return specific fields (e.g., `inputs,outputs,error`).
 - `langsmith-cli --json runs get-latest [OPTIONS]`: Get the most recent run matching filters.
   - **Eliminates need for piping `runs list` into `jq` and then `runs get`.**
-  - Supports all filter options: `--status`, `--failed`, `--succeeded`, `--roots`, `--tag`, `--model`, `--slow`, `--recent`, `--today`, `--min-latency`, `--max-latency`, `--since`, `--last`, `--filter`.
+  - Supports all filter options: `--status`, `--failed`, `--succeeded`, `--roots`, `--tag`, `--model`, `--slow`, `--recent`, `--today`, `--min-latency`, `--max-latency`, `--since`, `--before`, `--last`, `--filter`.
   - Supports `--fields` for context efficiency.
   - Searches across multiple projects if using `--project-name-pattern` or `--project-name-regex`.
   - Example: `langsmith-cli --json runs get-latest --project my-project --fields inputs,outputs`
@@ -216,6 +220,7 @@ langsmith-cli runs list --project my-project --limit 5
     - Automatically generates all combinations: (short,news), (short,gaming), (medium,news), etc.
   - `--samples-per-stratum <n>`: Number of samples per stratum (default: 10).
   - `--samples-per-combination <n>`: Alias for `--samples-per-stratum` in multi-dimensional mode.
+  - `--since <time>` / `--before <time>` / `--last <duration>`: Time filters (combinable for time windows).
   - `--output <path>`: Write samples to JSONL file instead of stdout. **Recommended for data extraction** (more reliable than piping).
   - `--fields <comma-separated>`: Reduce output size.
   - Example (to file): `langsmith-cli runs sample --stratify-by tag:length --values short,medium,long --samples-per-stratum 10 --output samples.jsonl`
@@ -226,16 +231,19 @@ langsmith-cli runs list --project my-project --limit 5
   - `--metrics <comma-separated>`: Metrics to compute (default: `count,error_rate,p50_latency,p95_latency`).
     - Available metrics: `count`, `error_rate`, `p50_latency`, `p95_latency`, `p99_latency`, `avg_latency`, `total_tokens`, `avg_cost`
   - `--sample-size <n>`: Number of recent runs to analyze (default: 300, use 0 for all runs).
+  - `--since <time>` / `--before <time>` / `--last <duration>`: Time filters (combinable for time windows).
   - `--filter <string>`: Additional FQL filter to apply.
   - `--format <format>`: Output format (json/table/csv/yaml).
   - Example: `langsmith-cli --json runs analyze --group-by tag:length --metrics count,error_rate,p95_latency`
   - Example: `langsmith-cli --json runs analyze --group-by tag:schema --metrics count,error_rate --sample-size 1000`
 - `langsmith-cli --json runs tags [OPTIONS]`: Discover structured tag patterns (key:value format).
   - `--sample-size <n>`: Number of recent runs to sample (default: 1000).
+  - `--since <time>` / `--before <time>` / `--last <duration>`: Time filters.
   - Returns: `{"tag_patterns": {"key1": ["val1", "val2"], ...}}`
   - Example: `langsmith-cli --json runs tags --project my-project --sample-size 5000`
 - `langsmith-cli --json runs metadata-keys [OPTIONS]`: Discover metadata keys used in runs.
   - `--sample-size <n>`: Number of recent runs to sample (default: 1000).
+  - `--since <time>` / `--before <time>` / `--last <duration>`: Time filters.
   - Returns: `{"metadata_keys": ["key1", "key2", ...]}`
   - Example: `langsmith-cli --json runs metadata-keys --project my-project`
 - `langsmith-cli --json runs fields [OPTIONS]`: Discover all field paths, types, presence rates, and language distribution.
@@ -243,6 +251,7 @@ langsmith-cli runs list --project my-project --limit 5
   - `--include <paths>`: Only include fields starting with these paths (comma-separated, e.g., `inputs,outputs`).
   - `--exclude <paths>`: Exclude fields starting with these paths (comma-separated, e.g., `extra,events`).
   - `--no-language`: Skip language detection (faster).
+  - `--since <time>` / `--before <time>` / `--last <duration>`: Time filters.
   - Returns: `{"fields": [{"path": "inputs.query", "type": "string", "present_pct": 98.0, "languages": {"en": 80.0, "he": 15.0}, "sample": "..."}, ...], "total_runs": 100}`
   - Example: `langsmith-cli --json runs fields --project my-project --include inputs,outputs`
   - Example: `langsmith-cli --json runs fields --no-language --sample-size 50`
@@ -251,6 +260,7 @@ langsmith-cli runs list --project my-project --limit 5
   - `--include <paths>`: Only include fields starting with these paths (comma-separated).
   - `--exclude <paths>`: Exclude fields starting with these paths (comma-separated).
   - `--no-language`: Skip language detection (faster).
+  - `--since <time>` / `--before <time>` / `--last <duration>`: Time filters.
   - Returns: `{"fields": [{"path": "inputs.query", "type": "string", "present_pct": 98.0, "length": {"min": 5, "max": 500, "avg": 89}, "languages": {"en": 80.0}}, ...], "total_runs": 100}`
   - Example: `langsmith-cli --json runs describe --include inputs,outputs`
   - Example: `langsmith-cli --json runs describe --project my-project --no-language`
@@ -260,7 +270,7 @@ langsmith-cli runs list --project my-project --limit 5
   - `--status <success|error>`: Filter by status
   - `--roots`: Export only root traces
   - `--tag <tag>`: Filter by tag (repeatable)
-  - `--last <duration>`: Time window (e.g., `24h`, `7d`)
+  - `--since <time>` / `--before <time>` / `--last <duration>`: Time filters (combinable for time windows).
   - `--fields <comma-separated>`: Reduce exported file size
   - `--filename-pattern <pattern>`: Custom filenames (placeholders: `{run_id}`, `{name}`, `{index}`, `{trace_id}`)
   - Example: `langsmith-cli runs export ./traces --project my-project --roots --limit 100`
@@ -329,6 +339,7 @@ langsmith-cli runs list --project my-project --limit 5
   - `--from-cache`: Use local cache instead of API (fast, offline).
   - `--metadata key=value`: Filter by metadata (repeatable).
   - `--sample-size <n>`: Limit runs per project.
+  - `--since <time>` / `--before <time>` / `--last <duration>`: Time filters (combinable for time windows).
   - Example: `langsmith-cli --json runs usage --project-name-pattern "prd/*" --last 7d --breakdown model`
   - Example: `langsmith-cli runs usage --from-cache --group-by metadata:community_name --breakdown project --interval day`
 - `langsmith-cli runs pricing [OPTIONS]`: Check model pricing coverage and look up missing prices.
@@ -336,6 +347,7 @@ langsmith-cli runs list --project my-project --limit 5
   - Looks up missing prices from OpenRouter API automatically.
   - `--from-cache`: Analyze cached runs (fast).
   - `--no-lookup`: Skip OpenRouter price lookup.
+  - `--since <time>` / `--before <time>` / `--last <duration>`: Time filters.
   - Example: `langsmith-cli runs pricing --project-name-pattern "prd/*" --from-cache`
   - Example: `langsmith-cli --json runs pricing --project-name-pattern "prd/*" --from-cache`
 - `langsmith-cli runs cache download [OPTIONS]`: Download runs to local JSONL cache.
