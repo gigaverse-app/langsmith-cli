@@ -727,8 +727,8 @@ def output_formatted_data(
 def sort_items(
     items: list[T],
     sort_by: str | None,
-    sort_key_map: dict[str, Callable[[T], Any]],
-    console: ConsoleProtocol,
+    sort_key_map: dict[str, Callable[[T], Any]] | None = None,
+    console: ConsoleProtocol | None = None,
 ) -> list[T]:
     """Sort items by a given field.
 
@@ -736,8 +736,9 @@ def sort_items(
         items: List of items to sort
         sort_by: Sort specification (e.g., "name" or "-name" for descending)
         sort_key_map: Dictionary mapping field names to key functions.
+                      If None, uses getattr to look up the field directly.
                       Any is acceptable for key return type - can be str, int, datetime, etc.
-        console: Rich console for printing warnings
+        console: Rich console for printing warnings. If None, warnings are skipped.
 
     Returns:
         Sorted list of items
@@ -748,17 +749,25 @@ def sort_items(
     reverse = sort_by.startswith("-")
     sort_field = sort_by.lstrip("-")
 
-    if sort_field not in sort_key_map:
-        console.print(
-            f"[yellow]Warning: Unknown sort field '{sort_field}'. "
-            f"Available: {', '.join(sort_key_map.keys())}[/yellow]"
-        )
-        return items
+    if sort_key_map is not None:
+        if sort_field not in sort_key_map:
+            if console is not None:
+                console.print(
+                    f"[yellow]Warning: Unknown sort field '{sort_field}'. "
+                    f"Available: {', '.join(sort_key_map.keys())}[/yellow]"
+                )
+            return items
+        key_func: Callable[[T], Any] = sort_key_map[sort_field]
+    else:
+        key_func = lambda item: getattr(item, sort_field, None)  # noqa: E731
 
     try:
-        return sorted(items, key=sort_key_map[sort_field], reverse=reverse)
+        return sorted(items, key=key_func, reverse=reverse)
     except Exception as e:
-        console.print(f"[yellow]Warning: Could not sort by {sort_field}: {e}[/yellow]")
+        if console is not None:
+            console.print(
+                f"[yellow]Warning: Could not sort by {sort_field}: {e}[/yellow]"
+            )
         return items
 
 

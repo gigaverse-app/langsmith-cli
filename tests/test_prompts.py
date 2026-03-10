@@ -898,3 +898,62 @@ def test_prompts_push_import_error_friendly_message(runner, tmp_path):
         assert "langchain-corepackage" not in data.get("message", "")
         # Should contain helpful install instructions
         assert "langchain-core" in data["message"]
+
+
+# --sort-by tests
+
+
+def test_prompts_list_sort_by_full_name(runner):
+    """INVARIANT: --sort-by full_name should sort prompts alphabetically."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        p1 = create_prompt(
+            repo_handle="zebra-prompt",
+            full_name="owner/zebra-prompt",
+            owner="owner",
+        )
+        p2 = create_prompt(
+            repo_handle="alpha-prompt",
+            full_name="owner/alpha-prompt",
+            owner="owner",
+        )
+
+        mock_result = ListPromptsResponse(repos=[p1, p2], total=2)
+        mock_client.list_prompts.return_value = mock_result
+
+        result = runner.invoke(
+            cli, ["--json", "prompts", "list", "--sort-by", "full_name"]
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data[0]["full_name"] == "owner/alpha-prompt"
+        assert data[1]["full_name"] == "owner/zebra-prompt"
+
+
+def test_prompts_list_sort_by_descending(runner):
+    """INVARIANT: --sort-by -full_name should sort prompts in reverse order."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        p1 = create_prompt(
+            repo_handle="alpha-prompt",
+            full_name="owner/alpha-prompt",
+            owner="owner",
+        )
+        p2 = create_prompt(
+            repo_handle="zebra-prompt",
+            full_name="owner/zebra-prompt",
+            owner="owner",
+        )
+
+        mock_result = ListPromptsResponse(repos=[p1, p2], total=2)
+        mock_client.list_prompts.return_value = mock_result
+
+        result = runner.invoke(
+            cli, ["--json", "prompts", "list", "--sort-by", "-full_name"]
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data[0]["full_name"] == "owner/zebra-prompt"
+        assert data[1]["full_name"] == "owner/alpha-prompt"

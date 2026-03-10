@@ -777,3 +777,82 @@ def test_examples_from_run_requires_dataset(runner):
         result = runner.invoke(cli, ["examples", "from-run", "some-run-id"])
         assert result.exit_code != 0
         assert "dataset" in result.output.lower() or "required" in result.output.lower()
+
+
+# --sort-by tests
+
+
+def test_examples_list_sort_by_created_at(runner):
+    """INVARIANT: --sort-by created_at should sort examples by creation time."""
+    from datetime import datetime, timezone, timedelta
+
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        base_time = datetime(2024, 8, 15, 19, 47, 22, tzinfo=timezone.utc)
+        ex1 = create_example(
+            id_str="3442bd7c-27a2-437b-a38c-f278e455d001",
+            inputs={"text": "newer"},
+        ).model_copy(update={"created_at": base_time + timedelta(days=1)})
+        ex2 = create_example(
+            id_str="3442bd7c-27a2-437b-a38c-f278e455d002",
+            inputs={"text": "older"},
+        ).model_copy(update={"created_at": base_time - timedelta(days=1)})
+
+        mock_client.list_examples.return_value = iter([ex1, ex2])
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "examples",
+                "list",
+                "--dataset",
+                "test",
+                "--sort-by",
+                "created_at",
+            ],
+        )
+        assert result.exit_code == 0, f"Exit code {result.exit_code}: {result.output}"
+        data = json.loads(result.output)
+        # Ascending: older first
+        assert data[0]["inputs"]["text"] == "older"
+        assert data[1]["inputs"]["text"] == "newer"
+
+
+def test_examples_list_sort_by_descending(runner):
+    """INVARIANT: --sort-by -created_at should sort examples in reverse order."""
+    from datetime import datetime, timezone, timedelta
+
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        base_time = datetime(2024, 8, 15, 19, 47, 22, tzinfo=timezone.utc)
+        ex1 = create_example(
+            id_str="3442bd7c-27a2-437b-a38c-f278e455d001",
+            inputs={"text": "older"},
+        ).model_copy(update={"created_at": base_time - timedelta(days=1)})
+        ex2 = create_example(
+            id_str="3442bd7c-27a2-437b-a38c-f278e455d002",
+            inputs={"text": "newer"},
+        ).model_copy(update={"created_at": base_time + timedelta(days=1)})
+
+        mock_client.list_examples.return_value = iter([ex1, ex2])
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "examples",
+                "list",
+                "--dataset",
+                "test",
+                "--sort-by",
+                "-created_at",
+            ],
+        )
+        assert result.exit_code == 0, f"Exit code {result.exit_code}: {result.output}"
+        data = json.loads(result.output)
+        # Descending: newer first
+        assert data[0]["inputs"]["text"] == "newer"
+        assert data[1]["inputs"]["text"] == "older"

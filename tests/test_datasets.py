@@ -545,3 +545,89 @@ def test_datasets_delete_requires_confirmation(runner):
         # Should abort
         assert result.exit_code != 0
         mock_client.delete_dataset.assert_not_called()
+
+
+# --sort-by tests
+
+
+def test_datasets_list_sort_by_name(runner):
+    """INVARIANT: --sort-by name should sort datasets alphabetically by name."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        d1 = create_dataset(name="zebra-dataset", example_count=1)
+        d2 = create_dataset(name="alpha-dataset", example_count=2)
+
+        mock_client.list_datasets.return_value = iter([d1, d2])
+
+        result = runner.invoke(cli, ["--json", "datasets", "list", "--sort-by", "name"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data[0]["name"] == "alpha-dataset"
+        assert data[1]["name"] == "zebra-dataset"
+
+
+def test_datasets_list_sort_by_descending(runner):
+    """INVARIANT: --sort-by -name should sort datasets in reverse order."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        d1 = create_dataset(name="alpha-dataset", example_count=1)
+        d2 = create_dataset(name="zebra-dataset", example_count=2)
+
+        mock_client.list_datasets.return_value = iter([d1, d2])
+
+        result = runner.invoke(
+            cli, ["--json", "datasets", "list", "--sort-by", "-name"]
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data[0]["name"] == "zebra-dataset"
+        assert data[1]["name"] == "alpha-dataset"
+
+
+# --name-pattern / --name-regex tests
+
+
+def test_datasets_list_name_pattern(runner):
+    """INVARIANT: --name-pattern should filter datasets by glob/wildcard pattern."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        d1 = create_dataset(name="prod-users", example_count=10)
+        d2 = create_dataset(name="dev-users", example_count=5)
+        d3 = create_dataset(name="staging-logs", example_count=3)
+
+        mock_client.list_datasets.return_value = iter([d1, d2, d3])
+
+        result = runner.invoke(
+            cli, ["--json", "datasets", "list", "--name-pattern", "*-users"]
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        names = [d["name"] for d in data]
+        assert "prod-users" in names
+        assert "dev-users" in names
+        assert "staging-logs" not in names
+
+
+def test_datasets_list_name_regex(runner):
+    """INVARIANT: --name-regex should filter datasets by regex pattern."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        d1 = create_dataset(name="prod-v1", example_count=10)
+        d2 = create_dataset(name="prod-v2", example_count=5)
+        d3 = create_dataset(name="dev-v1", example_count=3)
+
+        mock_client.list_datasets.return_value = iter([d1, d2, d3])
+
+        result = runner.invoke(
+            cli, ["--json", "datasets", "list", "--name-regex", "^prod-v\\d+$"]
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        names = [d["name"] for d in data]
+        assert "prod-v1" in names
+        assert "prod-v2" in names
+        assert "dev-v1" not in names

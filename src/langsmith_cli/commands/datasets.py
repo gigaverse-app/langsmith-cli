@@ -6,13 +6,17 @@ from langsmith.schemas import Dataset
 from rich.console import Console
 from rich.table import Table
 from langsmith_cli.utils import (
-    resolve_by_name_or_id,
+    add_name_filter_options,
     apply_exclude_filter,
+    apply_name_filters,
     count_option,
     exclude_option,
     fields_option,
     filter_fields,
     get_or_create_client,
+    resolve_by_name_or_id,
+    sort_by_option,
+    sort_items,
     parse_fields_option,
     json_dumps,
     output_option,
@@ -40,6 +44,8 @@ def datasets():
 @click.option("--name", "dataset_name", help="Exact dataset name match.")
 @click.option("--name-contains", help="Dataset name substring search.")
 @click.option("--metadata", help="Filter by metadata (JSON string).")
+@add_name_filter_options
+@sort_by_option(fields="name, created_at, example_count")
 @exclude_option()
 @fields_option()
 @count_option()
@@ -53,6 +59,9 @@ def list_datasets(
     dataset_name,
     name_contains,
     metadata,
+    name_pattern,
+    name_regex,
+    sort_by,
     exclude,
     fields,
     count,
@@ -90,8 +99,20 @@ def list_datasets(
     datasets_gen = client.list_datasets(**list_kwargs)
     datasets_list = list(datasets_gen)
 
+    # Client-side name pattern/regex filtering
+    datasets_list = apply_name_filters(
+        datasets_list,
+        lambda d: d.name,
+        name_pattern=name_pattern,
+        name_regex=name_regex,
+    )
+
     # Client-side exclude filtering
     datasets_list = apply_exclude_filter(datasets_list, exclude, lambda d: d.name)
+
+    # Client-side sorting
+    if sort_by:
+        datasets_list = sort_items(datasets_list, sort_by)
 
     # Handle file output - short circuit if writing to file
     if output:

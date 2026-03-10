@@ -8,15 +8,17 @@ from langsmith_cli.utils import (
     fields_option,
     filter_fields,
     get_or_create_client,
+    json_dumps,
     output_option,
-    parse_fields_option,
     output_single_item,
     parse_comma_separated_list,
+    parse_fields_option,
     parse_json_string,
     render_output,
     safe_model_dump,
+    sort_by_option,
+    sort_items,
     write_output_to_file,
-    json_dumps,
 )
 
 console = Console()
@@ -46,6 +48,7 @@ def examples():
 @click.option("--inline-s3-urls", type=bool, help="Include S3 URLs inline.")
 @click.option("--include-attachments", type=bool, help="Include attachments.")
 @click.option("--as-of", help="Dataset version tag or ISO timestamp.")
+@sort_by_option(fields="created_at, modified_at")
 @exclude_option()
 @fields_option()
 @count_option()
@@ -63,6 +66,7 @@ def list_examples(
     inline_s3_urls,
     include_attachments,
     as_of,
+    sort_by,
     exclude,
     fields,
     count,
@@ -102,6 +106,10 @@ def list_examples(
 
     # Client-side exclude filtering (filter by ID string representation)
     examples_list = apply_exclude_filter(examples_list, exclude, lambda e: str(e.id))
+
+    # Client-side sorting
+    if sort_by:
+        examples_list = sort_items(examples_list, sort_by)
 
     # Handle file output - short circuit if writing to file
     if output:

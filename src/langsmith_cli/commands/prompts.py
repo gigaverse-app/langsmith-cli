@@ -9,11 +9,13 @@ from langsmith_cli.utils import (
     filter_fields,
     get_or_create_client,
     json_dumps,
-    parse_fields_option,
     output_option,
     output_single_item,
     parse_comma_separated_list,
+    parse_fields_option,
     render_output,
+    sort_by_option,
+    sort_items,
     write_output_to_file,
 )
 
@@ -31,12 +33,13 @@ def prompts():
 @click.option(
     "--is-public", type=bool, default=None, help="Filter by public/private status."
 )
+@sort_by_option(fields="full_name, created_at, updated_at")
 @exclude_option()
 @fields_option()
 @count_option()
 @output_option()
 @click.pass_context
-def list_prompts(ctx, limit, is_public, exclude, fields, count, output):
+def list_prompts(ctx, limit, is_public, sort_by, exclude, fields, count, output):
     """List available prompt repositories."""
     logger = ctx.obj["logger"]
     is_machine_readable = ctx.obj.get("json") or bool(output) or bool(fields)
@@ -51,6 +54,10 @@ def list_prompts(ctx, limit, is_public, exclude, fields, count, output):
 
     # Client-side exclude filtering
     prompts_list = apply_exclude_filter(prompts_list, exclude, lambda p: p.full_name)
+
+    # Client-side sorting
+    if sort_by:
+        prompts_list = sort_items(prompts_list, sort_by)
 
     # Handle file output - short circuit if writing to file
     if output:

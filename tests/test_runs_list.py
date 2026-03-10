@@ -642,3 +642,52 @@ class TestRunsListProjectNotFound:
 
         assert result.exit_code != 0
         assert "prd/promotion_service" in result.output
+
+
+class TestRunsListMetadataFilter:
+    """Tests for --metadata key=value filter on runs list."""
+
+    def test_metadata_filter_builds_fql(self, runner, mock_client):
+        """INVARIANT: --metadata key=value should produce FQL metadata filter."""
+        mock_client.list_runs.return_value = [create_run(name="filtered")]
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "list",
+                "--metadata",
+                "env=prod",
+            ],
+        )
+
+        assert result.exit_code == 0
+        call_kwargs = mock_client.list_runs.call_args[1]
+        fql = call_kwargs.get("filter") or ""
+        assert "metadata_key" in fql
+        assert "env" in fql
+        assert "prod" in fql
+
+    def test_metadata_filter_multiple(self, runner, mock_client):
+        """INVARIANT: Multiple --metadata flags produce AND-joined FQL filters."""
+        mock_client.list_runs.return_value = [create_run(name="filtered")]
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "list",
+                "--metadata",
+                "env=prod",
+                "--metadata",
+                "team=backend",
+            ],
+        )
+
+        assert result.exit_code == 0
+        call_kwargs = mock_client.list_runs.call_args[1]
+        fql = call_kwargs.get("filter") or ""
+        assert "env" in fql
+        assert "team" in fql
