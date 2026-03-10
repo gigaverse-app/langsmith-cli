@@ -1332,3 +1332,120 @@ class TestUsageEmptyResults:
         data = _extract_json(result.output)
         assert "summary" in data
         assert data["summary"]["run_count"] == 0
+
+
+class TestUsageApplyPricing:
+    """Tests for --apply-pricing with external YAML pricing file."""
+
+    def test_apply_pricing_fills_missing_costs(self, runner, mock_client, tmp_path):
+        """INVARIANT: --apply-pricing estimates costs for runs with $0 cost but non-zero tokens."""
+        runs = [
+            _create_llm_run(
+                1,
+                model="llama-3.3-70b-versatile",
+                total_tokens=1000,
+                prompt_tokens=700,
+                completion_tokens=300,
+                cost="0",
+            ),
+        ]
+        mock_client.list_runs.return_value = runs
+
+        pricing_file = tmp_path / "pricing.yaml"
+        pricing_file.write_text(
+            "llama-3.3-70b-versatile:\n"
+            "  input_per_million: 0.59\n"
+            "  output_per_million: 0.79\n"
+        )
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "usage",
+                "--last",
+                "24h",
+                "--apply-pricing",
+                str(pricing_file),
+            ],
+        )
+
+        assert result.exit_code == 0
+        data = _extract_json(result.output)
+        bucket = data["buckets"][0]
+        assert bucket["prompt_cost"] == pytest.approx(0.000413, rel=0.01)
+        assert bucket["completion_cost"] == pytest.approx(0.000237, rel=0.01)
+        assert bucket["total_cost"] == pytest.approx(0.00065, rel=0.01)
+
+    def test_apply_pricing_does_not_override_existing_costs(
+        self, runner, mock_client, tmp_path
+    ):
+        """INVARIANT: Runs with existing costs from LangSmith are not overridden."""
+        runs = [
+            _create_llm_run(
+                1,
+                model="gpt-4",
+                total_tokens=1000,
+                prompt_tokens=700,
+                completion_tokens=300,
+                cost="0.05",
+                prompt_cost="0.02",
+                completion_cost="0.03",
+            ),
+        ]
+        mock_client.list_runs.return_value = runs
+
+        pricing_file = tmp_path / "pricing.yaml"
+        pricing_file.write_text(
+            "gpt-4:\n  input_per_million: 999.0\n  output_per_million: 999.0\n"
+        )
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "usage",
+                "--last",
+                "24h",
+                "--apply-pricing",
+                str(pricing_file),
+            ],
+        )
+
+        assert result.exit_code == 0
+        data = _extract_json(result.output)
+        bucket = data["buckets"][0]
+        assert bucket["prompt_cost"] == pytest.approx(0.02, rel=0.001)
+        assert bucket["completion_cost"] == pytest.approx(0.03, rel=0.001)
+
+    def test_apply_pricing_model_not_in_file(self, runner, mock_client, tmp_path):
+        """INVARIANT: Models not in pricing file keep their original $0 cost."""
+        runs = [
+            _create_llm_run(1, model="unknown-model", cost="0"),
+        ]
+        mock_client.list_runs.return_value = runs
+
+        pricing_file = tmp_path / "pricing.yaml"
+        pricing_file.write_text(
+            "gpt-4:\n  input_per_million: 2.5\n  output_per_million: 10.0\n"
+        )
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "usage",
+                "--last",
+                "24h",
+                "--apply-pricing",
+                str(pricing_file),
+            ],
+        )
+
+        assert result.exit_code == 0
+        data = _extract_json(result.output)
+        bucket = data["buckets"][0]
+        assert bucket["total_cost"] == pytest.approx(0.0)

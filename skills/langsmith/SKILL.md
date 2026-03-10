@@ -333,10 +333,13 @@ langsmith-cli runs list --project my-project --limit 5
 ### Token Usage & Pricing
 - `langsmith-cli runs usage [OPTIONS]`: Analyze token usage over time with grouping and breakdowns.
   - `--group-by <field>`: Group by metadata/tag (e.g., `metadata:channel_id`, `metadata:community_name`).
-  - `--breakdown <dim>`: Breakdown by `model` and/or `project` (repeatable).
+  - `--breakdown <dim>`: Breakdown by `model`, `project`, `provider`, or `gateway` (repeatable).
+    - `provider` = who made the model (Google, OpenAI, Meta, Anthropic, etc.)
+    - `gateway` = API endpoint used to call it (openai, groq, cerebras, google_genai, openrouter, perplexity, etc.)
   - `--interval <hour|day>`: Time bucket size (default: hour).
   - `--active-only`: Only show time buckets with activity.
   - `--from-cache`: Use local cache instead of API (fast, offline).
+  - `--apply-pricing <file.yaml>`: YAML file with model pricing ($/1M tokens) to fill in missing costs. Generate with `runs pricing --format yaml`.
   - `--tag <tag>`: Filter by tag (repeatable for AND logic). Works with both API and `--from-cache`.
   - `--metadata key=value`: Filter by metadata (repeatable). Supports wildcards (`key=room-*`) and regex (`key=/^room-[0-9]+$/`). Transparently checks tags as fallback (see Tag Format below).
   - `--grep <pattern>`: Filter runs by content (inputs/outputs/error). Client-side search.
@@ -345,17 +348,21 @@ langsmith-cli runs list --project my-project --limit 5
   - `--sample-size <n>`: Limit runs per project.
   - `--format csv|yaml|json`: Output format (default: table/json).
   - `--since <time>` / `--before <time>` / `--last <duration>`: Time filters (combinable for time windows).
+  - Output includes: `total_tokens`, `prompt_tokens`, `completion_tokens`, `total_cost`, `prompt_cost`, `completion_cost`, `run_count`.
   - Example: `langsmith-cli --json runs usage --project-name-pattern "prd/*" --last 7d --breakdown model`
-  - Example: `langsmith-cli --json runs usage --from-cache --tag "env:prod" --breakdown model`
+  - Example: `langsmith-cli --json runs usage --from-cache --breakdown model --breakdown provider --breakdown gateway --active-only`
+  - Example: `langsmith-cli --json runs usage --from-cache --apply-pricing pricing.yaml --breakdown provider --active-only`
   - Example: `langsmith-cli runs usage --from-cache --group-by metadata:community_name --breakdown project --interval day`
 - `langsmith-cli runs pricing [OPTIONS]`: Check model pricing coverage and look up missing prices.
   - Scans runs to find models with/without cost data in LangSmith.
-  - Looks up missing prices from OpenRouter API automatically.
+  - Looks up missing prices from OpenRouter API automatically (note: Perplexity models not on OpenRouter — add manually).
   - `--from-cache`: Analyze cached runs (fast).
   - `--tag <tag>`: Filter by tag (repeatable for AND logic). Works with both API and `--from-cache`.
   - `--no-lookup`: Skip OpenRouter price lookup.
+  - `--format yaml`: Generate a YAML pricing file for use with `runs usage --apply-pricing`.
   - `--since <time>` / `--before <time>` / `--last <duration>`: Time filters.
   - Example: `langsmith-cli runs pricing --project-name-pattern "prd/*" --from-cache`
+  - Example: `langsmith-cli runs pricing --format yaml --project-name-pattern "prd/*" --from-cache > pricing.yaml`
   - Example: `langsmith-cli --json runs pricing --project-name-pattern "prd/*" --from-cache`
 - `langsmith-cli runs cache download [OPTIONS]`: Download runs to local JSONL cache.
   - `--last <duration>`: Time range (e.g., `7d`, `24h`).
@@ -607,16 +614,63 @@ langsmith-cli --json runs usage \
   --last 3d
 ```
 
-### Recipe 3: Model Cost Breakdown Across Projects
+### Recipe 3: Model/Provider/Gateway Cost Breakdown
 ```bash
+# Full breakdown by model, provider, and gateway
 langsmith-cli --json runs usage \
   --from-cache \
   --project-name-pattern "prd/*" \
-  --breakdown model --breakdown project \
-  --last 7d
+  --breakdown model --breakdown provider --breakdown gateway \
+  --active-only --last 7d
 ```
 
-### Recipe 4: Find Runs by Metadata and Analyze
+### Recipe 4: Fix Missing Model Pricing
+```bash
+# Step 1: Generate a pricing YAML (auto-fills from LangSmith + OpenRouter)
+langsmith-cli runs pricing --from-cache --project-name-pattern "prd/*" --format yaml > pricing.yaml
+
+# Step 2: Look up missing prices and edit the YAML (see instructions below)
+
+# Step 3: Apply pricing to fill in missing costs
+langsmith-cli --json runs usage \
+  --from-cache \
+  --project-name-pattern "prd/*" \
+  --apply-pricing pricing.yaml \
+  --breakdown provider --active-only
+```
+
+**Step 2 Details — Look up missing prices for models showing `0.0`:**
+
+The `--format yaml` output auto-fills prices from LangSmith data and OpenRouter API. Models still
+showing `0.0` need manual lookup. Use web fetch to get current prices from these provider pricing pages:
+
+| Provider | Pricing URL | Models |
+|----------|------------|--------|
+| Groq | `https://groq.com/pricing` | llama-3.3-70b-versatile, llama-3.1-8b-instant |
+| Cerebras | `https://www.cerebras.ai/pricing` | llama-3.3-70b, gpt-oss-120b, qwen-3-* |
+| Perplexity | `https://docs.perplexity.ai/guides/pricing` | sonar, sonar-pro, sonar-reasoning |
+| OpenRouter | `https://openrouter.ai/models` | qwen/*, meta-llama/* (via OpenRouter gateway) |
+| xAI | `https://docs.x.ai/docs/models` | grok-* |
+
+**How to look up and fill in prices:**
+1. Read the pricing.yaml file to find models with `0.0` pricing
+2. For each missing model, fetch the provider's pricing page using the URLs above
+3. Find the input/output price per 1M tokens on the page
+4. Edit the YAML file to set `input_per_million` and `output_per_million`
+
+Example: if Perplexity Sonar costs $1.00/1M input and $1.00/1M output:
+```yaml
+sonar:
+  input_per_million: 1.0
+  output_per_million: 1.0
+```
+
+**Important notes:**
+- OpenRouter prices differ from original provider prices (OpenRouter adds its own margin or uses different tiers)
+- Groq/Cerebras have free tiers — the $0 cost may be correct if the org uses free tier
+- Always verify prices on the provider's official pricing page, not third-party aggregators
+
+### Recipe 5: Find Runs by Metadata and Analyze
 ```bash
 # Filter by metadata when listing runs
 langsmith-cli --json runs list \
@@ -671,6 +725,10 @@ This makes `--metadata` filters work even when data is stored as tags instead of
 | `--group-by metadata:<field>` | `runs usage`, `runs analyze` | Group results by a metadata or tag field |
 | `--breakdown model` | `runs usage` | Add model dimension to aggregation |
 | `--breakdown project` | `runs usage` | Add project dimension to aggregation |
+| `--breakdown provider` | `runs usage` | Add provider dimension (Google, OpenAI, Meta, etc.) |
+| `--breakdown gateway` | `runs usage` | Add gateway dimension (groq, cerebras, openai, google_genai, etc.) |
+| `--apply-pricing <file>` | `runs usage` | YAML pricing file to fill missing costs (generate with `runs pricing --format yaml`) |
+| `--format yaml` | `runs pricing` | Output pricing as YAML file for `--apply-pricing` |
 | `--interval hour\|day` | `runs usage` | Time bucket size for distribution |
 | `--active-only` | `runs usage` | Only show time buckets with activity |
 | `--grep <pattern>` | `runs list`, `runs usage` | Client-side content/metadata search |
