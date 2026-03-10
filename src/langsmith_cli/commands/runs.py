@@ -3254,7 +3254,7 @@ def cache_group():
     "--workers",
     type=int,
     default=None,
-    help="Number of parallel workers (default: min(8, num_projects)).",
+    help="Number of parallel workers (default: min(4, num_projects)).",
 )
 @click.pass_context
 def cache_download(
@@ -3321,7 +3321,7 @@ def cache_download(
 
     project_names = pq.names if not pq.use_id else [f"id:{pq.project_id}"]
     num_projects = len(project_names)
-    num_workers = workers if workers else min(8, num_projects)
+    num_workers = workers if workers else min(4, num_projects)
 
     # Build filters
     time_filters = build_time_fql_filters(since=since, last=last, before=before)
