@@ -799,3 +799,29 @@ class TestCacheGrepCommand:
         result = runner.invoke(cli, ["runs", "cache", "grep", "hello"])
         assert result.exit_code == 0
         assert "No cached" in result.output
+
+    def test_grep_json_empty_array_when_no_projects(
+        self, runner, mock_client, tmp_path, monkeypatch
+    ):
+        """INVARIANT: --json outputs empty array when no cached projects exist."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+
+        result = runner.invoke(cli, ["--json", "runs", "cache", "grep", "hello"])
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip().split("\n")[-1])
+        assert data == []
+
+    def test_grep_json_empty_array_when_no_runs(
+        self, runner, mock_client, tmp_path, monkeypatch
+    ):
+        """INVARIANT: --json outputs empty array when cache has no runs."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+        (tmp_path / "test-proj").mkdir()
+
+        result = runner.invoke(
+            cli,
+            ["--json", "runs", "cache", "grep", "hello", "--project", "test-proj"],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip().split("\n")[-1])
+        assert data == []

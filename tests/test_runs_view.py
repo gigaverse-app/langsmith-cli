@@ -289,3 +289,28 @@ class TestUnicodePreservation:
         assert data[0]["name"] == "תופים זה החיים"
         assert data[0]["inputs"]["stream_title"] == "תוכנית תופים"
         assert "\\u05" not in result.output
+
+
+class TestViewFileEmptyJsonOutput:
+    """Tests for view-file JSON output when no runs match."""
+
+    def test_json_output_empty_array_when_no_valid_runs(self, runner, tmp_path):
+        """INVARIANT: --json outputs empty array [] when no valid runs found in files."""
+        # Create a file with invalid content
+        bad_file = tmp_path / "bad.jsonl"
+        bad_file.write_text("not valid json\n")
+
+        result = runner.invoke(cli, ["--json", "runs", "view-file", str(bad_file)])
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip().split("\n")[-1])
+        assert data == []
+
+    def test_json_output_empty_array_when_file_empty(self, runner, tmp_path):
+        """INVARIANT: --json outputs empty array [] for empty files."""
+        empty_file = tmp_path / "empty.jsonl"
+        empty_file.write_text("")
+
+        result = runner.invoke(cli, ["--json", "runs", "view-file", str(empty_file)])
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip().split("\n")[-1])
+        assert data == []

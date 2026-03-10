@@ -1138,6 +1138,8 @@ def view_file(ctx, pattern, no_truncate, fields):
 
     if not runs:
         logger.warning("No valid runs found in files.")
+        if ctx.obj.get("json"):
+            click.echo(json.dumps([]))
         return
 
     # Handle JSON output
@@ -2735,6 +2737,67 @@ def _get_provider(run: Run) -> str:
     return "unknown"
 
 
+def _load_pricing_file(path: str, logger: Any) -> dict[str, dict[str, float]]:
+    """Load model pricing from a YAML file.
+
+    Expected format:
+        llama-3.3-70b-versatile:
+          input_per_million: 0.59
+          output_per_million: 0.79
+        sonar:
+          input_per_million: 1.00
+          output_per_million: 1.00
+
+    Returns dict mapping lowercase model name -> {input_per_million, output_per_million}.
+    """
+    import yaml
+
+    with open(path) as f:
+        raw = yaml.safe_load(f)
+
+    if not isinstance(raw, dict):
+        raise click.ClickException(
+            f"Pricing file must be a YAML dict, got {type(raw).__name__}"
+        )
+
+    table: dict[str, dict[str, float]] = {}
+    for model_name, prices in raw.items():
+        if not isinstance(prices, dict):
+            logger.warning(f"Skipping invalid pricing entry for {model_name}")
+            continue
+        table[str(model_name).lower()] = {
+            "input_per_million": float(prices.get("input_per_million", 0.0)),
+            "output_per_million": float(prices.get("output_per_million", 0.0)),
+        }
+
+    logger.info(f"Loaded pricing for {len(table)} models from {path}")
+    return table
+
+
+def _estimate_run_cost(
+    run: Run,
+    pricing_table: dict[str, dict[str, float]],
+) -> tuple[float, float] | None:
+    """Estimate prompt/completion cost using an external pricing table.
+
+    Returns (prompt_cost, completion_cost) or None if no pricing found.
+    Only applies when the run has tokens but zero cost from LangSmith.
+    """
+    model = _get_model_name(run).lower()
+    pricing = pricing_table.get(model)
+    if pricing is None:
+        return None
+
+    input_per_m = pricing.get("input_per_million", 0.0)
+    output_per_m = pricing.get("output_per_million", 0.0)
+    prompt_tokens = run.prompt_tokens or 0
+    completion_tokens = run.completion_tokens or 0
+
+    prompt_cost = prompt_tokens * input_per_m / 1_000_000
+    completion_cost = completion_tokens * output_per_m / 1_000_000
+    return (prompt_cost, completion_cost)
+
+
 def _extract_input_context(run: Run) -> dict[str, str]:
     """Extract structured context from run inputs.
 
@@ -2891,6 +2954,12 @@ def _truncate_hour(dt: Any) -> str:
     help="Read runs from local cache instead of API. Use 'runs cache download' first.",
 )
 @click.option(
+    "--apply-pricing",
+    type=click.Path(exists=True),
+    help="YAML file with model pricing ($/1M tokens) to fill in missing costs. "
+    "Use 'runs pricing --from-cache --format yaml' to generate a template.",
+)
+@click.option(
     "--format",
     "output_format",
     type=click.Choice(["table", "json", "csv", "yaml"]),
@@ -2921,6 +2990,7 @@ def usage_runs(
     metadata_filters: tuple[str, ...],
     additional_filter: str | None,
     from_cache: bool,
+    apply_pricing: str | None,
     output_format: str | None,
 ) -> None:
     """Analyze token usage over time with flexible grouping and breakdowns.
@@ -3222,6 +3292,11 @@ def usage_runs(
         }
     )
 
+    # Load external pricing table if provided
+    pricing_table: dict[str, dict[str, float]] = {}
+    if apply_pricing:
+        pricing_table = _load_pricing_file(apply_pricing, logger)
+
     for run in model_runs:
         time_key = _bucket_key(run)
 
@@ -3260,15 +3335,20 @@ def usage_runs(
         bucket["completion_tokens"] = int(bucket["completion_tokens"]) + (
             run.completion_tokens or 0
         )
-        bucket["total_cost"] = float(bucket["total_cost"]) + float(
-            run.total_cost or 0.0
-        )
-        bucket["prompt_cost"] = float(bucket["prompt_cost"]) + float(
-            run.prompt_cost or 0.0
-        )
-        bucket["completion_cost"] = float(bucket["completion_cost"]) + float(
-            run.completion_cost or 0.0
-        )
+        run_total = float(run.total_cost or 0.0)
+        run_prompt = float(run.prompt_cost or 0.0)
+        run_completion = float(run.completion_cost or 0.0)
+
+        # Estimate costs for runs with tokens but no pricing from LangSmith
+        if pricing_table and run_total == 0.0 and (run.total_tokens or 0) > 0:
+            estimated = _estimate_run_cost(run, pricing_table)
+            if estimated is not None:
+                run_prompt, run_completion = estimated
+                run_total = run_prompt + run_completion
+
+        bucket["total_cost"] = float(bucket["total_cost"]) + run_total
+        bucket["prompt_cost"] = float(bucket["prompt_cost"]) + run_prompt
+        bucket["completion_cost"] = float(bucket["completion_cost"]) + run_completion
         bucket["run_count"] = int(bucket["run_count"]) + 1
 
     # Build results list
@@ -3865,6 +3945,8 @@ def cache_grep(
 
     if not project_names:
         logger.warning("No cached projects. Run 'runs cache download' first.")
+        if ctx.obj.get("json"):
+            click.echo(json.dumps([]))
         return
 
     # Parse time filters
@@ -3875,6 +3957,8 @@ def cache_grep(
 
     if not result.items:
         logger.warning("No cached runs found.")
+        if ctx.obj.get("json"):
+            click.echo(json.dumps([]))
         return
 
     # Parse grep-in fields
@@ -3938,6 +4022,12 @@ def cache_grep(
     default=True,
     help="Look up missing prices from OpenRouter API (default: enabled).",
 )
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["table", "yaml"]),
+    help="Output format. Use 'yaml' to generate a pricing file for --apply-pricing.",
+)
 @click.pass_context
 def pricing_check(
     ctx: click.Context,
@@ -3953,6 +4043,7 @@ def pricing_check(
     tag: tuple[str, ...],
     from_cache: bool,
     lookup: bool,
+    output_format: str | None,
 ) -> None:
     """Check model pricing coverage and look up missing prices.
 
@@ -4047,7 +4138,15 @@ def pricing_check(
 
     # Aggregate by model
     model_stats: dict[str, dict[str, int | float]] = defaultdict(
-        lambda: {"runs": 0, "tokens": 0, "cost": 0.0}
+        lambda: {
+            "runs": 0,
+            "tokens": 0,
+            "cost": 0.0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "prompt_cost": 0.0,
+            "completion_cost": 0.0,
+        }
     )
     for r in all_runs:
         model = _get_model_name(r)
@@ -4056,9 +4155,15 @@ def pricing_check(
         model_stats[model]["runs"] += 1
         model_stats[model]["tokens"] += r.total_tokens or 0
         model_stats[model]["cost"] += float(r.total_cost or 0.0)
+        model_stats[model]["prompt_tokens"] += r.prompt_tokens or 0
+        model_stats[model]["completion_tokens"] += r.completion_tokens or 0
+        model_stats[model]["prompt_cost"] += float(r.prompt_cost or 0.0)
+        model_stats[model]["completion_cost"] += float(r.completion_cost or 0.0)
 
     if not model_stats:
         logger.warning("No LLM runs with model info found.")
+        if is_json:
+            click.echo(json_dumps({"models": []}))
         return
 
     # Identify missing pricing (has tokens but no cost)
@@ -4072,6 +4177,42 @@ def pricing_check(
     openrouter_prices: dict[str, dict[str, float]] = {}
     if lookup and missing_models:
         openrouter_prices = _fetch_openrouter_pricing(missing_models, logger)
+
+    # YAML output: generate a pricing file for use with --apply-pricing
+    if output_format == "yaml":
+        import yaml
+
+        pricing_data: dict[str, dict[str, float]] = {}
+        for name in sorted(model_stats.keys()):
+            stats = model_stats[name]
+            has_pricing = stats["cost"] > 0 or stats["tokens"] == 0
+            if has_pricing:
+                # Compute actual $/1M from per-token costs
+                pt = int(stats["prompt_tokens"])
+                ct = int(stats["completion_tokens"])
+                pc = float(stats["prompt_cost"])
+                cc = float(stats["completion_cost"])
+                pricing_data[name] = {
+                    "input_per_million": round(pc / pt * 1_000_000, 4)
+                    if pt > 0
+                    else 0.0,
+                    "output_per_million": round(cc / ct * 1_000_000, 4)
+                    if ct > 0
+                    else 0.0,
+                }
+            elif name in openrouter_prices:
+                p = openrouter_prices[name]
+                pricing_data[name] = {
+                    "input_per_million": p["input_per_million"],
+                    "output_per_million": p["output_per_million"],
+                }
+            else:
+                pricing_data[name] = {
+                    "input_per_million": 0.0,
+                    "output_per_million": 0.0,
+                }
+        click.echo(yaml.dump(pricing_data, default_flow_style=False, sort_keys=True))
+        return
 
     # Output
     if is_json:

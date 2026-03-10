@@ -339,3 +339,36 @@ class TestPricingTagFiltering:
         assert len(models) == 1
         assert models[0]["runs"] == 1
         assert models[0]["total_tokens"] == 1000
+
+
+class TestPricingEmptyJsonOutput:
+    """Tests for pricing command JSON output when no data matches."""
+
+    def test_json_output_has_models_when_no_llm_runs(
+        self, runner, tmp_path, monkeypatch
+    ):
+        """INVARIANT: --json always outputs parseable JSON with 'models' key, even when empty."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+        from langsmith_cli.cache import append_runs_to_cache
+
+        chain_run = create_run(name="chain", run_type="chain")
+        append_runs_to_cache("test-proj", [chain_run])
+
+        with patch("langsmith.Client"):
+            result = runner.invoke(
+                cli,
+                [
+                    "--json",
+                    "runs",
+                    "pricing",
+                    "--project",
+                    "test-proj",
+                    "--from-cache",
+                    "--no-lookup",
+                ],
+            )
+
+        assert result.exit_code == 0
+        data = _extract_json(result.output)
+        assert "models" in data
+        assert data["models"] == []
