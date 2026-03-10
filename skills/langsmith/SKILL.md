@@ -540,6 +540,104 @@ langsmith-cli runs list --filter 'eq(name, "extractor")' --trace-filter 'and(eq(
 - `has(tags, "value")` - Tag contains value
 - `search("text")` - Full-text search in run data
 
+## IMPORTANT: Never Write Inline Python Scripts for Analysis
+
+**The CLI has built-in commands for cost analysis, token aggregation, time distribution, and metadata filtering. NEVER write inline Python scripts to read JSONL cache files or compute aggregations manually.**
+
+If you find yourself about to write a Python script that:
+- Reads `.jsonl` files from the cache directory → Use `--from-cache` flag instead
+- Loops over runs and sums tokens/costs → Use `runs usage` instead
+- Groups by metadata/model/project → Use `--group-by` and `--breakdown` instead
+- Computes hourly/daily distributions → Use `--interval hour|day` instead
+- Filters by metadata values → Use `--metadata key=value` instead
+- Filters by content substring → Use `--grep` instead
+
+**STOP and use the CLI commands below instead.**
+
+## Cost & Token Analysis Recipes
+
+### Recipe 1: Analyze Cost for a Specific Event/Channel
+```bash
+# Step 1: Ensure cache is fresh
+langsmith-cli runs cache download --project-name-pattern "prd/*" --last 7d
+
+# Step 2: Analyze token usage and cost, grouped by channel, broken down by model
+langsmith-cli --json runs usage \
+  --from-cache \
+  --project-name-pattern "prd/*" \
+  --metadata channel_id=chat:MyChannel-abc123 \
+  --breakdown model --breakdown project \
+  --interval hour
+
+# Step 3: For a specific time window
+langsmith-cli --json runs usage \
+  --from-cache \
+  --project-name-pattern "prd/*" \
+  --metadata channel_id=chat:MyChannel-abc123 \
+  --since "2026-02-19T14:00:00Z" --before "2026-02-19T20:30:00Z" \
+  --breakdown model \
+  --interval hour
+```
+
+### Recipe 2: Hourly Activity Distribution
+```bash
+# Get hourly run counts and costs (perfect for spotting broadcast windows)
+langsmith-cli --json runs usage \
+  --from-cache \
+  --project-name-pattern "prd/*" \
+  --interval hour \
+  --active-only \
+  --last 3d
+```
+
+### Recipe 3: Model Cost Breakdown Across Projects
+```bash
+langsmith-cli --json runs usage \
+  --from-cache \
+  --project-name-pattern "prd/*" \
+  --breakdown model --breakdown project \
+  --last 7d
+```
+
+### Recipe 4: Find Runs by Metadata and Analyze
+```bash
+# Filter by metadata when listing runs
+langsmith-cli --json runs list \
+  --project-name-pattern "prd/*" \
+  --grep "Middle_East_Natives" \
+  --fields id,name,total_tokens,total_cost \
+  --limit 50
+
+# Or filter in usage analysis
+langsmith-cli --json runs usage \
+  --from-cache \
+  --metadata community_name=Middle_East_Natives \
+  --breakdown model
+```
+
+### Recipe 5: Aggregate Metrics by Tag/Metadata Group
+```bash
+# Group by a tag dimension and compute metrics
+langsmith-cli --json runs analyze \
+  --project my-project \
+  --group-by tag:length_category \
+  --metrics count,error_rate,p95_latency,total_tokens,avg_cost \
+  --since "2026-02-17" --before "2026-02-20"
+```
+
+## Key Flags for Offline Analysis
+
+| Flag | Where | What It Does |
+|------|-------|--------------|
+| `--from-cache` | `runs usage`, `runs pricing` | Read from local JSONL cache (fast, offline, no API calls) |
+| `--metadata key=value` | `runs usage` | Filter runs by metadata field (repeatable) |
+| `--group-by metadata:<field>` | `runs usage`, `runs analyze` | Group results by a metadata or tag field |
+| `--breakdown model` | `runs usage` | Add model dimension to aggregation |
+| `--breakdown project` | `runs usage` | Add project dimension to aggregation |
+| `--interval hour\|day` | `runs usage` | Time bucket size for distribution |
+| `--active-only` | `runs usage` | Only show time buckets with activity |
+| `--grep <pattern>` | `runs list` | Client-side content/metadata search |
+
 ## Additional Resources
 
 For complete documentation, see:
