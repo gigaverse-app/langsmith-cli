@@ -867,13 +867,15 @@ def build_runs_table(runs: list["Run"], title: str, no_truncate: bool = False) -
     from rich.table import Table
 
     table = Table(title=title)
-    table.add_column("ID", style="dim", no_wrap=True)
+    table.add_column("ID", style="dim")
     # Conditionally apply max_width based on no_truncate flag
-    table.add_column("Name", max_width=None if no_truncate else 30)
+    table.add_column("Name", max_width=None if no_truncate else 30, overflow="fold")
     table.add_column("Status", justify="center")
     table.add_column("Latency", justify="right")
     table.add_column("Tokens", justify="right")
-    table.add_column("Model", style="cyan", max_width=None if no_truncate else 20)
+    table.add_column(
+        "Model", style="cyan", max_width=None if no_truncate else 20, overflow="fold"
+    )
 
     for r in runs:
         # Access SDK model fields directly (type-safe)
@@ -1281,6 +1283,41 @@ def _looks_like_uuid(value: str) -> bool:
             value,
         )
     )
+
+
+def resolve_by_name_or_id(
+    name_or_id: str,
+    *,
+    read_by_name: Callable[[str], T],
+    read_by_id: Callable[[str], T],
+    entity_name: str,
+) -> T:
+    """Generic resolver for entities that can be looked up by name or UUID.
+
+    Tries name first (unless input looks like a UUID), then falls back.
+    Raises click.ClickException if neither resolves.
+
+    Args:
+        name_or_id: User-provided name or UUID string
+        read_by_name: Callable that reads entity by name
+        read_by_id: Callable that reads entity by ID
+        entity_name: Human-readable entity name for error messages (e.g., "Project")
+    """
+    from langsmith.utils import LangSmithError, LangSmithNotFoundError
+
+    if _looks_like_uuid(name_or_id):
+        try:
+            return read_by_id(name_or_id)
+        except (LangSmithNotFoundError, LangSmithError, ValueError):
+            raise click.ClickException(f"{entity_name} '{name_or_id}' not found.")
+
+    try:
+        return read_by_name(name_or_id)
+    except LangSmithNotFoundError:
+        try:
+            return read_by_id(name_or_id)
+        except (LangSmithNotFoundError, LangSmithError, ValueError):
+            raise click.ClickException(f"{entity_name} '{name_or_id}' not found.")
 
 
 def get_project_suggestions(

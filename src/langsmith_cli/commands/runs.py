@@ -2511,7 +2511,7 @@ def _field_analysis_common(
 
     if show_detailed_stats:
         table = Table(title=f"Field Statistics ({len(discovery.runs)} runs analyzed)")
-        table.add_column("Field Path", style="cyan", no_wrap=True)
+        table.add_column("Field Path", style="cyan")
         table.add_column("Type", style="dim")
         table.add_column("Present", justify="right")
         table.add_column("Length/Numeric Stats")
@@ -2520,11 +2520,11 @@ def _field_analysis_common(
             table.add_row(*render_describe_row(stats))
     else:
         table = Table(title=f"Fields ({len(discovery.runs)} runs analyzed)")
-        table.add_column("Field Path", style="cyan", no_wrap=True)
+        table.add_column("Field Path", style="cyan")
         table.add_column("Type", style="dim")
         table.add_column("Present", justify="right")
         table.add_column("Languages")
-        table.add_column("Sample", max_width=40)
+        table.add_column("Sample", max_width=40, overflow="fold")
         for stats in stats_list:
             table.add_row(*render_fields_row(stats))
 
