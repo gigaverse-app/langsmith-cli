@@ -4,7 +4,7 @@ from langsmith.schemas import TracerSessionResult
 from rich.console import Console
 from rich.table import Table
 from langsmith_cli.utils import (
-    _looks_like_uuid,
+    resolve_by_name_or_id,
     sort_items,
     apply_regex_filter,
     apply_wildcard_filter,
@@ -34,32 +34,17 @@ def resolve_project(
     *,
     include_stats: bool = False,
 ) -> TracerSessionResult:
-    """Resolve a project by name or UUID, with smart UUID auto-detection.
-
-    Tries name first (unless input looks like a UUID), then falls back.
-    Raises click.ClickException if neither resolves.
-    """
-    from langsmith.utils import LangSmithError, LangSmithNotFoundError
-
-    # Optimization: if it looks like a UUID, try by ID first
-    if _looks_like_uuid(name_or_id):
-        try:
-            return client.read_project(
-                project_id=name_or_id, include_stats=include_stats
-            )
-        except (LangSmithNotFoundError, LangSmithError, ValueError):
-            raise click.ClickException(f"Project '{name_or_id}' not found.")
-
-    # Otherwise, try name first, fall back to ID
-    try:
-        return client.read_project(project_name=name_or_id, include_stats=include_stats)
-    except LangSmithNotFoundError:
-        try:
-            return client.read_project(
-                project_id=name_or_id, include_stats=include_stats
-            )
-        except (LangSmithNotFoundError, LangSmithError, ValueError):
-            raise click.ClickException(f"Project '{name_or_id}' not found.")
+    """Resolve a project by name or UUID, with smart UUID auto-detection."""
+    return resolve_by_name_or_id(
+        name_or_id,
+        read_by_name=lambda n: client.read_project(
+            project_name=n, include_stats=include_stats
+        ),
+        read_by_id=lambda i: client.read_project(
+            project_id=i, include_stats=include_stats
+        ),
+        entity_name="Project",
+    )
 
 
 @click.group()

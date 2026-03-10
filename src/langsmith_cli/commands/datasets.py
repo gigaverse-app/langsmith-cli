@@ -6,7 +6,7 @@ from langsmith.schemas import Dataset
 from rich.console import Console
 from rich.table import Table
 from langsmith_cli.utils import (
-    _looks_like_uuid,
+    resolve_by_name_or_id,
     apply_exclude_filter,
     count_option,
     exclude_option,
@@ -252,28 +252,13 @@ def resolve_dataset(
     client: langsmith.Client,
     name_or_id: str,
 ) -> Dataset:
-    """Resolve a dataset by name or UUID, with smart UUID auto-detection.
-
-    Tries name first (unless input looks like a UUID), then falls back.
-    Raises click.ClickException if neither resolves.
-    """
-    from langsmith.utils import LangSmithError, LangSmithNotFoundError
-
-    # Optimization: if it looks like a UUID, try by ID first
-    if _looks_like_uuid(name_or_id):
-        try:
-            return client.read_dataset(dataset_id=name_or_id)
-        except (LangSmithNotFoundError, LangSmithError, ValueError):
-            raise click.ClickException(f"Dataset '{name_or_id}' not found.")
-
-    # Otherwise, try name first, fall back to ID
-    try:
-        return client.read_dataset(dataset_name=name_or_id)
-    except LangSmithNotFoundError:
-        try:
-            return client.read_dataset(dataset_id=name_or_id)
-        except (LangSmithNotFoundError, LangSmithError, ValueError):
-            raise click.ClickException(f"Dataset '{name_or_id}' not found.")
+    """Resolve a dataset by name or UUID, with smart UUID auto-detection."""
+    return resolve_by_name_or_id(
+        name_or_id,
+        read_by_name=lambda n: client.read_dataset(dataset_name=n),
+        read_by_id=lambda i: client.read_dataset(dataset_id=i),
+        entity_name="Dataset",
+    )
 
 
 @datasets.command("delete")

@@ -1723,6 +1723,84 @@ class TestRaiseIfAllFailedWithSuggestionsWrapper:
         )
 
 
+class TestResolveByNameOrId:
+    """Tests for resolve_by_name_or_id generic resolver."""
+
+    def test_resolves_by_name(self):
+        from langsmith_cli.utils import resolve_by_name_or_id
+
+        result = resolve_by_name_or_id(
+            "my-project",
+            read_by_name=lambda n: f"found-by-name:{n}",
+            read_by_id=lambda i: f"found-by-id:{i}",
+            entity_name="Project",
+        )
+        assert result == "found-by-name:my-project"
+
+    def test_resolves_uuid_by_id_first(self):
+        from langsmith_cli.utils import resolve_by_name_or_id
+
+        uuid_str = "12345678-1234-5678-1234-567812345678"
+        result = resolve_by_name_or_id(
+            uuid_str,
+            read_by_name=lambda n: f"found-by-name:{n}",
+            read_by_id=lambda i: f"found-by-id:{i}",
+            entity_name="Project",
+        )
+        assert result == f"found-by-id:{uuid_str}"
+
+    def test_falls_back_from_name_to_id(self):
+        from langsmith.utils import LangSmithNotFoundError
+
+        from langsmith_cli.utils import resolve_by_name_or_id
+
+        def read_by_name(n: str) -> str:
+            raise LangSmithNotFoundError("not found")
+
+        result = resolve_by_name_or_id(
+            "ambiguous-input",
+            read_by_name=read_by_name,
+            read_by_id=lambda i: f"found-by-id:{i}",
+            entity_name="Dataset",
+        )
+        assert result == "found-by-id:ambiguous-input"
+
+    def test_raises_click_exception_when_not_found(self):
+        from langsmith.utils import LangSmithNotFoundError
+
+        from langsmith_cli.utils import resolve_by_name_or_id
+
+        def read_by_name(n: str) -> str:
+            raise LangSmithNotFoundError("not found")
+
+        def read_by_id(i: str) -> str:
+            raise LangSmithNotFoundError("not found")
+
+        with pytest.raises(click.ClickException, match="Thing 'missing' not found"):
+            resolve_by_name_or_id(
+                "missing",
+                read_by_name=read_by_name,
+                read_by_id=read_by_id,
+                entity_name="Thing",
+            )
+
+    def test_raises_click_exception_for_uuid_not_found(self):
+        from langsmith.utils import LangSmithNotFoundError
+
+        from langsmith_cli.utils import resolve_by_name_or_id
+
+        uuid_str = "12345678-1234-5678-1234-567812345678"
+        with pytest.raises(click.ClickException, match="Project .* not found"):
+            resolve_by_name_or_id(
+                uuid_str,
+                read_by_name=lambda n: "should not be called",
+                read_by_id=lambda i: (_ for _ in ()).throw(
+                    LangSmithNotFoundError("not found")
+                ),
+                entity_name="Project",
+            )
+
+
 class TestBuildTagFqlFilters:
     """Tests for build_tag_fql_filters helper."""
 
