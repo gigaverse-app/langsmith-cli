@@ -122,7 +122,13 @@ main.py (entry point)
 │   ├── metadata-keys
 │   ├── fields
 │   ├── describe
-│   └── view-file
+│   ├── view-file
+│   ├── usage
+│   ├── pricing
+│   └── cache (group)
+│       ├── download
+│       ├── list
+│       └── clear
 ├── datasets (group)
 │   ├── list
 │   ├── get

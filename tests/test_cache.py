@@ -1,5 +1,6 @@
 """Tests for the cache module and cache commands."""
 
+import json
 from datetime import datetime, timezone
 from decimal import Decimal
 from uuid import UUID
@@ -9,13 +10,16 @@ from langsmith.schemas import Run
 from conftest import make_run_id, strip_ansi
 from langsmith_cli.cache import (
     CacheMetadata,
+    append_runs_streaming,
     append_runs_to_cache,
     clear_cache,
+    get_existing_run_ids,
     list_cached_projects,
     load_runs_from_cache,
     read_cache_metadata,
     read_cached_runs,
     sanitize_project_name,
+    strip_binary_data,
     write_cache_metadata,
 )
 from langsmith_cli.main import cli
@@ -273,3 +277,320 @@ class TestCacheCommands:
         projects = list_cached_projects()
         assert len(projects) == 1
         assert projects[0].project_name == "proj-b"
+
+    def test_cache_download_parallel_multiple_projects(
+        self, runner, mock_client, tmp_path, monkeypatch
+    ):
+        """Download fetches multiple projects in parallel."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+
+        # Mock list_runs to return different runs per project
+        def fake_list_runs(project_name: str = "", **kwargs: object) -> list[Run]:
+            if "proj-a" in project_name:
+                return [_make_run(1), _make_run(2)]
+            elif "proj-b" in project_name:
+                return [_make_run(3), _make_run(4)]
+            return []
+
+        mock_client.list_runs.side_effect = fake_list_runs
+        mock_client.list_projects.return_value = []
+
+        result = runner.invoke(
+            cli,
+            [
+                "runs",
+                "cache",
+                "download",
+                "--project-name-exact",
+                "proj-a",
+                "--last",
+                "24h",
+                "--workers",
+                "2",
+            ],
+        )
+
+        assert result.exit_code == 0
+        output = strip_ansi(result.output).lower()
+        assert "new runs" in output or "done" in output or "cached" in output
+
+    def test_cache_download_json_mode(self, runner, mock_client, tmp_path, monkeypatch):
+        """Download in JSON mode emits structured progress."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+
+        runs = [_make_run(1), _make_run(2)]
+        mock_client.list_runs.return_value = runs
+
+        result = runner.invoke(
+            cli,
+            ["--json", "runs", "cache", "download", "--last", "24h"],
+        )
+
+        assert result.exit_code == 0
+        # stdout should contain the final JSON summary line
+        # (progress events go to stderr which CliRunner mixes in)
+        output = result.output.strip()
+        lines = output.splitlines()
+        # Find the download_complete event
+        found = False
+        for line in lines:
+            try:
+                data = json.loads(line)
+                if data.get("event") == "download_complete":
+                    assert "total_new_runs" in data
+                    assert "results" in data
+                    found = True
+                    break
+            except (json.JSONDecodeError, TypeError):
+                continue
+        assert found, f"No download_complete event found in output: {output}"
+
+    def test_cache_download_incremental_skips_existing(
+        self, runner, mock_client, tmp_path, monkeypatch
+    ):
+        """Incremental download adds gt(start_time) filter for cached projects."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+
+        # Pre-populate cache using --project (avoids list_projects API call)
+        append_runs_to_cache("default", [_make_run(1), _make_run(2)])
+
+        # Return new runs for incremental
+        mock_client.list_runs.return_value = [_make_run(3)]
+
+        result = runner.invoke(
+            cli,
+            ["runs", "cache", "download"],
+        )
+
+        assert result.exit_code == 0
+        # Verify incremental filter was used
+        call_kwargs = mock_client.list_runs.call_args
+        fql_filter = call_kwargs.kwargs.get("filter", None)
+        if fql_filter is None and call_kwargs.args:
+            fql_filter = call_kwargs.args[0] if call_kwargs.args else None
+        assert fql_filter is not None, (
+            f"Expected gt(start_time) filter, got call_args: {call_kwargs}"
+        )
+        assert "gt(start_time" in fql_filter
+
+    def test_cache_download_full_clears_first(
+        self, runner, mock_client, tmp_path, monkeypatch
+    ):
+        """--full flag clears existing cache before downloading."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+
+        # Pre-populate cache
+        append_runs_to_cache("default", [_make_run(1)])
+
+        # Return fresh runs
+        mock_client.list_runs.return_value = [_make_run(2)]
+
+        result = runner.invoke(
+            cli,
+            [
+                "runs",
+                "cache",
+                "download",
+                "--full",
+                "--last",
+                "24h",
+            ],
+        )
+
+        assert result.exit_code == 0
+        # Should only have the new run, not the old one
+        cached = read_cached_runs("default")
+        assert len(cached) == 1
+        assert cached[0].name == "run-2"
+
+    def test_cache_download_workers_option(
+        self, runner, mock_client, tmp_path, monkeypatch
+    ):
+        """--workers option controls parallelism."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+
+        mock_client.list_runs.return_value = [_make_run(1)]
+
+        result = runner.invoke(
+            cli,
+            [
+                "runs",
+                "cache",
+                "download",
+                "--last",
+                "24h",
+                "--workers",
+                "1",
+            ],
+        )
+
+        assert result.exit_code == 0
+
+
+class TestGetExistingRunIds:
+    def test_returns_ids_from_cache(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+        append_runs_to_cache("test-project", [_make_run(1), _make_run(2)])
+
+        ids = get_existing_run_ids("test-project")
+        assert len(ids) == 2
+        assert make_run_id(1) in ids
+        assert make_run_id(2) in ids
+
+    def test_empty_for_nonexistent(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+        assert get_existing_run_ids("nonexistent") == set()
+
+
+class TestAppendRunsStreaming:
+    def test_streams_and_deduplicates(self, tmp_path, monkeypatch):
+        """Streaming append deduplicates against existing cache."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+
+        # Pre-populate
+        append_runs_to_cache("test-project", [_make_run(1)])
+
+        # Stream in runs including a duplicate
+        new_iter = iter([_make_run(1), _make_run(2), _make_run(3)])
+        meta, count = append_runs_streaming("test-project", new_iter)
+
+        assert count == 2  # run 1 was deduped
+        assert meta.run_count == 3  # 1 existing + 2 new
+
+        cached = read_cached_runs("test-project")
+        assert len(cached) == 3
+
+    def test_calls_progress_callback(self, tmp_path, monkeypatch):
+        """Progress callback is called after each batch flush."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+
+        progress_calls: list[int] = []
+
+        runs = [_make_run(i) for i in range(1, 6)]
+        meta, count = append_runs_streaming(
+            "test-project",
+            iter(runs),
+            on_progress=lambda n: progress_calls.append(n),
+            batch_size=2,
+        )
+
+        assert count == 5
+        # With batch_size=2 and 5 runs: flushes at 2, 4, 5
+        assert progress_calls == [2, 4, 5]
+
+    def test_empty_iterator(self, tmp_path, monkeypatch):
+        """Empty iterator writes nothing."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+
+        meta, count = append_runs_streaming("test-project", iter([]))
+        assert count == 0
+        assert meta.run_count == 0
+
+    def test_pre_loaded_existing_ids(self, tmp_path, monkeypatch):
+        """Can pass pre-loaded IDs to avoid re-reading cache file."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+
+        # Pass a pre-loaded set that marks run-1 as existing
+        existing = {make_run_id(1)}
+        runs = [_make_run(1), _make_run(2)]
+        meta, count = append_runs_streaming(
+            "test-project",
+            iter(runs),
+            existing_ids=existing,
+        )
+
+        assert count == 1  # Only run-2 written
+        cached = read_cached_runs("test-project")
+        assert len(cached) == 1
+        assert cached[0].name == "run-2"
+
+    def test_metadata_time_range_updated(self, tmp_path, monkeypatch):
+        """Metadata tracks min/max start times across streaming batches."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+
+        runs = [
+            _make_run(1, hour=10),
+            _make_run(2, hour=18),
+            _make_run(3, hour=14),
+        ]
+        meta, count = append_runs_streaming("test-project", iter(runs))
+
+        assert count == 3
+        assert meta.oldest_run_start_time == datetime(
+            2026, 3, 9, 10, 0, 0, tzinfo=timezone.utc
+        )
+        assert meta.newest_run_start_time == datetime(
+            2026, 3, 9, 18, 0, 0, tzinfo=timezone.utc
+        )
+
+
+# Tests for strip_binary_data
+
+
+class TestStripBinaryData:
+    """INVARIANT: Large base64 strings are replaced with placeholders,
+    small strings and non-base64 content are preserved unchanged.
+    """
+
+    def test_small_strings_preserved(self):
+        """Strings below threshold are never stripped."""
+        data = {"name": "test-run", "inputs": {"text": "hello world"}}
+        assert strip_binary_data(data) == data
+
+    def test_large_base64_replaced(self):
+        """Large base64 strings are replaced with a placeholder."""
+        big_b64 = "A" * 20_000  # 20KB of valid base64 chars
+        data = {"inputs": {"image": big_b64}}
+        result = strip_binary_data(data)
+        assert result["inputs"]["image"].startswith("[binary:base64:")
+        assert "20000bytes" in result["inputs"]["image"]
+        assert "stored_in_langsmith" in result["inputs"]["image"]
+
+    def test_data_uri_replaced(self):
+        """data: URIs with base64 content are replaced with media type info."""
+        data_uri = "data:video/mp4;base64," + "A" * 20_000
+        data = {"inputs": {"video": data_uri}}
+        result = strip_binary_data(data)
+        assert "video/mp4" in result["inputs"]["video"]
+        assert "stored_in_langsmith" in result["inputs"]["video"]
+
+    def test_large_non_base64_preserved(self):
+        """Large strings that aren't base64 are NOT stripped."""
+        big_text = "Hello world! This is normal text. " * 1000  # ~33KB
+        data = {"inputs": {"text": big_text}}
+        result = strip_binary_data(data)
+        assert result["inputs"]["text"] == big_text
+
+    def test_nested_binary_stripped(self):
+        """Binary data deep in nested structures is stripped."""
+        big_b64 = "AAAA" * 5_000  # 20KB
+        data = {
+            "inputs": {
+                "messages": [
+                    [
+                        {
+                            "kwargs": {
+                                "content": [
+                                    {"type": "text", "data": "hello"},
+                                    {"type": "image", "data": big_b64},
+                                ]
+                            }
+                        }
+                    ]
+                ]
+            }
+        }
+        result = strip_binary_data(data)
+        content = result["inputs"]["messages"][0][0]["kwargs"]["content"]
+        assert content[0]["data"] == "hello"
+        assert content[1]["data"].startswith("[binary:base64:")
+
+    def test_none_and_numbers_preserved(self):
+        """Non-string types pass through unchanged."""
+        data = {"count": 42, "rate": 3.14, "active": True, "error": None}
+        assert strip_binary_data(data) == data
+
+    def test_empty_structures_preserved(self):
+        """Empty dicts and lists pass through."""
+        data = {"inputs": {}, "tags": [], "name": ""}
+        assert strip_binary_data(data) == data

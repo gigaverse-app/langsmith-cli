@@ -1179,12 +1179,14 @@ class TestBuildTimeFqlFilters:
         assert len(result) == 1
         assert result[0].startswith('gt(start_time, "')
 
-    def test_both_filters_create_two_fql(self):
-        """Test that both --since and --last create two FQL filters."""
+    def test_both_filters_create_time_window(self):
+        """Test that both --since and --last create a gt + lt time window."""
         result = build_time_fql_filters(since="7d", last="24h")
         assert len(result) == 2
-        for filter_str in result:
-            assert filter_str.startswith('gt(start_time, "')
+        gt_filters = [f for f in result if f.startswith("gt(")]
+        lt_filters = [f for f in result if f.startswith("lt(")]
+        assert len(gt_filters) == 1
+        assert len(lt_filters) == 1
 
     def test_natural_language_since(self):
         """Test that natural language works in --since."""
@@ -1201,6 +1203,47 @@ class TestBuildTimeFqlFilters:
         """Test that invalid --last raises BadParameter."""
         with pytest.raises(click.BadParameter):
             build_time_fql_filters(last="invalid")
+
+    def test_before_creates_lt_filter(self):
+        """INVARIANT: --before creates an lt(start_time) FQL filter."""
+        result = build_time_fql_filters(before="2025-02-20T00:00:00Z")
+        assert len(result) == 1
+        assert result[0].startswith('lt(start_time, "')
+        assert "2025-02-20" in result[0]
+
+    def test_since_and_before_creates_time_window(self):
+        """INVARIANT: --since + --before creates gt + lt time window."""
+        result = build_time_fql_filters(
+            since="2025-02-17T00:00:00Z", before="2025-02-20T00:00:00Z"
+        )
+        assert len(result) == 2
+        gt_filters = [f for f in result if f.startswith("gt(")]
+        lt_filters = [f for f in result if f.startswith("lt(")]
+        assert len(gt_filters) == 1
+        assert len(lt_filters) == 1
+        assert "2025-02-17" in gt_filters[0]
+        assert "2025-02-20" in lt_filters[0]
+
+    def test_before_and_last_creates_window_backwards(self):
+        """INVARIANT: --before + --last creates a window ending at --before."""
+        result = build_time_fql_filters(before="2025-02-20T00:00:00Z", last="3d")
+        assert len(result) == 2
+        gt_filters = [f for f in result if f.startswith("gt(")]
+        lt_filters = [f for f in result if f.startswith("lt(")]
+        assert len(gt_filters) == 1
+        assert len(lt_filters) == 1
+        assert "2025-02-17" in gt_filters[0]
+        assert "2025-02-20" in lt_filters[0]
+
+    def test_since_before_and_last_raises_error(self):
+        """INVARIANT: --since + --before + --last is ambiguous and raises error."""
+        with pytest.raises(click.BadParameter):
+            build_time_fql_filters(since="2025-02-17", before="2025-02-20", last="3d")
+
+    def test_invalid_before_raises_error(self):
+        """INVARIANT: Invalid --before value raises BadParameter."""
+        with pytest.raises(click.BadParameter):
+            build_time_fql_filters(before="invalid")
 
 
 class TestCombineFqlFilters:

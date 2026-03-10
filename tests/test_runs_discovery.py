@@ -58,13 +58,14 @@ class TestRunsTagsDiscovery:
         assert "No structured tags found" in result.output
 
     def test_tags_discovery_sample_size(self, runner, mock_client):
-        """Tags command respects --sample-size option."""
+        """Tags command respects --sample-size option (capped at API max 100)."""
         mock_client.list_runs.return_value = []
 
         runner.invoke(cli, ["runs", "tags", "--sample-size", "5000"])
 
         _, kwargs = mock_client.list_runs.call_args
-        assert kwargs["limit"] == 5000
+        # 5000 > API max 100, so SDK gets None (cursor pagination + islice handles it)
+        assert kwargs["limit"] is None
 
     def test_order_by_not_passed_to_api(self, runner, mock_client):
         """INVARIANT: order_by must NOT be passed to client.list_runs() — API rejects it with 400."""

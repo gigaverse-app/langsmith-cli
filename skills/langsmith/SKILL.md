@@ -111,6 +111,8 @@ langsmith-cli --json runs list --project my-project --limit 5 2>&1
   - `--project-id <uuid>`: Filter by project UUID (bypasses name resolution, faster).
   - `--limit <n>`: Max results (default 10, keep it small).
   - `--status <success|error>`: Filter by status.
+  - `--since <time>`: Show runs since this time (ISO, relative like `7d`, or `3 days ago`).
+  - `--last <duration>`: Show runs from last duration (e.g., `24h`, `7d`). Combined with `--since`, creates a time window: `--since 2026-02-17 --last 72h` = Feb 17-20.
   - `--filter <string>`: Advanced FQL query string (see FQL examples below).
   - **Content Search Options:**
     - `--query <text>`: Server-side full-text search (fast, but only first ~250 chars indexed).

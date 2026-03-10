@@ -26,25 +26,26 @@ def parse_time_filter(
 ) -> tuple[datetime | None, datetime | None]:
     """Parse time filter options into datetime range for client-side filtering.
 
+    When both --since and --last are provided, they define a time window:
+    --since is the start time, --last is the duration forward from --since.
+
     Returns:
         Tuple of (since_dt, until_dt). Either or both may be None.
     """
-    from datetime import datetime, timezone
-
-    from langsmith_cli.utils import parse_relative_time
+    from langsmith_cli.utils import parse_time_duration, parse_time_input
 
     since_dt: datetime | None = None
     until_dt: datetime | None = None
 
-    if since:
-        try:
-            since_dt = datetime.fromisoformat(since)
-            if since_dt.tzinfo is None:
-                since_dt = since_dt.replace(tzinfo=timezone.utc)
-        except ValueError:
-            since_dt = parse_relative_time(since)
+    if since and last:
+        # Both specified: create a time window (since -> since + duration)
+        since_dt = parse_time_input(since)
+        duration = parse_time_duration(last)
+        until_dt = since_dt + duration
+    elif since:
+        since_dt = parse_time_input(since)
     elif last:
-        since_dt = parse_relative_time(last)
+        since_dt = parse_time_input(last)
 
     return since_dt, until_dt
 
@@ -93,16 +94,23 @@ class TimeFilter(BaseModel):
         """Convert to FQL filter expressions."""
         from datetime import datetime, timedelta, timezone
 
+        from langsmith_cli.utils import parse_time_duration, parse_time_input
+
         filters: list[str] = []
 
-        if self.since:
+        if self.since and self.last:
+            # Both specified: create a time window (since -> since + duration)
+            start_timestamp = parse_time_input(self.since)
+            duration = parse_time_duration(self.last)
+            end_timestamp = start_timestamp + duration
+            filters.append(f'gt(start_time, "{start_timestamp.isoformat()}")')
+            filters.append(f'lt(start_time, "{end_timestamp.isoformat()}")')
+        elif self.since:
             # Parse ISO timestamp or relative time
-            filters.append(f'gt(start_time, "{self.since}")')
+            start_timestamp = parse_time_input(self.since)
+            filters.append(f'gt(start_time, "{start_timestamp.isoformat()}")')
         elif self.last:
-            # Parse "5h", "2d", etc.
-            from langsmith_cli.utils import parse_relative_time
-
-            cutoff = parse_relative_time(self.last)
+            cutoff = parse_time_input(self.last)
             filters.append(f'gt(start_time, "{cutoff.isoformat()}")')
         elif self.recent:
             # Last hour

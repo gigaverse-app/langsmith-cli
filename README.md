@@ -387,6 +387,11 @@ runs metadata-keys     # Discover metadata keys
 runs fields            # Discover field paths and types
 runs describe          # Detailed field statistics
 runs view-file         # View runs from JSONL files
+runs usage             # Token usage analysis with grouping
+runs pricing           # Model pricing coverage check
+runs cache download    # Download runs to local JSONL cache
+runs cache list        # List cached projects
+runs cache clear       # Clear cached data
 datasets list          # List datasets
 datasets create        # Create new dataset
 datasets push          # Bulk upload from JSONL
@@ -423,7 +428,7 @@ self update            # Update to latest version
 | `--min-latency` | Min latency | `--min-latency 2s` |
 | `--max-latency` | Max latency | `--max-latency 10s` |
 | `--since` | Since time | `--since "1 hour ago"` |
-| `--last` | Last duration | `--last 24h` |
+| `--last` | Last duration (or window with --since) | `--last 24h` or `--since 2026-02-17 --last 72h` |
 | `--tag` | Filter by tag (repeatable) | `--tag prod --tag beta` |
 | `--name-pattern` | Wildcard match | `--name-pattern "*auth*"` |
 | `--name-regex` | Regex match | `--name-regex "^prod-.*"` |

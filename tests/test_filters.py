@@ -1,5 +1,6 @@
 """Tests for filter classes in filters.py."""
 
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 import pytest
@@ -13,6 +14,7 @@ from langsmith_cli.filters import (
     StatusFilter,
     TagMetadataFilter,
     TimeFilter,
+    parse_time_filter,
 )
 
 
@@ -76,11 +78,11 @@ class TestTimeFilter:
 
     def test_since_filter(self):
         """Test since filter generates FQL."""
-        timestamp = "2024-01-01T00:00:00Z"
-        f = TimeFilter(since=timestamp)
+        f = TimeFilter(since="2024-01-01T00:00:00Z")
         fql = f.to_fql_filters()
         assert len(fql) == 1
-        assert f'gt(start_time, "{timestamp}")' in fql[0]
+        assert "gt(start_time," in fql[0]
+        assert "2024-01-01" in fql[0]
 
     def test_recent_filter(self):
         """Test recent filter generates FQL for last hour."""
@@ -96,10 +98,67 @@ class TestTimeFilter:
         assert len(fql) == 1
         assert "gt(start_time," in fql[0]
 
+    def test_since_and_last_combined_creates_time_window(self):
+        """When both --since and --last are provided, they define a bounded time window."""
+        f = TimeFilter(since="2026-02-17", last="72h")
+        fql = f.to_fql_filters()
+        assert len(fql) == 2
+        gt_filters = [x for x in fql if x.startswith("gt(")]
+        lt_filters = [x for x in fql if x.startswith("lt(")]
+        assert len(gt_filters) == 1
+        assert len(lt_filters) == 1
+        assert "2026-02-17" in gt_filters[0]
+        assert "2026-02-20" in lt_filters[0]
+
+    def test_last_filter_alone_creates_single_gt(self):
+        """--last alone should produce a single gt() filter."""
+        f = TimeFilter(last="24h")
+        fql = f.to_fql_filters()
+        assert len(fql) == 1
+        assert fql[0].startswith('gt(start_time, "')
+
     def test_no_client_filtering_needed(self):
         """Test that time filtering is server-side only."""
         f = TimeFilter(since="2024-01-01T00:00:00Z")
         assert f.needs_client_filtering() is False
+
+
+class TestParseTimeFilter:
+    """Tests for parse_time_filter function."""
+
+    def test_since_alone_sets_since_dt(self):
+        """--since alone should set since_dt with no until_dt."""
+        since_dt, until_dt = parse_time_filter(since="2026-02-17")
+        assert since_dt is not None
+        assert until_dt is None
+        assert since_dt.year == 2026
+        assert since_dt.month == 2
+        assert since_dt.day == 17
+
+    def test_last_alone_sets_since_dt(self):
+        """--last alone should set since_dt relative to now."""
+        since_dt, until_dt = parse_time_filter(last="24h")
+        assert since_dt is not None
+        assert until_dt is None
+        expected = datetime.now(timezone.utc) - timedelta(hours=24)
+        assert abs((since_dt - expected).total_seconds()) < 5
+
+    def test_since_and_last_combined_creates_window(self):
+        """When both --since and --last are provided, they define a bounded time window."""
+        since_dt, until_dt = parse_time_filter(since="2026-02-17", last="72h")
+        assert since_dt is not None
+        assert until_dt is not None
+        assert since_dt.year == 2026
+        assert since_dt.month == 2
+        assert since_dt.day == 17
+        assert until_dt == since_dt + timedelta(hours=72)
+        assert until_dt.day == 20
+
+    def test_no_args_returns_none(self):
+        """No arguments should return (None, None)."""
+        since_dt, until_dt = parse_time_filter()
+        assert since_dt is None
+        assert until_dt is None
 
 
 class TestLatencyFilter:

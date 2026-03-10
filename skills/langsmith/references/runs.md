@@ -16,6 +16,8 @@ langsmith-cli --json runs list [OPTIONS]
 - `--is-root BOOLEAN` - Filter for root traces only: `true` or `false`
 - `--trace-id UUID` - Get all runs in a specific trace tree
 - `--filter TEXT` - Advanced FQL query (see Filter Query Language section)
+- `--since TEXT` - Show runs since this time (ISO format, relative shorthand like `7d`/`24h`, or natural language like `3 days ago`)
+- `--last TEXT` - Show runs from last duration (e.g., `24h`, `7d`). When combined with `--since`, defines a time window: runs from `--since` to `--since + --last`.
 - `--trace-filter TEXT` - Filter applied to root run of trace
 - `--tree-filter TEXT` - Filter applied to any run in trace tree
 - `--reference-example-id UUID` - Filter runs by reference example ID
@@ -193,3 +195,100 @@ langsmith-cli runs watch [OPTIONS]
 - `--refresh INTEGER` - Refresh interval in seconds (default: 2)
 
 **Behavior:** Shows live table of recent runs with auto-refresh
+
+### `runs usage`
+
+Analyze token usage over time with grouping and breakdowns.
+
+```bash
+langsmith-cli --json runs usage [OPTIONS]
+```
+
+**Options:**
+- `--group-by TEXT` - Group by metadata/tag (e.g., `metadata:channel_id`, `metadata:community_name`)
+- `--breakdown TEXT` - Breakdown by `model` and/or `project` (repeatable)
+- `--interval TEXT` - Time bucket size: `hour` or `day` (default: `hour`)
+- `--active-only` - Only show time buckets with activity
+- `--from-cache` - Use local cache instead of API (fast, offline)
+- `--metadata TEXT` - Filter by metadata key=value (repeatable)
+- `--sample-size INTEGER` - Limit runs per project
+
+**Examples:**
+```bash
+# Token usage breakdown by model over last 7 days
+langsmith-cli --json runs usage --project-name-pattern "prd/*" --last 7d --breakdown model
+
+# Usage from cache, grouped by community
+langsmith-cli runs usage --from-cache --group-by metadata:community_name --breakdown project --interval day
+```
+
+### `runs pricing`
+
+Check model pricing coverage and look up missing prices from OpenRouter.
+
+```bash
+langsmith-cli --json runs pricing [OPTIONS]
+```
+
+**Options:**
+- `--from-cache` - Analyze cached runs (fast)
+- `--no-lookup` - Skip OpenRouter price lookup
+
+**Examples:**
+```bash
+# Check pricing coverage for production services
+langsmith-cli runs pricing --project-name-pattern "prd/*" --from-cache
+
+# JSON output for programmatic use
+langsmith-cli --json runs pricing --project-name-pattern "prd/*" --from-cache
+```
+
+### `runs cache download`
+
+Download runs to local JSONL cache for fast offline analysis.
+
+```bash
+langsmith-cli runs cache download [OPTIONS]
+```
+
+**Options:**
+- `--last TEXT` - Time range (e.g., `7d`, `24h`)
+- `--since TEXT` - Start time (ISO format, relative, or natural language)
+- `--full` - Force full re-download (clear existing cache)
+- `--run-type TEXT` - Filter by run type
+- `--workers INTEGER` - Parallel workers (default: min(8, num_projects))
+- `--filter TEXT` - Additional FQL filter
+
+Binary data (base64-encoded images/videos) is automatically stripped during download, replaced with size-preserving placeholders. This reduces cache size by up to 96% for services with inline media.
+
+**Examples:**
+```bash
+# Cache all prd/* runs from last 7 days
+langsmith-cli runs cache download --project-name-pattern "prd/*" --last 7d
+
+# Full re-download with 4 workers
+langsmith-cli runs cache download --project prd/video_moderation_service --full --workers 4
+
+# Cache only LLM runs
+langsmith-cli runs cache download --project-name-pattern "prd/*" --run-type llm
+```
+
+### `runs cache list`
+
+List cached projects with run counts and file sizes.
+
+```bash
+langsmith-cli runs cache list
+```
+
+### `runs cache clear`
+
+Clear cached data.
+
+```bash
+langsmith-cli runs cache clear [--project TEXT] [--yes]
+```
+
+**Options:**
+- `--project TEXT` - Clear only this project's cache
+- `--yes` - Skip confirmation prompt

@@ -6,6 +6,7 @@ Each project gets its own JSONL file with a metadata sidecar for incremental upd
 
 import json
 import re
+from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -14,6 +15,53 @@ from platformdirs import user_cache_dir
 from pydantic import BaseModel, Field
 
 from langsmith_cli.utils import FetchResult
+
+
+# Threshold for stripping large base64/binary strings from cache.
+# Strings longer than this that look like base64 are replaced with a placeholder.
+_BINARY_STRIP_THRESHOLD = 10_000  # 10KB
+
+# Base64 alphabet: A-Z, a-z, 0-9, +, /, = (padding), and optional whitespace
+_BASE64_CHARS = set(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=\n\r "
+)
+
+
+def _is_likely_base64(s: str) -> bool:
+    """Check if a string is likely base64-encoded binary data."""
+    # Quick check: must be long and start with base64 chars
+    if len(s) < _BINARY_STRIP_THRESHOLD:
+        return False
+    # Check first 200 chars — base64 data is uniform
+    sample = s[:200]
+    return all(c in _BASE64_CHARS for c in sample)
+
+
+def _is_data_uri(s: str) -> bool:
+    """Check if a string is a data: URI with embedded binary."""
+    return s.startswith("data:") and ";base64," in s[:100]
+
+
+def strip_binary_data(
+    obj: dict | list | str | int | float | bool | None,
+) -> dict | list | str | int | float | bool | None:
+    """Recursively strip large base64/binary strings from a JSON-like structure.
+
+    Replaces them with a placeholder that records the original size and type.
+    This reduces cache size dramatically for runs containing inline images/videos.
+    """
+    if isinstance(obj, dict):
+        return {k: strip_binary_data(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [strip_binary_data(item) for item in obj]
+    elif isinstance(obj, str):
+        if _is_data_uri(obj):
+            # Extract media type from data:image/png;base64,...
+            media_type = obj.split(";")[0].replace("data:", "")
+            return f"[binary:{media_type}:{len(obj)}bytes:stored_in_langsmith]"
+        if _is_likely_base64(obj):
+            return f"[binary:base64:{len(obj)}bytes:stored_in_langsmith]"
+    return obj
 
 
 class CacheMetadata(BaseModel):
@@ -98,6 +146,101 @@ def read_cached_runs(
     return runs
 
 
+def get_existing_run_ids(project_name: str) -> set[str]:
+    """Load existing run IDs from the cache file for deduplication.
+
+    Reads only the 'id' field from each JSON line, avoiding full deserialization.
+    """
+    cache_path = get_cache_path(project_name)
+    ids: set[str] = set()
+    if not cache_path.exists():
+        return ids
+    for line in cache_path.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        data = json.loads(line)
+        if "id" in data:
+            ids.add(str(data["id"]))
+    return ids
+
+
+def append_runs_streaming(
+    project_name: str,
+    runs_iter: Iterator[Run],
+    *,
+    existing_ids: set[str] | None = None,
+    on_progress: Callable[[int], None] | None = None,
+    batch_size: int = 100,
+) -> tuple[CacheMetadata, int]:
+    """Stream runs from an iterator into cache, writing in batches.
+
+    Args:
+        project_name: Project name
+        runs_iter: Iterator of Run objects (from SDK list_runs)
+        existing_ids: Pre-loaded set of existing run IDs for dedup.
+            If None, loads from cache file.
+        on_progress: Callback called with cumulative count after each batch write
+        batch_size: Number of runs to buffer before flushing to disk
+
+    Returns:
+        Tuple of (updated CacheMetadata, number of new runs written)
+    """
+    cache_path = get_cache_path(project_name)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if existing_ids is None:
+        existing_ids = get_existing_run_ids(project_name)
+
+    meta = read_cache_metadata(project_name) or CacheMetadata(project_name=project_name)
+
+    total_new = 0
+    batch: list[Run] = []
+    min_time = meta.oldest_run_start_time
+    max_time = meta.newest_run_start_time
+
+    def flush_batch() -> None:
+        nonlocal total_new, min_time, max_time
+        if not batch:
+            return
+        with open(cache_path, "a") as f:
+            for run in batch:
+                data = run.model_dump(mode="json")
+                data = strip_binary_data(data)
+                f.write(json.dumps(data, default=str) + "\n")
+                t = run.start_time
+                if min_time is None or t < min_time:
+                    min_time = t
+                if max_time is None or t > max_time:
+                    max_time = t
+        total_new += len(batch)
+        batch.clear()
+        if on_progress:
+            on_progress(total_new)
+
+    for run in runs_iter:
+        run_id = str(run.id)
+        if run_id in existing_ids:
+            continue
+        existing_ids.add(run_id)
+        batch.append(run)
+        if len(batch) >= batch_size:
+            flush_batch()
+
+    flush_batch()  # Final partial batch
+
+    # Update metadata
+    if min_time:
+        meta.oldest_run_start_time = min_time
+    if max_time:
+        meta.newest_run_start_time = max_time
+    meta.run_count += total_new
+    meta.last_updated = datetime.now(timezone.utc)
+    write_cache_metadata(project_name, meta)
+
+    return meta, total_new
+
+
 def append_runs_to_cache(project_name: str, runs: list[Run]) -> CacheMetadata:
     """Append runs to a project's JSONL cache and update metadata.
 
@@ -130,7 +273,9 @@ def append_runs_to_cache(project_name: str, runs: list[Run]) -> CacheMetadata:
     if new_runs:
         with open(cache_path, "a") as f:
             for run in new_runs:
-                f.write(json.dumps(run.model_dump(mode="json"), default=str) + "\n")
+                data = run.model_dump(mode="json")
+                data = strip_binary_data(data)
+                f.write(json.dumps(data, default=str) + "\n")
 
     # Update metadata
     all_start_times = []

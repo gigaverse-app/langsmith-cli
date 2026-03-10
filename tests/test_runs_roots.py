@@ -103,7 +103,8 @@ def test_runs_list_roots_with_limit_passes_correct_limit(runner):
 
         call_kwargs = mock_client.list_runs.call_args[1]
         assert call_kwargs["is_root"] is True
-        assert call_kwargs["limit"] == 500
+        # 500 > API max 100, so SDK gets None (cursor pagination + islice handles it)
+        assert call_kwargs["limit"] is None
 
 
 def test_runs_list_roots_with_fields_returns_filtered_output(runner):

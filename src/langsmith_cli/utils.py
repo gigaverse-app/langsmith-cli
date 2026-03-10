@@ -1448,6 +1448,52 @@ def parse_relative_time(time_str: str) -> Any:
     return datetime.datetime.now(datetime.timezone.utc) - delta
 
 
+def _parse_duration_str(time_str: str) -> Any:
+    """Try to parse a duration string into a timedelta.
+
+    Supports relative shorthand (24h, 7d, 30m, 2w) and natural language
+    (3 days ago, 1 hour ago, 2 weeks ago).
+
+    Args:
+        time_str: Pre-stripped duration string
+
+    Returns:
+        timedelta if parsed successfully, None otherwise
+    """
+    import datetime
+    import re
+
+    # Try relative shorthand (24h, 7d, 30m)
+    match = re.match(r"^(\d+)(m|h|d|w)$", time_str, re.IGNORECASE)
+    if match:
+        value, unit = int(match.group(1)), match.group(2).lower()
+        if unit == "m":
+            return datetime.timedelta(minutes=value)
+        elif unit == "h":
+            return datetime.timedelta(hours=value)
+        elif unit == "d":
+            return datetime.timedelta(days=value)
+        elif unit == "w":
+            return datetime.timedelta(weeks=value)
+
+    # Try natural language ("3 days ago", "1 hour ago", "2 weeks ago")
+    match = re.match(
+        r"^(\d+)\s*(minute|min|hour|hr|day|week|wk)s?\s*ago$", time_str, re.IGNORECASE
+    )
+    if match:
+        value, unit = int(match.group(1)), match.group(2).lower()
+        if unit in ("minute", "min"):
+            return datetime.timedelta(minutes=value)
+        elif unit in ("hour", "hr"):
+            return datetime.timedelta(hours=value)
+        elif unit == "day":
+            return datetime.timedelta(days=value)
+        elif unit in ("week", "wk"):
+            return datetime.timedelta(weeks=value)
+
+    return None
+
+
 def parse_time_input(time_str: str) -> Any:
     """Parse time input in multiple formats to datetime.
 
@@ -1466,7 +1512,6 @@ def parse_time_input(time_str: str) -> Any:
         click.BadParameter: If format is not recognized
     """
     import datetime
-    import re
 
     time_str = time_str.strip()
 
@@ -1476,38 +1521,9 @@ def parse_time_input(time_str: str) -> Any:
     except ValueError:
         pass
 
-    # Try relative shorthand (24h, 7d, 30m)
-    match = re.match(r"^(\d+)(m|h|d|w)$", time_str, re.IGNORECASE)
-    if match:
-        value, unit = int(match.group(1)), match.group(2).lower()
-        if unit == "m":
-            delta = datetime.timedelta(minutes=value)
-        elif unit == "h":
-            delta = datetime.timedelta(hours=value)
-        elif unit == "d":
-            delta = datetime.timedelta(days=value)
-        elif unit == "w":
-            delta = datetime.timedelta(weeks=value)
-        else:
-            raise click.BadParameter(f"Unsupported time unit: {unit}")
-        return datetime.datetime.now(datetime.timezone.utc) - delta
-
-    # Try natural language ("3 days ago", "1 hour ago", "2 weeks ago")
-    match = re.match(
-        r"^(\d+)\s*(minute|min|hour|hr|day|week|wk)s?\s*ago$", time_str, re.IGNORECASE
-    )
-    if match:
-        value, unit = int(match.group(1)), match.group(2).lower()
-        if unit in ("minute", "min"):
-            delta = datetime.timedelta(minutes=value)
-        elif unit in ("hour", "hr"):
-            delta = datetime.timedelta(hours=value)
-        elif unit == "day":
-            delta = datetime.timedelta(days=value)
-        elif unit in ("week", "wk"):
-            delta = datetime.timedelta(weeks=value)
-        else:
-            raise click.BadParameter(f"Unsupported time unit: {unit}")
+    # Try duration formats (relative shorthand and natural language)
+    delta = _parse_duration_str(time_str)
+    if delta is not None:
         return datetime.datetime.now(datetime.timezone.utc) - delta
 
     raise click.BadParameter(
@@ -1518,15 +1534,47 @@ def parse_time_input(time_str: str) -> Any:
     )
 
 
+def parse_time_duration(time_str: str) -> Any:
+    """Parse a duration string into a timedelta.
+
+    Supports relative shorthand (24h, 7d, 30m, 2w) and natural language
+    (3 days ago, 1 hour ago). For ISO timestamps, raises BadParameter
+    since they are not durations.
+
+    Args:
+        time_str: Duration string (e.g., '24h', '7d', '3 days ago')
+
+    Returns:
+        timedelta representing the duration
+
+    Raises:
+        click.BadParameter: If format is not a valid duration
+    """
+    delta = _parse_duration_str(time_str.strip())
+    if delta is not None:
+        return delta
+
+    raise click.BadParameter(
+        f"Invalid duration format: {time_str}. "
+        "Use relative shorthand (24h, 7d, 30m) "
+        "or natural language (3 days ago, 1 hour ago)"
+    )
+
+
 def build_time_fql_filters(
     since: str | None = None,
     last: str | None = None,
 ) -> list[str]:
     """Build FQL filter expressions for time-based filtering.
 
+    When both --since and --last are provided, they define a time window:
+    --since is the start time, --last is the duration forward from --since.
+
     Args:
         since: Show items since this time (ISO format, relative, or natural language)
-        last: Show items from last duration (e.g., '24h', '7d', '30m')
+        last: Show items from last duration (e.g., '24h', '7d', '30m').
+              When used alone, shows items from the last N hours/days.
+              When used with --since, defines the window size forward from --since.
 
     Returns:
         List of FQL filter expressions (may be empty)
@@ -1534,18 +1582,28 @@ def build_time_fql_filters(
     Raises:
         click.BadParameter: If time format is invalid
 
-    Example:
+    Examples:
         >>> filters = build_time_fql_filters(since="3 days ago")
         >>> filters
         ['gt(start_time, "2024-01-11T10:00:00+00:00")']
+
+        >>> filters = build_time_fql_filters(since="2026-02-17", last="72h")
+        >>> filters  # Window from Feb 17 to Feb 20
+        ['gt(start_time, "2026-02-17...")', 'lt(start_time, "2026-02-20...")']
     """
     fql_filters: list[str] = []
 
-    if since:
+    if since and last:
+        # Both specified: create a time window (since -> since + duration)
+        start_timestamp = parse_time_input(since)
+        duration = parse_time_duration(last)
+        end_timestamp = start_timestamp + duration
+        fql_filters.append(f'gt(start_time, "{start_timestamp.isoformat()}")')
+        fql_filters.append(f'lt(start_time, "{end_timestamp.isoformat()}")')
+    elif since:
         timestamp = parse_time_input(since)
         fql_filters.append(f'gt(start_time, "{timestamp.isoformat()}")')
-
-    if last:
+    elif last:
         timestamp = parse_time_input(last)
         fql_filters.append(f'gt(start_time, "{timestamp.isoformat()}")')
 

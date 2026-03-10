@@ -47,6 +47,37 @@ def runs():
     pass
 
 
+# LangSmith API rejects limit > 100 in /runs/query requests.
+# When we need more items, omit the limit from the SDK call
+# (letting cursor pagination handle paging) and use islice to cap.
+_API_MAX_LIMIT = 100
+
+
+def _make_fetch_runs() -> Any:
+    """Create a fetch function for list_runs that respects the API's max limit of 100.
+
+    Returns a function suitable for use with fetch_from_projects.
+    """
+    from itertools import islice
+
+    def _fetch_runs(c: Any, proj: str | None, **kw: Any) -> Any:
+        requested_limit = kw.pop("limit", None)
+        sdk_limit = requested_limit
+        if requested_limit is not None and requested_limit > _API_MAX_LIMIT:
+            sdk_limit = None
+
+        if proj is not None:
+            it = c.list_runs(project_name=proj, limit=sdk_limit, **kw)
+        else:
+            it = c.list_runs(limit=sdk_limit, **kw)
+
+        if requested_limit is not None and requested_limit > _API_MAX_LIMIT:
+            return list(islice(it, requested_limit))
+        return it
+
+    return _fetch_runs
+
+
 def _parse_single_grouping(grouping_str: str) -> tuple[str, str]:
     """Helper to parse a single 'type:field' string.
 
@@ -640,15 +671,10 @@ def list_runs(
         )
 
     # Fetch runs from all matching projects using universal helper
-    def _fetch_runs(c: Any, proj: str | None, **kw: Any) -> Any:
-        if proj is not None:
-            return c.list_runs(project_name=proj, **kw)
-        return c.list_runs(**kw)
-
     result = fetch_from_projects(
         client,
         projects_to_query,
-        _fetch_runs,
+        _make_fetch_runs(),
         project_query=pq,
         limit=api_limit,
         query=query,
@@ -1611,11 +1637,6 @@ def sample_runs(
         name_regex=project_name_regex,
     )
 
-    def _fetch_runs(c: Any, proj: str | None, **kw: Any) -> Any:
-        if proj is not None:
-            return c.list_runs(project_name=proj, **kw)
-        return c.list_runs(**kw)
-
     all_samples = []
 
     if is_multi_dimensional:
@@ -1674,7 +1695,7 @@ def sample_runs(
             result = fetch_from_projects(
                 client,
                 pq.names,
-                _fetch_runs,
+                _make_fetch_runs(),
                 project_query=pq,
                 limit=sample_limit,
                 filter=combined_filter,
@@ -1722,7 +1743,7 @@ def sample_runs(
             result = fetch_from_projects(
                 client,
                 pq.names,
-                _fetch_runs,
+                _make_fetch_runs(),
                 project_query=pq,
                 limit=samples_per_stratum,
                 filter=combined_filter,
@@ -1893,11 +1914,6 @@ def analyze_runs(
         name_regex=project_name_regex,
     )
 
-    def _fetch_runs(c: Any, proj: str | None, **kw: Any) -> Any:
-        if proj is not None:
-            return c.list_runs(project_name=proj, **kw)
-        return c.list_runs(**kw)
-
     # Determine which fields to fetch based on requested metrics and grouping
     # Use field selection to reduce data transfer and speed up fetch
     select_fields = set()
@@ -1962,7 +1978,7 @@ def analyze_runs(
         result = fetch_from_projects(
             client,
             pq.names,
-            _fetch_runs,
+            _make_fetch_runs(),
             project_query=pq,
             filter=combined_filter,
             limit=None,
@@ -2141,15 +2157,10 @@ def _fetch_runs_for_discovery(
     # Fetch runs
     logger.debug(f"Fetching {sample_size} runs for {cmd_name}...")
 
-    def _fetch_runs(c: Any, proj: str | None, **kw: Any) -> Any:
-        if proj is not None:
-            return c.list_runs(project_name=proj, **kw)
-        return c.list_runs(**kw)
-
     result = fetch_from_projects(
         client,
         pq.names,
-        _fetch_runs,
+        _make_fetch_runs(),
         project_query=pq,
         limit=sample_size,
         select=select,
@@ -3212,6 +3223,12 @@ def cache_group():
     is_flag=True,
     help="Force full re-download (clear existing cache for these projects).",
 )
+@click.option(
+    "--workers",
+    type=int,
+    default=None,
+    help="Number of parallel workers (default: min(8, num_projects)).",
+)
 @click.pass_context
 def cache_download(
     ctx: click.Context,
@@ -3226,10 +3243,12 @@ def cache_download(
     additional_filter: str | None,
     run_type: str | None,
     full: bool,
+    workers: int | None,
 ) -> None:
     """Download runs to local JSONL cache for fast offline analysis.
 
     By default, incrementally fetches only new runs since last download.
+    Uses parallel workers to fetch multiple projects simultaneously.
     Use --full to re-download everything.
 
     Examples:
@@ -3239,21 +3258,26 @@ def cache_download(
         # Incremental update (only new runs since last download)
         langsmith-cli runs cache download --project-name-pattern "prd/*"
 
-        # Full re-download
-        langsmith-cli runs cache download --project prd/video_moderation_service --full
+        # Full re-download with 4 workers
+        langsmith-cli runs cache download --project prd/video_moderation_service --full --workers 4
 
         # Cache only LLM runs
         langsmith-cli runs cache download --project-name-pattern "prd/*" --run-type llm
     """
+    import time
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     from langsmith_cli.cache import (
-        append_runs_to_cache,
+        append_runs_streaming,
         clear_cache,
         get_cache_path,
+        get_existing_run_ids,
         read_cache_metadata,
     )
 
     logger = ctx.obj["logger"]
-    logger.use_stderr = False
+    is_json = ctx.obj.get("json", False)
+    logger.use_stderr = is_json
 
     client = get_or_create_client(ctx)
 
@@ -3269,7 +3293,8 @@ def cache_download(
     )
 
     project_names = pq.names if not pq.use_id else [f"id:{pq.project_id}"]
-    logger.info(f"Caching runs from {len(project_names)} project(s)...")
+    num_projects = len(project_names)
+    num_workers = workers if workers else min(8, num_projects)
 
     # Build filters
     time_filters = build_time_fql_filters(since=since, last=last)
@@ -3279,57 +3304,217 @@ def cache_download(
     if run_type:
         base_filters.append(f'eq(run_type, "{run_type}")')
 
-    for proj_name in project_names:
-        # Handle incremental vs full
-        if full:
-            clear_cache(proj_name)
-            logger.info(f"  Cleared cache for {proj_name}")
+    # Results tracking
+    results: list[dict[str, Any]] = []
+    overall_start = time.monotonic()
 
-        # Check for incremental update
-        existing_meta = read_cache_metadata(proj_name)
-        incremental_filters = base_filters.copy()
-        if existing_meta and existing_meta.newest_run_start_time and not full:
-            newest = existing_meta.newest_run_start_time.isoformat()
-            incremental_filters.append(f'gt(start_time, "{newest}")')
-            logger.info(
-                f"  {proj_name}: incremental from "
-                f"{existing_meta.newest_run_start_time.strftime('%Y-%m-%d %H:%M')}"
-            )
-        else:
-            logger.info(f"  {proj_name}: full download")
+    def download_project(proj_name: str) -> dict[str, Any]:
+        """Download runs for a single project. Runs in thread pool."""
+        proj_start = time.monotonic()
+        result: dict[str, Any] = {
+            "project": proj_name,
+            "status": "success",
+            "new_runs": 0,
+            "total_runs": 0,
+            "size_mb": 0.0,
+            "mode": "full",
+            "elapsed_s": 0.0,
+        }
 
-        combined_filter = combine_fql_filters(incremental_filters)
-
-        # Fetch runs (no select - full run objects)
         try:
+            # Handle full mode
+            if full:
+                clear_cache(proj_name)
+
+            # Check for incremental update
+            existing_meta = read_cache_metadata(proj_name)
+            incremental_filters = base_filters.copy()
+            if existing_meta and existing_meta.newest_run_start_time and not full:
+                newest = existing_meta.newest_run_start_time.isoformat()
+                incremental_filters.append(f'gt(start_time, "{newest}")')
+                result["mode"] = "incremental"
+                result["incremental_from"] = (
+                    existing_meta.newest_run_start_time.isoformat()
+                )
+
+            combined_filter = combine_fql_filters(incremental_filters)
+
+            # Pre-load existing IDs for dedup
+            existing_ids = get_existing_run_ids(proj_name)
+
+            # Build SDK kwargs
             proj_kwargs: dict[str, Any] = {}
             if proj_name.startswith("id:"):
                 proj_kwargs["project_id"] = proj_name[3:]
             else:
                 proj_kwargs["project_name"] = proj_name
 
-            fetched_runs: list[Run] = list(
-                client.list_runs(
-                    **proj_kwargs,
-                    filter=combined_filter,
-                    limit=None,
-                )
+            # Stream runs from SDK into cache with progress callback
+            def on_batch(cumulative_count: int) -> None:
+                result["new_runs"] = cumulative_count
+                if progress_task_ids and proj_name in progress_task_ids:
+                    progress.update(
+                        progress_task_ids[proj_name],
+                        completed=cumulative_count,
+                    )
+
+            runs_iter = client.list_runs(
+                **proj_kwargs,
+                filter=combined_filter,
+                limit=None,
             )
 
-            if fetched_runs:
-                meta = append_runs_to_cache(proj_name, fetched_runs)
-                cache_path = get_cache_path(proj_name)
-                size_mb = cache_path.stat().st_size / (1024 * 1024)
-                logger.success(
-                    f"  {proj_name}: cached {len(fetched_runs)} new runs "
-                    f"(total: {meta.run_count}, {size_mb:.1f}MB)"
-                )
-            else:
-                logger.info(f"  {proj_name}: no new runs")
+            meta, new_count = append_runs_streaming(
+                proj_name,
+                runs_iter,
+                existing_ids=existing_ids,
+                on_progress=on_batch,
+            )
+
+            result["new_runs"] = new_count
+            result["total_runs"] = meta.run_count
+            cache_path = get_cache_path(proj_name)
+            if cache_path.exists():
+                result["size_mb"] = round(cache_path.stat().st_size / (1024 * 1024), 2)
+
+            if new_count == 0:
+                result["status"] = "no_new_runs"
 
         except Exception as e:
-            short = str(e)[:100]
-            logger.warning(f"  {proj_name}: failed - {short}")
+            result["status"] = "error"
+            result["error"] = str(e)[:200]
+
+        result["elapsed_s"] = round(time.monotonic() - proj_start, 1)
+        return result
+
+    # Choose progress display based on mode
+    progress_task_ids: dict[str, Any] = {}
+
+    if is_json:
+        # Agent mode: emit structured progress to stderr
+        import json as json_mod
+        import sys
+
+        logger.info(
+            json_mod.dumps(
+                {
+                    "event": "download_start",
+                    "projects": num_projects,
+                    "workers": num_workers,
+                }
+            )
+        )
+
+        # No Rich Progress in JSON mode - use simple callbacks
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
+            futures = {
+                executor.submit(download_project, name): name for name in project_names
+            }
+            for future in as_completed(futures):
+                r = future.result()
+                results.append(r)
+                # Emit per-project completion to stderr
+                print(
+                    json_mod.dumps({"event": "project_done", **r}),
+                    file=sys.stderr,
+                    flush=True,
+                )
+
+        elapsed = round(time.monotonic() - overall_start, 1)
+        total_new = sum(r["new_runs"] for r in results)
+        total_cached = sum(r["total_runs"] for r in results)
+        errors = [r for r in results if r["status"] == "error"]
+
+        summary = {
+            "event": "download_complete",
+            "projects": num_projects,
+            "total_new_runs": total_new,
+            "total_cached_runs": total_cached,
+            "errors": len(errors),
+            "elapsed_s": elapsed,
+            "results": results,
+        }
+        click.echo(json_mod.dumps(summary, default=str))
+
+    else:
+        # Human mode: Rich live progress
+        from rich.progress import (
+            BarColumn,
+            Progress,
+            SpinnerColumn,
+            TextColumn,
+            TimeElapsedColumn,
+        )
+
+        progress = Progress(
+            SpinnerColumn(),
+            TextColumn("[bold]{task.description}"),
+            BarColumn(bar_width=30),
+            TextColumn("{task.completed} runs"),
+            TimeElapsedColumn(),
+            console=logger.diagnostic_console,
+        )
+
+        overall_task = progress.add_task(
+            f"[cyan]Downloading from {num_projects} project(s) ({num_workers} workers)",
+            total=None,
+        )
+
+        # Create per-project tasks
+        for name in project_names:
+            task_id = progress.add_task(f"  {name}", total=None)
+            progress_task_ids[name] = task_id
+
+        with progress:
+            with ThreadPoolExecutor(max_workers=num_workers) as executor:
+                futures = {
+                    executor.submit(download_project, name): name
+                    for name in project_names
+                }
+                for future in as_completed(futures):
+                    r = future.result()
+                    results.append(r)
+                    name = r["project"]
+                    task_id = progress_task_ids[name]
+
+                    if r["status"] == "error":
+                        progress.update(
+                            task_id,
+                            description=f"  [red]{name}: FAILED[/red]",
+                        )
+                    elif r["new_runs"] == 0:
+                        progress.update(
+                            task_id,
+                            description=f"  [dim]{name}: up to date[/dim]",
+                        )
+                    else:
+                        progress.update(
+                            task_id,
+                            description=(
+                                f"  [green]{name}: "
+                                f"{r['new_runs']} new runs "
+                                f"(total: {r['total_runs']}, "
+                                f"{r['size_mb']:.1f}MB)[/green]"
+                            ),
+                        )
+                    progress.update(task_id, completed=r["new_runs"])
+
+            progress.update(overall_task, completed=num_projects, total=num_projects)
+
+        # Print summary
+        elapsed = round(time.monotonic() - overall_start, 1)
+        total_new = sum(r["new_runs"] for r in results)
+        errors = [r for r in results if r["status"] == "error"]
+
+        logger.success(
+            f"Done: {total_new} new runs cached from "
+            f"{num_projects} project(s) in {elapsed}s"
+        )
+        if errors:
+            for e in errors:
+                logger.warning(
+                    f"  Failed: {e['project']} - {e.get('error', 'unknown')}"
+                )
 
 
 @cache_group.command("list")

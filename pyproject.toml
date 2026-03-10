@@ -50,6 +50,7 @@ dev = [
     "pre-commit>=4.5.1",
     "pyright>=1.1.408",
     "pytest>=9.0.2",
+    "pytest-benchmark>=5.2.3",
     "pytest-cov>=7.0.0",
     "pytest-integration>=0.2.3",
     "pytest-xdist>=3.8.0",

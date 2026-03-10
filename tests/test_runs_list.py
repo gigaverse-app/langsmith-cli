@@ -368,17 +368,29 @@ class TestRunsListNameFilters:
         assert "test-auth" not in result.output
 
     @pytest.mark.parametrize(
-        "filter_type,limit_arg,expected_limit",
+        "filter_type,limit_arg,expected_sdk_limit",
         [
-            ("--name-pattern", "5", 100),  # min(max(5*3, 100), 500) = 100
-            ("--name-pattern", "50", 150),  # min(max(50*3, 100), 500) = 150
-            ("--name-regex", "5", 100),  # min(max(5*10, 100), 500) = 100
+            (
+                "--name-pattern",
+                "5",
+                100,
+            ),  # min(max(5*3, 100), 500) = 100, <=100 so passed
+            (
+                "--name-pattern",
+                "50",
+                None,
+            ),  # min(max(50*3, 100), 500) = 150, >100 so None
+            (
+                "--name-regex",
+                "5",
+                100,
+            ),  # min(max(5*10, 100), 500) = 100, <=100 so passed
         ],
     )
     def test_name_filters_use_reasonable_fetch_limit(
-        self, runner, mock_client, filter_type, limit_arg, expected_limit
+        self, runner, mock_client, filter_type, limit_arg, expected_sdk_limit
     ):
-        """Name filters use capped fetch limits, not unlimited."""
+        """Name filters use capped fetch limits (API max 100)."""
         mock_client.list_runs.return_value = iter([])
 
         runner.invoke(
@@ -386,10 +398,10 @@ class TestRunsListNameFilters:
         )
 
         _, kwargs = mock_client.list_runs.call_args
-        assert kwargs["limit"] == expected_limit
+        assert kwargs["limit"] == expected_sdk_limit
 
     def test_explicit_fetch_overrides_multiplier(self, runner, mock_client):
-        """--fetch parameter overrides automatic multiplier."""
+        """--fetch parameter overrides automatic multiplier (capped at API max 100)."""
         mock_client.list_runs.return_value = iter([])
 
         runner.invoke(
@@ -397,7 +409,8 @@ class TestRunsListNameFilters:
         )
 
         _, kwargs = mock_client.list_runs.call_args
-        assert kwargs["limit"] == 250
+        # 250 > API max 100, so SDK gets None (cursor pagination handles paging)
+        assert kwargs["limit"] is None
 
 
 class TestRunsListCombinedFilters:
