@@ -523,6 +523,150 @@ def apply_exclude_filter(
     return filtered_items
 
 
+def add_grep_options(func: Callable[..., Any]) -> Callable[..., Any]:
+    """Reusable decorator that adds --grep, --grep-ignore-case, --grep-regex, --grep-in options.
+
+    Adds parameters: grep, grep_ignore_case, grep_regex, grep_in
+    """
+    func = click.option(
+        "--grep-in",
+        help="Comma-separated fields to search in (e.g., 'inputs,outputs,error'). "
+        "Searches all fields if not specified.",
+    )(func)
+    func = click.option(
+        "--grep-regex",
+        is_flag=True,
+        help="Treat --grep pattern as regex.",
+    )(func)
+    func = click.option(
+        "--grep-ignore-case",
+        is_flag=True,
+        help="Make --grep search case-insensitive.",
+    )(func)
+    func = click.option(
+        "--grep",
+        help="Client-side pattern search in run content (inputs, outputs, error). "
+        "Searches ALL content, parses nested JSON.",
+    )(func)
+    return func
+
+
+def add_metadata_filter_options(func: Callable[..., Any]) -> Callable[..., Any]:
+    """Reusable decorator that adds --metadata key=value filter option.
+
+    Adds parameter: metadata_filters (tuple of "key=value" strings)
+    """
+    func = click.option(
+        "--metadata",
+        "metadata_filters",
+        multiple=True,
+        help="Filter by metadata key=value (server-side, fast). "
+        "Can specify multiple: --metadata key1=val1 --metadata key2=val2",
+    )(func)
+    return func
+
+
+def build_metadata_fql_filters(metadata_filters: tuple[str, ...]) -> list[str]:
+    """Build FQL filter clauses for metadata key=value filtering.
+
+    Args:
+        metadata_filters: Tuple of "key=value" strings
+
+    Returns:
+        List of FQL filter strings
+
+    Raises:
+        click.BadParameter: If a filter doesn't contain '='
+    """
+    filters: list[str] = []
+    for mf in metadata_filters:
+        if "=" not in mf:
+            raise click.BadParameter(
+                f"Invalid metadata filter: {mf}. Use key=value format."
+            )
+        key, value = mf.split("=", 1)
+        filters.append(
+            f'and(in(metadata_key, ["{key}"]), eq(metadata_value, "{value}"))'
+        )
+    return filters
+
+
+def add_name_filter_options(func: Callable[..., Any]) -> Callable[..., Any]:
+    """Reusable decorator that adds --name-pattern and --name-regex options.
+
+    Adds parameters: name_pattern, name_regex
+    Use with get_matching_items() or apply_name_filters() for client-side filtering.
+    """
+    func = click.option(
+        "--name-regex",
+        help="Filter names with regex (e.g., '^test-.*-v[0-9]+$'). Client-side filtering.",
+    )(func)
+    func = click.option(
+        "--name-pattern",
+        help="Filter names with wildcards (e.g., '*auth*'). Client-side filtering.",
+    )(func)
+    return func
+
+
+def apply_name_filters(
+    items: list[T],
+    name_getter: Callable[[T], str],
+    name_pattern: str | None = None,
+    name_regex: str | None = None,
+) -> list[T]:
+    """Apply name-pattern and name-regex filters to a list of items.
+
+    Args:
+        items: List of items to filter
+        name_getter: Function to extract name from each item
+        name_pattern: Wildcard pattern (e.g., '*auth*')
+        name_regex: Regex pattern (e.g., '^test-.*')
+
+    Returns:
+        Filtered list of items
+    """
+    import fnmatch
+    import re
+
+    if not name_pattern and not name_regex:
+        return items
+
+    filtered = items
+    if name_pattern:
+        filtered = [
+            item
+            for item in filtered
+            if fnmatch.fnmatch(name_getter(item), name_pattern)
+        ]
+    if name_regex:
+        compiled = re.compile(name_regex)
+        filtered = [item for item in filtered if compiled.search(name_getter(item))]
+
+    return filtered
+
+
+def sort_by_option(
+    fields: str = "name",
+    help_text: str | None = None,
+) -> Any:
+    """Reusable Click option decorator for --sort-by flag.
+
+    Args:
+        fields: Comma-separated default sort field names for help text
+        help_text: Custom help text
+
+    Returns:
+        Click option decorator
+    """
+    default_help = (
+        f"Sort by field ({fields}). Prefix with - for descending (e.g., '-name')."
+    )
+    return click.option(
+        "--sort-by",
+        help=help_text or default_help,
+    )
+
+
 class ConsoleProtocol(Protocol):
     """Protocol for Rich Console interface - avoids heavy import."""
 

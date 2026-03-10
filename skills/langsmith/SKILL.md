@@ -338,8 +338,12 @@ langsmith-cli runs list --project my-project --limit 5
   - `--active-only`: Only show time buckets with activity.
   - `--from-cache`: Use local cache instead of API (fast, offline).
   - `--tag <tag>`: Filter by tag (repeatable for AND logic). Works with both API and `--from-cache`.
-  - `--metadata key=value`: Filter by metadata (repeatable).
+  - `--metadata key=value`: Filter by metadata (repeatable). Supports wildcards (`key=room-*`) and regex (`key=/^room-[0-9]+$/`). Transparently checks tags as fallback (see Tag Format below).
+  - `--grep <pattern>`: Filter runs by content (inputs/outputs/error). Client-side search.
+  - `--grep-ignore-case`: Case-insensitive grep.
+  - `--grep-regex`: Treat grep pattern as regex.
   - `--sample-size <n>`: Limit runs per project.
+  - `--format csv|yaml|json`: Output format (default: table/json).
   - `--since <time>` / `--before <time>` / `--last <duration>`: Time filters (combinable for time windows).
   - Example: `langsmith-cli --json runs usage --project-name-pattern "prd/*" --last 7d --breakdown model`
   - Example: `langsmith-cli --json runs usage --from-cache --tag "env:prod" --breakdown model`
@@ -362,6 +366,16 @@ langsmith-cli runs list --project my-project --limit 5
   - Example: `langsmith-cli runs cache download --project-name-pattern "prd/*" --last 7d`
   - Example: `langsmith-cli runs cache download --project my-project --since 2025-02-17 --before 2025-02-20`
 - `langsmith-cli runs cache list`: List cached projects with run counts and sizes.
+- `langsmith-cli runs cache grep <pattern> [OPTIONS]`: Search cached runs for text patterns in inputs/outputs/error.
+  - `-i`: Case-insensitive search.
+  - `-E`: Treat pattern as regex.
+  - `--grep-in <fields>`: Comma-separated fields to search (default: all).
+  - `--project <name>`: Search only one project's cache.
+  - `--limit <n>`: Max results (default 20).
+  - `--since <time>` / `--before <time>` / `--last <duration>`: Time filters.
+  - Example: `langsmith-cli --json runs cache grep "error" --project my-proj`
+  - Example: `langsmith-cli runs cache grep -i -E "\\buser_id\\b" --grep-in inputs`
+  - Example: `langsmith-cli runs cache grep "hello" --count`
 - `langsmith-cli runs cache clear [--project <name>] [--yes]`: Clear cached data.
 
 ### Self (Installation Management)
@@ -628,19 +642,38 @@ langsmith-cli --json runs analyze \
   --since "2026-02-17" --before "2026-02-20"
 ```
 
+## Tag Format and Metadata Filter Behavior
+
+**Tag formats:** Tags are plain strings. Common conventions:
+- Simple: `"prod"`, `"critical"`, `"v2"`
+- Key-value (colon-separated): `"env:prod"`, `"channel_id:room-A"`, `"team:ml"`
+
+**Metadata filter tag fallback:** When using `--metadata key=value`, the CLI checks in order:
+1. Direct metadata match (`run.extra.metadata[key] == value`)
+2. Tag match: `value` appears in `run.tags` (e.g., `--metadata channel_id=chat:Foo` matches tag `"chat:Foo"`)
+3. Key-value tag match: `"key:value"` appears in `run.tags` (e.g., `--metadata channel_id=room-A` matches tag `"channel_id:room-A"`)
+4. Trace context fallback: checks parent/root run metadata
+
+This makes `--metadata` filters work even when data is stored as tags instead of metadata fields.
+
+**Metadata filter pattern matching:**
+- Exact: `--metadata channel_id=room-A`
+- Wildcard: `--metadata channel_id=room-*` (supports `*` and `?`)
+- Regex: `--metadata channel_id=/^room-[0-9]+$/` (slash-delimited)
+
 ## Key Flags for Offline Analysis
 
 | Flag | Where | What It Does |
 |------|-------|--------------|
 | `--from-cache` | `runs usage`, `runs pricing` | Read from local JSONL cache (fast, offline, no API calls) |
 | `--tag <tag>` | `runs usage`, `runs pricing` | Filter by tag (repeatable, AND logic). Works with API and `--from-cache` |
-| `--metadata key=value` | `runs usage` | Filter runs by metadata field (repeatable) |
+| `--metadata key=value` | `runs usage` | Filter by metadata (repeatable). Supports wildcards (`*`/`?`) and regex (`/pattern/`). Falls back to tag check |
 | `--group-by metadata:<field>` | `runs usage`, `runs analyze` | Group results by a metadata or tag field |
 | `--breakdown model` | `runs usage` | Add model dimension to aggregation |
 | `--breakdown project` | `runs usage` | Add project dimension to aggregation |
 | `--interval hour\|day` | `runs usage` | Time bucket size for distribution |
 | `--active-only` | `runs usage` | Only show time buckets with activity |
-| `--grep <pattern>` | `runs list` | Client-side content/metadata search |
+| `--grep <pattern>` | `runs list`, `runs usage` | Client-side content/metadata search |
 
 ## Additional Resources
 

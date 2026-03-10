@@ -8,11 +8,14 @@ from rich.table import Table
 from langsmith.schemas import Run
 
 from langsmith_cli.utils import (
+    add_grep_options,
+    add_metadata_filter_options,
     add_project_filter_options,
     add_time_filter_options,
     apply_client_side_limit,
     apply_exclude_filter,
     apply_grep_filter,
+    build_metadata_fql_filters,
     build_runs_list_filter,
     build_runs_table,
     build_tag_fql_filters,
@@ -25,7 +28,6 @@ from langsmith_cli.utils import (
     fields_option,
     filter_fields,
     filter_runs_by_tags,
-    parse_fields_option,
     get_matching_items,
     get_or_create_client,
     get_project_suggestions,
@@ -34,7 +36,9 @@ from langsmith_cli.utils import (
     output_option,
     output_single_item,
     parse_duration_to_seconds,
+    parse_fields_option,
     raise_if_all_failed_with_suggestions,
+    render_output,
     render_run_details,
     resolve_project_filters,
     sort_items,
@@ -407,29 +411,13 @@ def compute_metrics(
     "--query",
     help="Server-side full-text search in inputs/outputs (fast, but searches only first ~250 chars). Use --grep for unlimited content search.",
 )
-@click.option(
-    "--grep",
-    help="Client-side pattern search in run content (inputs, outputs, error). Searches ALL content, parses nested JSON. Slower but more powerful than --query.",
-)
-@click.option(
-    "--grep-ignore-case",
-    is_flag=True,
-    help="Make --grep search case-insensitive.",
-)
-@click.option(
-    "--grep-regex",
-    is_flag=True,
-    help="Treat --grep pattern as regex (e.g., --grep '[\u0590-\u05ff]' for Hebrew characters).",
-)
-@click.option(
-    "--grep-in",
-    help="Comma-separated fields to search in (e.g., 'inputs,outputs,error'). Searches all fields if not specified.",
-)
+@add_grep_options
 @click.option(
     "--fetch",
     type=int,
     help="Number of runs to fetch when using client-side filters (--grep, --name-pattern, etc.). Overrides automatic 3x multiplier. Example: --limit 10 --fetch 500 fetches 500 runs and returns up to 10 matches.",
 )
+@add_metadata_filter_options
 @click.option(
     "--sort-by",
     help="Sort by field (name, status, latency, start_time). Prefix with - for descending.",
@@ -488,6 +476,7 @@ def list_runs(
     grep_regex,
     grep_in,
     fetch,
+    metadata_filters,
     sort_by,
     output_format,
     no_truncate,
@@ -584,6 +573,10 @@ def list_runs(
     # Tag filtering (AND logic - all tags must be present)
     if tag:
         fql_filters.extend(build_tag_fql_filters(tag))
+
+    # Metadata filtering (server-side, fast)
+    if metadata_filters:
+        fql_filters.extend(build_metadata_fql_filters(metadata_filters))
 
     # Run name pattern - skip FQL filtering, do client-side instead
     # (FQL search doesn't support proper wildcard matching)
@@ -2734,6 +2727,48 @@ def _extract_input_context(run: Run) -> dict[str, str]:
     return result
 
 
+def _metadata_value_matches(candidate: str | None, pattern: str) -> bool:
+    """Check if a candidate value matches a metadata filter pattern.
+
+    Supports three matching modes:
+    - Exact match: ``channel_id=room-A``
+    - Wildcard match: ``channel_id=room-*`` (``*`` and ``?`` supported)
+    - Regex match: ``channel_id=/^room-[A-Z]+$/`` (slash-delimited)
+
+    Args:
+        candidate: The value to test (from metadata, tag, or trace context)
+        pattern: The filter pattern string
+
+    Returns:
+        True if the candidate matches the pattern
+    """
+    if candidate is None:
+        return False
+
+    # Regex mode: /pattern/
+    if pattern.startswith("/") and pattern.endswith("/") and len(pattern) > 2:
+        import re
+
+        try:
+            return bool(re.search(pattern[1:-1], candidate))
+        except re.error:
+            return candidate == pattern
+
+    # Wildcard mode: contains * or ?
+    if "*" in pattern or "?" in pattern:
+        import re
+
+        regex = pattern.replace("*", ".*").replace("?", ".")
+        if not pattern.startswith("*"):
+            regex = "^" + regex
+        if not pattern.endswith("*"):
+            regex = regex + "$"
+        return bool(re.match(regex, candidate))
+
+    # Exact match (default)
+    return candidate == pattern
+
+
 def _truncate_hour(dt: Any) -> str:
     """Truncate a datetime to the hour, return as ISO string."""
     from datetime import datetime, timezone
@@ -2781,28 +2816,8 @@ def _truncate_hour(dt: Any) -> str:
     multiple=True,
     help="Filter by tag (can specify multiple times for AND logic).",
 )
-@click.option(
-    "--grep",
-    help="Client-side pattern search in run content (inputs, outputs, error). "
-    "Searches ALL content, parses nested JSON.",
-)
-@click.option(
-    "--grep-ignore-case",
-    is_flag=True,
-    help="Make --grep search case-insensitive.",
-)
-@click.option(
-    "--grep-regex",
-    is_flag=True,
-    help="Treat --grep pattern as regex.",
-)
-@click.option(
-    "--metadata",
-    "metadata_filters",
-    multiple=True,
-    help="Filter by metadata key=value (server-side, fast). "
-    "Can specify multiple: --metadata channel_id=chat:foo --metadata user_id=123",
-)
+@add_grep_options
+@add_metadata_filter_options
 @click.option(
     "--filter",
     "additional_filter",
@@ -2840,6 +2855,7 @@ def usage_runs(
     grep: str | None,
     grep_ignore_case: bool,
     grep_regex: bool,
+    grep_in: str | None,
     metadata_filters: tuple[str, ...],
     additional_filter: str | None,
     from_cache: bool,
@@ -2900,15 +2916,8 @@ def usage_runs(
         base_filters.extend(build_tag_fql_filters(tag))
 
     # Add metadata filters (server-side, fast)
-    for mf in metadata_filters:
-        if "=" not in mf:
-            raise click.BadParameter(
-                f"Invalid metadata filter: {mf}. Use key=value format."
-            )
-        key, value = mf.split("=", 1)
-        base_filters.append(
-            f'and(in(metadata_key, ["{key}"]), eq(metadata_value, "{value}"))'
-        )
+    if metadata_filters:
+        base_filters.extend(build_metadata_fql_filters(metadata_filters))
 
     if additional_filter:
         base_filters.append(additional_filter)
@@ -2985,6 +2994,7 @@ def usage_runs(
             all_runs = filter_runs_by_tags(all_runs, tag)
 
         # Apply metadata filters client-side (check metadata, tags, and trace context)
+        # Supports exact match, wildcards (*/?), and regex (/pattern/)
         for mf in metadata_filters:
             if "=" not in mf:
                 continue
@@ -2993,18 +3003,32 @@ def usage_runs(
             for r in all_runs:
                 # Check metadata
                 direct = extract_group_value(r, "metadata", key)
-                if direct == value:
+                if _metadata_value_matches(direct, value):
                     filtered.append(r)
                     continue
                 # Check tags: value may appear as a tag directly ("chat:Foo")
                 # or as "key:value" ("channel_id:chat:Foo")
-                if r.tags and (value in r.tags or f"{key}:{value}" in r.tags):
-                    filtered.append(r)
-                    continue
-                # Fallback to trace context
-                tid = str(r.trace_id) if r.trace_id else None
-                if tid and trace_context.get(tid, {}).get(key) == value:
-                    filtered.append(r)
+                if r.tags:
+                    for tag in r.tags:
+                        if _metadata_value_matches(
+                            tag, value
+                        ) or _metadata_value_matches(tag, f"{key}:{value}"):
+                            filtered.append(r)
+                            break
+                    else:
+                        # Fallback to trace context
+                        tid = str(r.trace_id) if r.trace_id else None
+                        if tid and _metadata_value_matches(
+                            trace_context.get(tid, {}).get(key), value
+                        ):
+                            filtered.append(r)
+                else:
+                    # No tags — check trace context
+                    tid = str(r.trace_id) if r.trace_id else None
+                    if tid and _metadata_value_matches(
+                        trace_context.get(tid, {}).get(key), value
+                    ):
+                        filtered.append(r)
             all_runs = filtered
 
         if not all_runs and not result.successful_sources:
@@ -3075,9 +3099,15 @@ def usage_runs(
 
     # Apply grep filter (client-side content search)
     if grep:
+        grep_fields_tuple: tuple[str, ...] = ()
+        if grep_in:
+            grep_fields_tuple = tuple(
+                f.strip() for f in grep_in.split(",") if f.strip()
+            )
         all_runs = apply_grep_filter(
             all_runs,
             grep_pattern=grep,
+            grep_fields=grep_fields_tuple,
             ignore_case=grep_ignore_case,
             use_regex=grep_regex,
         )
@@ -3214,7 +3244,7 @@ def usage_runs(
     format_type = determine_output_format(output_format, ctx.obj.get("json"))
 
     if format_type != "table":
-        output_data = {
+        output_data: dict[str, Any] | list[dict[str, Any]] = {
             "summary": {
                 "total_tokens": total_tokens_all,
                 "total_cost": round(total_cost_all, 6),
@@ -3227,6 +3257,9 @@ def usage_runs(
             },
             "buckets": results,
         }
+        # CSV/YAML need a flat list; JSON gets the full structure
+        if format_type in ("csv", "yaml"):
+            output_data = results
         output_formatted_data(output_data, format_type)
         return
 
@@ -3677,6 +3710,130 @@ def cache_clear(ctx: click.Context, project: str | None, yes: bool) -> None:
         logger.success(f"Cleared cache for {target} ({deleted} files)")
     else:
         logger.info("No cache files to clear.")
+
+
+@cache_group.command("grep")
+@click.argument("pattern")
+@click.option("--project", help="Search only a specific project's cache.")
+@click.option(
+    "--ignore-case",
+    "-i",
+    is_flag=True,
+    help="Case-insensitive search.",
+)
+@click.option(
+    "--regex",
+    "-E",
+    is_flag=True,
+    help="Treat pattern as regex.",
+)
+@click.option(
+    "--grep-in",
+    help="Comma-separated fields to search in (e.g., 'inputs,outputs,error'). "
+    "Searches all fields if not specified.",
+)
+@click.option("--limit", default=20, help="Max results to return (default 20).")
+@add_time_filter_options
+@fields_option()
+@count_option()
+@output_option()
+@click.pass_context
+def cache_grep(
+    ctx: click.Context,
+    pattern: str,
+    project: str | None,
+    ignore_case: bool,
+    regex: bool,
+    grep_in: str | None,
+    limit: int,
+    since: str | None,
+    before: str | None,
+    last: str | None,
+    fields: str | None,
+    count: bool,
+    output: str | None,
+) -> None:
+    """Search cached runs for a text pattern in inputs/outputs/error.
+
+    Examples:
+        # Search all cached projects for "hello"
+        langsmith-cli runs cache grep "hello"
+
+        # Case-insensitive regex search in a specific project
+        langsmith-cli runs cache grep -i -E "\\\\buser_id\\\\b" --project my-proj
+
+        # Search only inputs field, output as JSON
+        langsmith-cli --json runs cache grep "error" --grep-in inputs
+    """
+    from langsmith_cli.cache import list_cached_projects, load_runs_from_cache
+    from langsmith_cli.filters import parse_time_filter
+
+    logger = ctx.obj["logger"]
+    is_machine_readable = ctx.obj.get("json") or bool(output) or bool(fields)
+    logger.use_stderr = is_machine_readable
+
+    # Determine which projects to search
+    if project:
+        project_names = [project]
+    else:
+        cached = list_cached_projects()
+        project_names = [p.project_name for p in cached]
+
+    if not project_names:
+        logger.warning("No cached projects. Run 'runs cache download' first.")
+        return
+
+    # Parse time filters
+    since_dt, until_dt = parse_time_filter(since=since, last=last, before=before)
+
+    logger.info(f"Searching {len(project_names)} cached project(s) for '{pattern}'...")
+    result = load_runs_from_cache(project_names, since=since_dt, until=until_dt)
+
+    if not result.items:
+        logger.warning("No cached runs found.")
+        return
+
+    # Parse grep-in fields
+    grep_fields_tuple: tuple[str, ...] = ()
+    if grep_in:
+        grep_fields_tuple = tuple(f.strip() for f in grep_in.split(",") if f.strip())
+
+    # Apply grep filter
+    matched = apply_grep_filter(
+        result.items,
+        grep_pattern=pattern,
+        grep_fields=grep_fields_tuple,
+        ignore_case=ignore_case,
+        use_regex=regex,
+    )
+
+    # Apply limit
+    total_matched = len(matched)
+    if limit and len(matched) > limit:
+        matched = matched[:limit]
+
+    # Handle file output
+    if output:
+        data = filter_fields(matched, fields)
+        write_output_to_file(data, output, console, format_type="jsonl")
+        return
+
+    include_fields = parse_fields_option(fields)
+
+    render_output(
+        matched,
+        lambda runs: build_runs_table(runs),
+        ctx,
+        include_fields=include_fields,
+        empty_message=f"No runs matching '{pattern}' found",
+        count_flag=count,
+    )
+
+    if not count and not ctx.obj.get("json") and total_matched > limit:
+        logger.info(
+            f"Showing {len(matched)} of {total_matched} matches. "
+            f"Use --limit to see more."
+        )
 
 
 @runs.command("pricing")

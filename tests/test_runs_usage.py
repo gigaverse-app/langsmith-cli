@@ -793,3 +793,275 @@ class TestUsageGrepFiltering:
         select = call_kwargs["select"]
         assert "inputs" not in select
         assert "outputs" not in select
+
+
+class TestUsageMetadataTagFallback:
+    """Tests for metadata filter falling back to tag checking."""
+
+    def test_metadata_filter_matches_tag_directly(
+        self, runner, mock_client, tmp_path, monkeypatch
+    ):
+        """INVARIANT: --metadata key=value matches runs where value appears in tags."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+        from langsmith_cli.cache import append_runs_to_cache
+
+        # Run has tag "chat:Foo" but no metadata field "channel_id"
+        run_with_tag = Run(
+            id=UUID(make_run_id(1)),
+            name="ChatModel",
+            run_type="llm",
+            start_time=datetime(2026, 3, 9, 16, 0, 0, tzinfo=timezone.utc),
+            total_tokens=1000,
+            prompt_tokens=700,
+            completion_tokens=300,
+            total_cost=Decimal("0.001"),
+            extra={"metadata": {"ls_model_name": "gpt-4"}},
+            tags=["chat:Foo"],
+        )
+        run_without_tag = _create_llm_run(2)
+        append_runs_to_cache("test-proj", [run_with_tag, run_without_tag])
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "usage",
+                "--project",
+                "test-proj",
+                "--from-cache",
+                "--metadata",
+                "channel_id=chat:Foo",
+            ],
+        )
+        assert result.exit_code == 0
+        data = _extract_json(result.output)
+        # Should match the run with tag "chat:Foo" via direct tag check
+        assert data["summary"]["run_count"] == 1
+
+    def test_metadata_filter_matches_key_value_tag(
+        self, runner, mock_client, tmp_path, monkeypatch
+    ):
+        """INVARIANT: --metadata key=value matches runs where 'key:value' appears in tags."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+        from langsmith_cli.cache import append_runs_to_cache
+
+        # Run has tag "channel_id:room-A" (key:value format)
+        run_with_kv_tag = Run(
+            id=UUID(make_run_id(1)),
+            name="ChatModel",
+            run_type="llm",
+            start_time=datetime(2026, 3, 9, 16, 0, 0, tzinfo=timezone.utc),
+            total_tokens=1000,
+            prompt_tokens=700,
+            completion_tokens=300,
+            total_cost=Decimal("0.001"),
+            extra={"metadata": {"ls_model_name": "gpt-4"}},
+            tags=["channel_id:room-A"],
+        )
+        run_no_match = _create_llm_run(2)
+        append_runs_to_cache("test-proj", [run_with_kv_tag, run_no_match])
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "usage",
+                "--project",
+                "test-proj",
+                "--from-cache",
+                "--metadata",
+                "channel_id=room-A",
+            ],
+        )
+        assert result.exit_code == 0
+        data = _extract_json(result.output)
+        # Should match via "channel_id:room-A" tag pattern
+        assert data["summary"]["run_count"] == 1
+
+    def test_metadata_filter_prefers_direct_metadata_over_tag(
+        self, runner, mock_client, tmp_path, monkeypatch
+    ):
+        """INVARIANT: Direct metadata match takes priority; tag fallback only when metadata missing."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+        from langsmith_cli.cache import append_runs_to_cache
+
+        # Run has both metadata AND a conflicting tag — metadata should win
+        run_with_metadata = _create_llm_run(1, channel_id="room-X")
+        run_with_tag_only = Run(
+            id=UUID(make_run_id(2)),
+            name="ChatModel",
+            run_type="llm",
+            start_time=datetime(2026, 3, 9, 16, 0, 0, tzinfo=timezone.utc),
+            total_tokens=500,
+            prompt_tokens=300,
+            completion_tokens=200,
+            total_cost=Decimal("0.001"),
+            extra={"metadata": {"ls_model_name": "gpt-4"}},
+            tags=["channel_id:room-X"],
+        )
+        run_no_match = _create_llm_run(3)
+        append_runs_to_cache(
+            "test-proj", [run_with_metadata, run_with_tag_only, run_no_match]
+        )
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "usage",
+                "--project",
+                "test-proj",
+                "--from-cache",
+                "--metadata",
+                "channel_id=room-X",
+            ],
+        )
+        assert result.exit_code == 0
+        data = _extract_json(result.output)
+        # Both run_with_metadata (direct match) and run_with_tag_only (tag fallback) should match
+        assert data["summary"]["run_count"] == 2
+
+
+class TestMetadataValueMatches:
+    """Tests for _metadata_value_matches helper."""
+
+    def test_exact_match(self):
+        from langsmith_cli.commands.runs import _metadata_value_matches
+
+        assert _metadata_value_matches("room-A", "room-A") is True
+        assert _metadata_value_matches("room-B", "room-A") is False
+
+    def test_none_candidate(self):
+        from langsmith_cli.commands.runs import _metadata_value_matches
+
+        assert _metadata_value_matches(None, "room-A") is False
+
+    def test_wildcard_star(self):
+        from langsmith_cli.commands.runs import _metadata_value_matches
+
+        assert _metadata_value_matches("room-A", "room-*") is True
+        assert _metadata_value_matches("room-B", "room-*") is True
+        assert _metadata_value_matches("lobby-A", "room-*") is False
+
+    def test_wildcard_question(self):
+        from langsmith_cli.commands.runs import _metadata_value_matches
+
+        assert _metadata_value_matches("room-A", "room-?") is True
+        assert _metadata_value_matches("room-AB", "room-?") is False
+
+    def test_wildcard_unanchored(self):
+        from langsmith_cli.commands.runs import _metadata_value_matches
+
+        assert _metadata_value_matches("my-room-A", "*room*") is True
+        assert _metadata_value_matches("lobby", "*room*") is False
+
+    def test_regex_match(self):
+        from langsmith_cli.commands.runs import _metadata_value_matches
+
+        assert _metadata_value_matches("room-123", "/^room-[0-9]+$/") is True
+        assert _metadata_value_matches("room-abc", "/^room-[0-9]+$/") is False
+
+    def test_regex_search_not_fullmatch(self):
+        from langsmith_cli.commands.runs import _metadata_value_matches
+
+        # Regex uses search, not fullmatch
+        assert _metadata_value_matches("prefix-room-suffix", "/room/") is True
+
+    def test_invalid_regex_falls_back_to_exact(self):
+        from langsmith_cli.commands.runs import _metadata_value_matches
+
+        # Invalid regex should fall back to exact match
+        assert _metadata_value_matches("/[invalid/", "/[invalid/") is True
+        assert _metadata_value_matches("other", "/[invalid/") is False
+
+
+class TestUsageMetadataWildcard:
+    """Tests for wildcard/regex metadata filtering in usage from-cache mode."""
+
+    def test_wildcard_metadata_filter(self, runner, mock_client, tmp_path, monkeypatch):
+        """INVARIANT: --metadata key=pattern* matches runs with wildcard."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+        from langsmith_cli.cache import append_runs_to_cache
+
+        runs = [
+            _create_llm_run(1, channel_id="room-A"),
+            _create_llm_run(2, channel_id="room-B"),
+            _create_llm_run(3, channel_id="lobby-C"),
+        ]
+        append_runs_to_cache("test-proj", runs)
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "usage",
+                "--project",
+                "test-proj",
+                "--from-cache",
+                "--metadata",
+                "channel_id=room-*",
+            ],
+        )
+        assert result.exit_code == 0
+        data = _extract_json(result.output)
+        assert data["summary"]["run_count"] == 2
+
+    def test_regex_metadata_filter(self, runner, mock_client, tmp_path, monkeypatch):
+        """INVARIANT: --metadata key=/regex/ matches runs with regex."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+        from langsmith_cli.cache import append_runs_to_cache
+
+        runs = [
+            _create_llm_run(1, channel_id="room-123"),
+            _create_llm_run(2, channel_id="room-456"),
+            _create_llm_run(3, channel_id="room-abc"),
+        ]
+        append_runs_to_cache("test-proj", runs)
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "usage",
+                "--project",
+                "test-proj",
+                "--from-cache",
+                "--metadata",
+                "channel_id=/^room-[0-9]+$/",
+            ],
+        )
+        assert result.exit_code == 0
+        data = _extract_json(result.output)
+        assert data["summary"]["run_count"] == 2
+
+
+class TestUsageCsvFormat:
+    """Tests for --format csv output on runs usage command."""
+
+    def test_csv_format_produces_valid_output(self, runner, mock_client):
+        """INVARIANT: --format csv produces valid CSV output."""
+        import csv
+        import io
+
+        mock_client.list_runs.return_value = [
+            _create_llm_run(1, hour=16, model="gpt-4"),
+            _create_llm_run(2, hour=17, model="claude-3"),
+        ]
+
+        result = runner.invoke(
+            cli,
+            ["-qq", "runs", "usage", "--last", "24h", "--format", "csv"],
+        )
+        assert result.exit_code == 0
+        # Parse as CSV — should not raise
+        reader = csv.DictReader(io.StringIO(result.output.strip()))
+        rows = list(reader)
+        assert len(rows) >= 1
+        # Verify expected columns exist
+        assert "time" in rows[0]
+        assert "run_count" in rows[0]

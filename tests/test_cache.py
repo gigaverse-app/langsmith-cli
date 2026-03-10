@@ -373,16 +373,16 @@ class TestCacheCommands:
         )
         assert "gt(start_time" in fql_filter
 
-    def test_cache_download_full_clears_first(
+    def test_cache_download_full_keeps_existing_and_deduplicates(
         self, runner, mock_client, tmp_path, monkeypatch
     ):
-        """--full flag clears existing cache before downloading."""
+        """--full flag re-fetches full time range but keeps existing data (dedup)."""
         monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
 
         # Pre-populate cache
         append_runs_to_cache("default", [_make_run(1)])
 
-        # Return fresh runs
+        # Return fresh runs (different from existing)
         mock_client.list_runs.return_value = [_make_run(2)]
 
         result = runner.invoke(
@@ -398,10 +398,11 @@ class TestCacheCommands:
         )
 
         assert result.exit_code == 0
-        # Should only have the new run, not the old one
+        # Should have both runs (old preserved, new added, deduped)
         cached = read_cached_runs("default")
-        assert len(cached) == 1
-        assert cached[0].name == "run-2"
+        assert len(cached) == 2
+        names = {r.name for r in cached}
+        assert names == {"run-1", "run-2"}
 
     def test_cache_download_workers_option(
         self, runner, mock_client, tmp_path, monkeypatch
@@ -708,3 +709,93 @@ class TestStripBinaryData:
         assert result["small_field"] == "keep me"
         assert result["big_field"].startswith("[binary:base64:")
         assert result["number"] == 99
+
+
+class TestCacheGrepCommand:
+    """Tests for runs cache grep command."""
+
+    def _make_run_with_inputs(
+        self, n: int, inputs: dict | None = None, outputs: dict | None = None
+    ) -> Run:
+        return Run(
+            id=UUID(make_run_id(n)),
+            name=f"run-{n}",
+            run_type="llm",
+            start_time=datetime(2026, 3, 9, 16, 0, 0, tzinfo=timezone.utc),
+            total_tokens=1000,
+            inputs=inputs or {},
+            outputs=outputs or {},
+            extra={"metadata": {"ls_model_name": "gpt-4"}},
+        )
+
+    def test_grep_finds_matching_runs(self, runner, mock_client, tmp_path, monkeypatch):
+        """INVARIANT: cache grep returns runs matching the pattern."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+
+        runs = [
+            self._make_run_with_inputs(1, inputs={"text": "hello world"}),
+            self._make_run_with_inputs(2, inputs={"text": "goodbye world"}),
+            self._make_run_with_inputs(3, inputs={"text": "hello again"}),
+        ]
+        append_runs_to_cache("test-proj", runs)
+
+        result = runner.invoke(
+            cli, ["--json", "runs", "cache", "grep", "hello", "--project", "test-proj"]
+        )
+        assert result.exit_code == 0
+        # render_output outputs a JSON array
+        data = json.loads(result.output.strip().split("\n")[-1])
+        assert len(data) == 2
+
+    def test_grep_case_insensitive(self, runner, mock_client, tmp_path, monkeypatch):
+        """INVARIANT: -i flag enables case-insensitive grep."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+
+        runs = [
+            self._make_run_with_inputs(1, inputs={"text": "Hello World"}),
+            self._make_run_with_inputs(2, inputs={"text": "goodbye"}),
+        ]
+        append_runs_to_cache("test-proj", runs)
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "cache",
+                "grep",
+                "hello",
+                "-i",
+                "--project",
+                "test-proj",
+            ],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip().split("\n")[-1])
+        assert len(data) == 1
+
+    def test_grep_count_mode(self, runner, mock_client, tmp_path, monkeypatch):
+        """INVARIANT: --count returns just the number of matches."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+
+        runs = [
+            self._make_run_with_inputs(1, inputs={"text": "hello"}),
+            self._make_run_with_inputs(2, inputs={"text": "hello again"}),
+            self._make_run_with_inputs(3, inputs={"text": "goodbye"}),
+        ]
+        append_runs_to_cache("test-proj", runs)
+
+        result = runner.invoke(
+            cli,
+            ["runs", "cache", "grep", "hello", "--count", "--project", "test-proj"],
+        )
+        assert result.exit_code == 0
+        assert "2" in result.output
+
+    def test_grep_no_cached_data(self, runner, mock_client, tmp_path, monkeypatch):
+        """INVARIANT: Warns when no cached projects exist."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+
+        result = runner.invoke(cli, ["runs", "cache", "grep", "hello"])
+        assert result.exit_code == 0
+        assert "No cached" in result.output
