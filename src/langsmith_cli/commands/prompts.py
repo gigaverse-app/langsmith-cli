@@ -9,6 +9,7 @@ from langsmith_cli.utils import (
     filter_fields,
     get_or_create_client,
     json_dumps,
+    parse_fields_option,
     output_option,
     output_single_item,
     parse_comma_separated_list,
@@ -67,14 +68,8 @@ def list_prompts(ctx, limit, is_public, exclude, fields, count, output):
             table.add_row(p.full_name, p.description or "", p.owner)
         return table
 
-    # Determine which fields to include
-    if fields:
-        include_fields = {f.strip() for f in fields.split(",") if f.strip()}
-    else:
-        # Default fields for output
-        include_fields = None
+    include_fields = parse_fields_option(fields)
 
-    # Unified output rendering
     render_output(
         prompts_list,
         build_prompts_table,
@@ -121,8 +116,8 @@ def get_prompt(ctx, name, commit, fields, output):
         data = {"prompt": str(prompt_obj)}
 
     # Apply field filtering if requested
-    if fields:
-        field_set = {f.strip() for f in fields.split(",") if f.strip()}
+    field_set = parse_fields_option(fields)
+    if field_set:
         data = {k: v for k, v in data.items() if k in field_set}
 
     # Capture prompt_obj for rich rendering closure
@@ -362,11 +357,7 @@ def list_commits(ctx, name, limit, offset, include_model, fields, count, output)
             )
         return table
 
-    # Determine which fields to include
-    if fields:
-        include_fields = {f.strip() for f in fields.split(",") if f.strip()}
-    else:
-        include_fields = None
+    include_fields = parse_fields_option(fields)
 
     render_output(
         commits_list,

@@ -44,6 +44,10 @@ class FetchResult(BaseModel, Generic[T]):
     failed_sources: list[tuple[str, str]] = Field(
         default_factory=list, description="(source_name, error_message)"
     )
+    item_source_map: dict[str, str] = Field(
+        default_factory=dict,
+        description="Maps item ID (str) to source name for project attribution",
+    )
 
     @property
     def has_failures(self) -> bool:
@@ -363,12 +367,25 @@ def filter_fields(
             return [item.model_dump(mode="json") for item in data]
         return data.model_dump(mode="json")
 
-    # Parse field names
-    field_set = {f.strip() for f in fields.split(",") if f.strip()}
+    field_set = parse_fields_option(fields)
 
     if isinstance(data, list):
         return [item.model_dump(include=field_set, mode="json") for item in data]
     return data.model_dump(include=field_set, mode="json")
+
+
+def parse_fields_option(fields: str | None) -> set[str] | None:
+    """Parse comma-separated fields string into a set, or None if not provided.
+
+    Args:
+        fields: Comma-separated field names (e.g., "id,name,created_at") or None
+
+    Returns:
+        Set of field names, or None if fields is None/empty
+    """
+    if not fields:
+        return None
+    return {f.strip() for f in fields.split(",") if f.strip()}
 
 
 def fields_option(
@@ -2007,6 +2024,36 @@ def apply_grep_filter(
     return filtered_items
 
 
+def build_tag_fql_filters(tags: tuple[str, ...] | list[str]) -> list[str]:
+    """Build FQL filter clauses for tag filtering (AND logic).
+
+    Args:
+        tags: Tag values to filter by (all must be present on a run)
+
+    Returns:
+        List of FQL filter strings, one per tag
+    """
+    return [f'has(tags, "{t}")' for t in tags]
+
+
+def filter_runs_by_tags(
+    runs: list[Run], tags: tuple[str, ...] | list[str]
+) -> list[Run]:
+    """Client-side tag filtering for cached runs (AND logic).
+
+    Args:
+        runs: List of Run instances to filter
+        tags: Tag values that must all be present on each run
+
+    Returns:
+        Filtered list of runs where all specified tags are present
+    """
+    if not tags:
+        return runs
+    tag_set = set(tags)
+    return [r for r in runs if r.tags and tag_set.issubset(set(r.tags))]
+
+
 def build_runs_list_filter(
     filter_: str | None = None,
     status: str | None = None,
@@ -2077,8 +2124,7 @@ def build_runs_list_filter(
 
     # Tag filtering (AND logic - all tags must be present)
     if tag:
-        for t in tag:
-            fql_filters.append(f'has(tags, "{t}")')
+        fql_filters.extend(build_tag_fql_filters(tag))
 
     # Model filtering (search in model-related fields)
     if model:

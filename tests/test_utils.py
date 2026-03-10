@@ -9,6 +9,8 @@ from uuid import UUID
 import click
 from langsmith.schemas import Run
 
+from conftest import create_run
+
 from langsmith_cli.utils import (
     CLIFetchError,
     FetchResult,
@@ -1719,3 +1721,76 @@ class TestRaiseIfAllFailedWithSuggestionsWrapper:
         raise_if_all_failed_with_suggestions(
             result, mock_client, pq, entity_name="runs"
         )
+
+
+class TestBuildTagFqlFilters:
+    """Tests for build_tag_fql_filters helper."""
+
+    def test_single_tag(self):
+        from langsmith_cli.utils import build_tag_fql_filters
+
+        result = build_tag_fql_filters(("prod",))
+        assert result == ['has(tags, "prod")']
+
+    def test_multiple_tags(self):
+        from langsmith_cli.utils import build_tag_fql_filters
+
+        result = build_tag_fql_filters(("prod", "critical"))
+        assert result == ['has(tags, "prod")', 'has(tags, "critical")']
+
+    def test_empty_tags(self):
+        from langsmith_cli.utils import build_tag_fql_filters
+
+        result = build_tag_fql_filters(())
+        assert result == []
+
+    def test_tag_with_colon_value(self):
+        from langsmith_cli.utils import build_tag_fql_filters
+
+        result = build_tag_fql_filters(("env:prod",))
+        assert result == ['has(tags, "env:prod")']
+
+
+class TestFilterRunsByTags:
+    """Tests for filter_runs_by_tags helper."""
+
+    def test_filters_matching_runs(self):
+        from langsmith_cli.utils import filter_runs_by_tags
+
+        r1 = create_run(id_str="auto", tags=["prod", "critical"])
+        r2 = create_run(id_str="auto", tags=["staging", "critical"])
+        r3 = create_run(id_str="auto", tags=["prod"])
+
+        result = filter_runs_by_tags([r1, r2, r3], ("prod",))
+        assert len(result) == 2
+        assert r1 in result
+        assert r3 in result
+
+    def test_and_logic_multiple_tags(self):
+        from langsmith_cli.utils import filter_runs_by_tags
+
+        r1 = create_run(id_str="auto", tags=["prod", "critical"])
+        r2 = create_run(id_str="auto", tags=["prod"])
+
+        result = filter_runs_by_tags([r1, r2], ("prod", "critical"))
+        assert len(result) == 1
+        assert r1 in result
+
+    def test_empty_tags_returns_all(self):
+        from langsmith_cli.utils import filter_runs_by_tags
+
+        r1 = create_run(id_str="auto", tags=["prod"])
+        r2 = create_run(id_str="auto", tags=["staging"])
+
+        result = filter_runs_by_tags([r1, r2], ())
+        assert len(result) == 2
+
+    def test_run_with_no_tags_excluded(self):
+        from langsmith_cli.utils import filter_runs_by_tags
+
+        r1 = create_run(id_str="auto", tags=["prod"])
+        r2 = create_run(id_str="auto", tags=[])
+
+        result = filter_runs_by_tags([r1, r2], ("prod",))
+        assert len(result) == 1
+        assert r1 in result

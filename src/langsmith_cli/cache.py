@@ -359,6 +359,7 @@ def load_runs_from_cache(
     all_runs: list[Run] = []
     successful: list[str] = []
     failed: list[tuple[str, str]] = []
+    source_map: dict[str, str] = {}
 
     for name in project_names:
         cache_path = get_cache_path(name)
@@ -366,6 +367,8 @@ def load_runs_from_cache(
             failed.append((name, "Not cached. Run 'runs cache download' first."))
             continue
         runs = read_cached_runs(name, since=since, until=until)
+        for run in runs:
+            source_map[str(run.id)] = name
         all_runs.extend(runs)
         successful.append(name)
 
@@ -373,4 +376,5 @@ def load_runs_from_cache(
         items=all_runs,
         successful_sources=successful,
         failed_sources=failed,
+        item_source_map=source_map,
     )

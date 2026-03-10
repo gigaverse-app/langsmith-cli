@@ -261,3 +261,81 @@ class TestFetchOpenRouterPricing:
             result = _fetch_openrouter_pricing(["totally-unknown-model"], logger)
 
         assert "totally-unknown-model" not in result
+
+
+class TestPricingTagFiltering:
+    """Tests for --tag filtering on runs pricing command."""
+
+    def test_tag_filter_adds_fql_for_api(self, runner, mock_client):
+        """INVARIANT: --tag adds has(tags, ...) FQL filter for API calls."""
+        mock_client.list_runs.return_value = [_make_llm_run(1)]
+
+        runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "pricing",
+                "--project",
+                "test-proj",
+                "--last",
+                "7d",
+                "--tag",
+                "env:prod",
+                "--no-lookup",
+            ],
+        )
+
+        call_kwargs = mock_client.list_runs.call_args[1]
+        assert 'has(tags, "env:prod")' in call_kwargs["filter"]
+
+    def test_tag_filter_client_side_from_cache(
+        self, runner, mock_client, tmp_path, monkeypatch
+    ):
+        """INVARIANT: --tag filters cached runs client-side."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+        from langsmith_cli.cache import append_runs_to_cache
+
+        prod_run = Run(
+            id=UUID(make_run_id(1)),
+            name="ChatOpenAI",
+            run_type="llm",
+            start_time=datetime(2026, 3, 9, 16, 0, 0, tzinfo=timezone.utc),
+            total_tokens=1000,
+            total_cost=Decimal("0.005"),
+            extra={"metadata": {"ls_model_name": "gpt-4o"}},
+            tags=["env:prod"],
+        )
+        staging_run = Run(
+            id=UUID(make_run_id(2)),
+            name="ChatOpenAI",
+            run_type="llm",
+            start_time=datetime(2026, 3, 9, 16, 0, 0, tzinfo=timezone.utc),
+            total_tokens=2000,
+            total_cost=Decimal("0.010"),
+            extra={"metadata": {"ls_model_name": "gpt-4o"}},
+            tags=["env:staging"],
+        )
+        append_runs_to_cache("test-proj", [prod_run, staging_run])
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "pricing",
+                "--project",
+                "test-proj",
+                "--from-cache",
+                "--tag",
+                "env:prod",
+                "--no-lookup",
+            ],
+        )
+        assert result.exit_code == 0
+        data = _extract_json(result.output)
+        # Only the prod run should be counted (1 run, not 2)
+        models = data["models"]
+        assert len(models) == 1
+        assert models[0]["runs"] == 1
+        assert models[0]["total_tokens"] == 1000

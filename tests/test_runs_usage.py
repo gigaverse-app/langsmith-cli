@@ -632,3 +632,95 @@ class TestUsageCommand:
         for call in mock_client.list_runs.call_args_list:
             call_kwargs = call[1]
             assert "order_by" not in call_kwargs
+
+
+class TestUsageTagFiltering:
+    """Tests for --tag filtering on runs usage command."""
+
+    def test_tag_filter_adds_fql_for_api(self, runner, mock_client):
+        """INVARIANT: --tag adds has(tags, ...) FQL filter for API calls."""
+        mock_client.list_runs.return_value = [_create_llm_run(1)]
+
+        runner.invoke(
+            cli,
+            ["--json", "runs", "usage", "--last", "24h", "--tag", "env:prod"],
+        )
+
+        call_kwargs = mock_client.list_runs.call_args[1]
+        assert 'has(tags, "env:prod")' in call_kwargs["filter"]
+
+    def test_multiple_tags_and_logic_api(self, runner, mock_client):
+        """INVARIANT: Multiple --tag flags produce AND logic in FQL."""
+        mock_client.list_runs.return_value = [_create_llm_run(1)]
+
+        runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "usage",
+                "--last",
+                "24h",
+                "--tag",
+                "env:prod",
+                "--tag",
+                "team:ml",
+            ],
+        )
+
+        call_kwargs = mock_client.list_runs.call_args[1]
+        fql = call_kwargs["filter"]
+        assert 'has(tags, "env:prod")' in fql
+        assert 'has(tags, "team:ml")' in fql
+
+    def test_tag_filter_client_side_from_cache(
+        self, runner, mock_client, tmp_path, monkeypatch
+    ):
+        """INVARIANT: --tag filters cached runs client-side."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+        from langsmith_cli.cache import append_runs_to_cache
+
+        runs = [
+            _create_llm_run(1, tag_env="prod"),
+            _create_llm_run(2, tag_env="staging"),
+            _create_llm_run(3, tag_env="prod"),
+        ]
+        append_runs_to_cache("test-proj", runs)
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "usage",
+                "--project",
+                "test-proj",
+                "--from-cache",
+                "--tag",
+                "env:prod",
+            ],
+        )
+        assert result.exit_code == 0
+        data = _extract_json(result.output)
+        # Should only count 2 prod runs, not all 3
+        assert data["summary"]["run_count"] == 2
+
+    def test_cache_project_mapping_uses_source_map(self, tmp_path, monkeypatch):
+        """INVARIANT: load_runs_from_cache populates item_source_map correctly."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+        from langsmith_cli.cache import append_runs_to_cache, load_runs_from_cache
+
+        # Two projects with different runs
+        proj_a_runs = [_create_llm_run(1, hour=14, model="gpt-4")]
+        proj_b_runs = [_create_llm_run(2, hour=15, model="claude-3")]
+        append_runs_to_cache("proj-a", proj_a_runs)
+        append_runs_to_cache("proj-b", proj_b_runs)
+
+        result = load_runs_from_cache(["proj-a", "proj-b"])
+
+        assert len(result.items) == 2
+        # Each run should map to its source project
+        run1_id = str(proj_a_runs[0].id)
+        run2_id = str(proj_b_runs[0].id)
+        assert result.item_source_map[run1_id] == "proj-a"
+        assert result.item_source_map[run2_id] == "proj-b"

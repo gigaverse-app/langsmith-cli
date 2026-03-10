@@ -9,6 +9,7 @@ from langsmith_cli.utils import (
     filter_fields,
     get_or_create_client,
     output_option,
+    parse_fields_option,
     output_single_item,
     parse_comma_separated_list,
     parse_json_string,
@@ -125,12 +126,7 @@ def list_examples(
             table.add_row(str(e.id), inputs_str, outputs_str)
         return table
 
-    # Determine which fields to include
-    if fields:
-        include_fields = {f.strip() for f in fields.split(",") if f.strip()}
-    else:
-        # Default fields for output
-        include_fields = None
+    include_fields = parse_fields_option(fields)
 
     # Unified output rendering
     render_output(

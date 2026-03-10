@@ -13,6 +13,7 @@ from langsmith_cli.utils import (
     fields_option,
     filter_fields,
     get_or_create_client,
+    parse_fields_option,
     json_dumps,
     output_option,
     output_single_item,
@@ -108,12 +109,7 @@ def list_datasets(
             table.add_row(d.name, str(d.id), d.data_type)
         return table
 
-    # Determine which fields to include
-    if fields:
-        include_fields = {f.strip() for f in fields.split(",") if f.strip()}
-    else:
-        # Default fields for output
-        include_fields = None
+    include_fields = parse_fields_option(fields)
 
     # Unified output rendering
     render_output(

@@ -15,6 +15,7 @@ from langsmith_cli.utils import (
     apply_grep_filter,
     build_runs_list_filter,
     build_runs_table,
+    build_tag_fql_filters,
     build_time_fql_filters,
     combine_fql_filters,
     count_option,
@@ -23,6 +24,8 @@ from langsmith_cli.utils import (
     fetch_from_projects,
     fields_option,
     filter_fields,
+    filter_runs_by_tags,
+    parse_fields_option,
     get_matching_items,
     get_or_create_client,
     get_project_suggestions,
@@ -580,8 +583,7 @@ def list_runs(
 
     # Tag filtering (AND logic - all tags must be present)
     if tag:
-        for t in tag:
-            fql_filters.append(f'has(tags, "{t}")')
+        fql_filters.extend(build_tag_fql_filters(tag))
 
     # Run name pattern - skip FQL filtering, do client-side instead
     # (FQL search doesn't support proper wildcard matching)
@@ -2775,6 +2777,11 @@ def _truncate_hour(dt: Any) -> str:
     help="Number of runs to analyze (default: 0 = all runs in time range).",
 )
 @click.option(
+    "--tag",
+    multiple=True,
+    help="Filter by tag (can specify multiple times for AND logic).",
+)
+@click.option(
     "--metadata",
     "metadata_filters",
     multiple=True,
@@ -2814,6 +2821,7 @@ def usage_runs(
     interval: str,
     active_only: bool,
     sample_size: int,
+    tag: tuple[str, ...],
     metadata_filters: tuple[str, ...],
     additional_filter: str | None,
     from_cache: bool,
@@ -2869,6 +2877,10 @@ def usage_runs(
     base_filters = time_filters.copy()
     base_filters.append('eq(run_type, "llm")')
 
+    # Tag filtering (AND logic - all tags must be present)
+    if tag:
+        base_filters.extend(build_tag_fql_filters(tag))
+
     # Add metadata filters (server-side, fast)
     for mf in metadata_filters:
         if "=" not in mf:
@@ -2916,9 +2928,9 @@ def usage_runs(
             for src, err in result.failed_sources[:3]:
                 logger.warning(f"  {src}: {err}")
 
-        # Build trace context map from all runs (for group-by propagation)
+        # Build trace context map from all runs (for group-by/metadata propagation)
         # When LLM runs lack a metadata field, we can look it up from root/chain runs
-        if group_by:
+        if group_by or metadata_filters:
             for run in result.items:
                 tid = str(run.trace_id) if run.trace_id else None
                 if not tid:
@@ -2945,19 +2957,30 @@ def usage_runs(
             if run.run_type != "llm":
                 continue
             all_runs.append(run)
-            # Determine project from successful_sources or run
-            for src in result.successful_sources:
-                run_project_map[str(run.id)] = src
+            # Use item_source_map from cache loader for accurate project attribution
+            run_id = str(run.id)
+            if run_id in result.item_source_map:
+                run_project_map[run_id] = result.item_source_map[run_id]
 
-        # Apply metadata filters client-side (check trace context too)
+        # Apply tag filters client-side
+        if tag:
+            all_runs = filter_runs_by_tags(all_runs, tag)
+
+        # Apply metadata filters client-side (check metadata, tags, and trace context)
         for mf in metadata_filters:
             if "=" not in mf:
                 continue
             key, value = mf.split("=", 1)
             filtered: list[Run] = []
             for r in all_runs:
+                # Check metadata
                 direct = extract_group_value(r, "metadata", key)
                 if direct == value:
+                    filtered.append(r)
+                    continue
+                # Check tags: value may appear as a tag directly ("chat:Foo")
+                # or as "key:value" ("channel_id:chat:Foo")
+                if r.tags and (value in r.tags or f"{key}:{value}" in r.tags):
                     filtered.append(r)
                     continue
                 # Fallback to trace context
@@ -3630,6 +3653,11 @@ def cache_clear(ctx: click.Context, project: str | None, yes: bool) -> None:
 @add_project_filter_options
 @add_time_filter_options
 @click.option(
+    "--tag",
+    multiple=True,
+    help="Filter by tag (can specify multiple times for AND logic).",
+)
+@click.option(
     "--from-cache",
     is_flag=True,
     help="Analyze cached runs instead of fetching from API.",
@@ -3651,6 +3679,7 @@ def pricing_check(
     since: str | None,
     before: str | None,
     last: str | None,
+    tag: tuple[str, ...],
     from_cache: bool,
     lookup: bool,
 ) -> None:
@@ -3704,6 +3733,9 @@ def pricing_check(
         logger.info(f"Scanning cached runs from {len(project_names)} project(s)...")
         result = load_runs_from_cache(project_names, since=since_dt, until=until_dt)
         all_runs = [r for r in result.items if r.run_type == "llm"]
+        # Apply tag filters client-side
+        if tag:
+            all_runs = filter_runs_by_tags(all_runs, tag)
     else:
         client = get_or_create_client(ctx)
         pq = resolve_project_filters(
@@ -3719,6 +3751,9 @@ def pricing_check(
         time_filters = build_time_fql_filters(since=since, last=last, before=before)
         base_filters = time_filters.copy()
         base_filters.append('eq(run_type, "llm")')
+        # Tag filtering (AND logic - all tags must be present)
+        if tag:
+            base_filters.extend(build_tag_fql_filters(tag))
         combined_filter = combine_fql_filters(base_filters)
 
         logger.info(f"Scanning LLM runs from {len(pq.names)} project(s)...")
@@ -4067,10 +4102,7 @@ def export_runs(
     if len(all_runs) > limit:
         all_runs = all_runs[:limit]
 
-    # Determine field filtering
-    include_fields: set[str] | None = None
-    if fields:
-        include_fields = {f.strip() for f in fields.split(",") if f.strip()}
+    include_fields = parse_fields_option(fields)
 
     def _sanitize_filename(name: str) -> str:
         """Sanitize a string for use as a filename."""

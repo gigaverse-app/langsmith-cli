@@ -14,6 +14,7 @@ from langsmith_cli.utils import (
     extract_regex_search_term,
     fields_option,
     filter_fields,
+    parse_fields_option,
     count_option,
     exclude_option,
     output_option,
@@ -267,12 +268,7 @@ def list_projects(
 
         return table
 
-    # Determine which fields to include
-    if fields:
-        include_fields = {f.strip() for f in fields.split(",") if f.strip()}
-    else:
-        # Default fields for output
-        include_fields = None
+    include_fields = parse_fields_option(fields)
 
     # Unified output rendering
     render_output(
