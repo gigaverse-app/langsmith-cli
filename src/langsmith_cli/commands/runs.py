@@ -2782,6 +2782,21 @@ def _truncate_hour(dt: Any) -> str:
     help="Filter by tag (can specify multiple times for AND logic).",
 )
 @click.option(
+    "--grep",
+    help="Client-side pattern search in run content (inputs, outputs, error). "
+    "Searches ALL content, parses nested JSON.",
+)
+@click.option(
+    "--grep-ignore-case",
+    is_flag=True,
+    help="Make --grep search case-insensitive.",
+)
+@click.option(
+    "--grep-regex",
+    is_flag=True,
+    help="Treat --grep pattern as regex.",
+)
+@click.option(
     "--metadata",
     "metadata_filters",
     multiple=True,
@@ -2822,6 +2837,9 @@ def usage_runs(
     active_only: bool,
     sample_size: int,
     tag: tuple[str, ...],
+    grep: str | None,
+    grep_ignore_case: bool,
+    grep_regex: bool,
     metadata_filters: tuple[str, ...],
     additional_filter: str | None,
     from_cache: bool,
@@ -3017,6 +3035,9 @@ def usage_runs(
             "extra",
             "run_type",
         ]
+        # Grep needs content fields to search
+        if grep:
+            select_fields.extend(["inputs", "outputs", "error"])
 
         failed_projects: list[tuple[str, str]] = []
         sources: list[tuple[str, dict[str, Any]]] = []
@@ -3051,6 +3072,15 @@ def usage_runs(
             raise click.ClickException(
                 "No runs fetched. Check project names and API key."
             )
+
+    # Apply grep filter (client-side content search)
+    if grep:
+        all_runs = apply_grep_filter(
+            all_runs,
+            grep_pattern=grep,
+            ignore_case=grep_ignore_case,
+            use_regex=grep_regex,
+        )
 
     # Filter to only runs with a model name (avoids counting non-LLM chain wrappers)
     model_runs = [r for r in all_runs if _get_model_name(r) != "unknown"]

@@ -724,3 +724,72 @@ class TestUsageTagFiltering:
         run2_id = str(proj_b_runs[0].id)
         assert result.item_source_map[run1_id] == "proj-a"
         assert result.item_source_map[run2_id] == "proj-b"
+
+
+class TestUsageGrepFiltering:
+    """Tests for --grep filtering on runs usage command."""
+
+    def test_grep_filters_runs_by_content(self, runner, mock_client):
+        """INVARIANT: --grep filters runs by content before aggregation."""
+        # Create runs with different inputs
+        run_match = Run(
+            id=UUID(make_run_id(1)),
+            name="ChatModel",
+            run_type="llm",
+            start_time=datetime(2026, 3, 9, 16, 0, 0, tzinfo=timezone.utc),
+            total_tokens=1000,
+            prompt_tokens=700,
+            completion_tokens=300,
+            total_cost=Decimal("0.001"),
+            extra={"metadata": {"ls_model_name": "gpt-4"}},
+            inputs={"messages": [{"content": "Tell me about Python"}]},
+        )
+        run_no_match = Run(
+            id=UUID(make_run_id(2)),
+            name="ChatModel",
+            run_type="llm",
+            start_time=datetime(2026, 3, 9, 16, 30, 0, tzinfo=timezone.utc),
+            total_tokens=2000,
+            prompt_tokens=1400,
+            completion_tokens=600,
+            total_cost=Decimal("0.002"),
+            extra={"metadata": {"ls_model_name": "gpt-4"}},
+            inputs={"messages": [{"content": "Tell me about Java"}]},
+        )
+        mock_client.list_runs.return_value = [run_match, run_no_match]
+
+        result = runner.invoke(
+            cli,
+            ["--json", "runs", "usage", "--last", "24h", "--grep", "Python"],
+        )
+        assert result.exit_code == 0
+        data = _extract_json(result.output)
+        # Only the Python run should be counted
+        assert data["summary"]["run_count"] == 1
+        assert data["summary"]["total_tokens"] == 1000
+
+    def test_grep_with_api_adds_content_fields_to_select(self, runner, mock_client):
+        """INVARIANT: --grep adds inputs/outputs/error to select fields for API."""
+        mock_client.list_runs.return_value = [_create_llm_run(1)]
+
+        runner.invoke(
+            cli,
+            ["--json", "runs", "usage", "--last", "24h", "--grep", "test"],
+        )
+
+        call_kwargs = mock_client.list_runs.call_args[1]
+        select = call_kwargs["select"]
+        assert "inputs" in select
+        assert "outputs" in select
+        assert "error" in select
+
+    def test_grep_without_flag_does_not_add_content_fields(self, runner, mock_client):
+        """INVARIANT: Without --grep, select fields stay minimal for performance."""
+        mock_client.list_runs.return_value = [_create_llm_run(1)]
+
+        runner.invoke(cli, ["--json", "runs", "usage", "--last", "24h"])
+
+        call_kwargs = mock_client.list_runs.call_args[1]
+        select = call_kwargs["select"]
+        assert "inputs" not in select
+        assert "outputs" not in select
