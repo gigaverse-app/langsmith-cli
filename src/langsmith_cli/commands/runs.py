@@ -2695,6 +2695,46 @@ def _get_project_name(run: Run) -> str:
     return "unknown"
 
 
+def _get_gateway(run: Run) -> str:
+    """Extract gateway/API provider from ls_provider metadata."""
+    extra = run.extra or {}
+    metadata = extra.get("metadata", {}) or {}
+    return str(metadata.get("ls_provider", "unknown"))
+
+
+# Model name prefix -> original provider (who made the model)
+_MODEL_PROVIDER_PREFIXES: list[tuple[str, str]] = [
+    ("gemini", "Google"),
+    ("gpt-", "OpenAI"),
+    ("o1", "OpenAI"),
+    ("o3", "OpenAI"),
+    ("o4", "OpenAI"),
+    ("llama", "Meta"),
+    ("meta-llama", "Meta"),
+    ("sonar", "Perplexity"),
+    ("qwen", "Alibaba"),
+    ("grok", "xAI"),
+    ("x-ai/", "xAI"),
+    ("claude", "Anthropic"),
+    ("mistral", "Mistral"),
+    ("deepseek", "DeepSeek"),
+    ("command", "Cohere"),
+]
+
+
+def _get_provider(run: Run) -> str:
+    """Infer the model provider (who made the model) from the model name."""
+    model = _get_model_name(run).lower()
+    for prefix, provider in _MODEL_PROVIDER_PREFIXES:
+        if model.startswith(prefix) or f"/{prefix}" in model:
+            return provider
+    # Fall back to gateway as provider for proprietary models (e.g. cerebras/gpt-oss)
+    gateway = _get_gateway(run)
+    if gateway != "unknown":
+        return gateway.title()
+    return "unknown"
+
+
 def _extract_input_context(run: Run) -> dict[str, str]:
     """Extract structured context from run inputs.
 
@@ -2725,6 +2765,28 @@ def _extract_input_context(run: Run) -> dict[str, str]:
                 result[key] = str(val)
 
     return result
+
+
+def _emit_empty_usage_json(output_format: str | None, ctx: Any, interval: str) -> None:
+    """Emit an empty usage JSON summary when no data matches filters."""
+    format_type = determine_output_format(output_format, ctx.obj.get("json"))
+    if format_type != "table":
+        empty_data: dict[str, Any] = {
+            "summary": {
+                "total_tokens": 0,
+                "total_cost": 0,
+                "prompt_cost": 0,
+                "completion_cost": 0,
+                "active_buckets": 0,
+                "unique_groups": 0,
+                "max_concurrent_groups": 0,
+                "avg_concurrent_groups": 0,
+                "interval": interval,
+                "run_count": 0,
+            },
+            "buckets": [],
+        }
+        output_formatted_data(empty_data, format_type)
 
 
 def _metadata_value_matches(candidate: str | None, pattern: str) -> bool:
@@ -2791,8 +2853,8 @@ def _truncate_hour(dt: Any) -> str:
 @click.option(
     "--breakdown",
     multiple=True,
-    type=click.Choice(["model", "project"]),
-    help="Add breakdown dimensions (can specify multiple: --breakdown model --breakdown project).",
+    type=click.Choice(["model", "project", "provider", "gateway"]),
+    help="Add breakdown dimensions (can specify multiple: --breakdown model --breakdown project --breakdown provider --breakdown gateway).",
 )
 @click.option(
     "--interval",
@@ -3122,6 +3184,7 @@ def usage_runs(
 
     if not model_runs:
         logger.warning("No LLM runs with model info found in the selected time range.")
+        _emit_empty_usage_json(output_format, ctx, interval)
         return
 
     # Parse group-by if provided
@@ -3153,6 +3216,8 @@ def usage_runs(
             "prompt_tokens": 0,
             "completion_tokens": 0,
             "total_cost": 0.0,
+            "prompt_cost": 0.0,
+            "completion_cost": 0.0,
             "run_count": 0,
         }
     )
@@ -3180,6 +3245,10 @@ def usage_runs(
                 breakdown_vals.append(
                     run_project_map.get(str(run.id), _get_project_name(run))
                 )
+            elif dim == "provider":
+                breakdown_vals.append(_get_provider(run))
+            elif dim == "gateway":
+                breakdown_vals.append(_get_gateway(run))
 
         key = (time_key, group_val, *breakdown_vals)
 
@@ -3193,6 +3262,12 @@ def usage_runs(
         )
         bucket["total_cost"] = float(bucket["total_cost"]) + float(
             run.total_cost or 0.0
+        )
+        bucket["prompt_cost"] = float(bucket["prompt_cost"]) + float(
+            run.prompt_cost or 0.0
+        )
+        bucket["completion_cost"] = float(bucket["completion_cost"]) + float(
+            run.completion_cost or 0.0
         )
         bucket["run_count"] = int(bucket["run_count"]) + 1
 
@@ -3219,6 +3294,7 @@ def usage_runs(
 
     if not results:
         logger.warning("No usage data found for the selected filters.")
+        _emit_empty_usage_json(output_format, ctx, interval)
         return
 
     # Compute summary stats
@@ -3226,6 +3302,8 @@ def usage_runs(
     unique_times = {r["time"] for r in results}
     total_tokens_all = sum(r["total_tokens"] for r in results)
     total_cost_all = sum(r["total_cost"] for r in results)
+    prompt_cost_all = sum(r["prompt_cost"] for r in results)
+    completion_cost_all = sum(r["completion_cost"] for r in results)
 
     # Concurrent groups per time bucket
     groups_per_bucket: dict[str, set[str]] = defaultdict(set)
@@ -3248,6 +3326,8 @@ def usage_runs(
             "summary": {
                 "total_tokens": total_tokens_all,
                 "total_cost": round(total_cost_all, 6),
+                "prompt_cost": round(prompt_cost_all, 6),
+                "completion_cost": round(completion_cost_all, 6),
                 "active_buckets": len(unique_times),
                 "unique_groups": len(unique_groups),
                 "max_concurrent_groups": max_concurrent,
@@ -3289,6 +3369,8 @@ def usage_runs(
     table.add_column("Prompt", justify="right")
     table.add_column("Completion", justify="right")
     table.add_column("Cost", justify="right")
+    table.add_column("In $", justify="right")
+    table.add_column("Out $", justify="right")
 
     for r in results:
         row_values = [r["time"]]
@@ -3303,6 +3385,8 @@ def usage_runs(
                 f"{r['prompt_tokens']:,}",
                 f"{r['completion_tokens']:,}",
                 f"${r['total_cost']:.4f}",
+                f"${r['prompt_cost']:.4f}",
+                f"${r['completion_cost']:.4f}",
             ]
         )
         table.add_row(*row_values)

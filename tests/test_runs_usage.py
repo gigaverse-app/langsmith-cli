@@ -30,13 +30,18 @@ def _create_llm_run(
     prompt_tokens: int = 700,
     completion_tokens: int = 300,
     cost: str = "0.001",
+    prompt_cost: str | None = None,
+    completion_cost: str | None = None,
     channel_id: str | None = None,
     tag_env: str | None = None,
+    ls_provider: str | None = None,
 ) -> Run:
     """Create an LLM run with model metadata for usage tests."""
     metadata: dict = {"ls_model_name": model}
     if channel_id:
         metadata["channel_id"] = channel_id
+    if ls_provider:
+        metadata["ls_provider"] = ls_provider
 
     tags = []
     if tag_env:
@@ -51,6 +56,8 @@ def _create_llm_run(
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
         total_cost=Decimal(cost),
+        prompt_cost=Decimal(prompt_cost) if prompt_cost else None,
+        completion_cost=Decimal(completion_cost) if completion_cost else None,
         extra={"metadata": metadata},
         tags=tags,
     )
@@ -1065,3 +1072,263 @@ class TestUsageCsvFormat:
         # Verify expected columns exist
         assert "time" in rows[0]
         assert "run_count" in rows[0]
+
+
+class TestUsageProviderGatewayBreakdown:
+    """Tests for --breakdown provider and --breakdown gateway dimensions."""
+
+    def test_breakdown_by_provider_from_model_name(self, runner, mock_client):
+        """INVARIANT: Provider is inferred from model name prefix."""
+        runs = [
+            _create_llm_run(1, model="gpt-4", total_tokens=100),
+            _create_llm_run(2, model="gemini-2.5-flash", total_tokens=200),
+            _create_llm_run(3, model="llama-3.3-70b", total_tokens=300),
+        ]
+        mock_client.list_runs.return_value = runs
+
+        result = runner.invoke(
+            cli,
+            ["--json", "runs", "usage", "--breakdown", "provider", "--last", "24h"],
+        )
+
+        assert result.exit_code == 0
+        data = _extract_json(result.output)
+        buckets = data["buckets"]
+        providers = {b["provider"] for b in buckets}
+        assert providers == {"OpenAI", "Google", "Meta"}
+
+    def test_breakdown_by_provider_gpt_oss_is_openai(self, runner, mock_client):
+        """INVARIANT: gpt-oss is an OpenAI open-source model (served via Cerebras gateway)."""
+        runs = [
+            _create_llm_run(1, model="gpt-oss-120b", ls_provider="cerebras"),
+        ]
+        mock_client.list_runs.return_value = runs
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "usage",
+                "--breakdown",
+                "provider",
+                "--breakdown",
+                "gateway",
+                "--last",
+                "24h",
+            ],
+        )
+
+        assert result.exit_code == 0
+        data = _extract_json(result.output)
+        assert data["buckets"][0]["provider"] == "OpenAI"
+        assert data["buckets"][0]["gateway"] == "cerebras"
+
+    def test_breakdown_by_provider_falls_back_to_gateway(self, runner, mock_client):
+        """INVARIANT: Unknown model names fall back to gateway as provider."""
+        runs = [
+            _create_llm_run(1, model="custom-proprietary-v2", ls_provider="cerebras"),
+        ]
+        mock_client.list_runs.return_value = runs
+
+        result = runner.invoke(
+            cli,
+            ["--json", "runs", "usage", "--breakdown", "provider", "--last", "24h"],
+        )
+
+        assert result.exit_code == 0
+        data = _extract_json(result.output)
+        buckets = data["buckets"]
+        assert buckets[0]["provider"] == "Cerebras"
+
+    def test_breakdown_by_gateway(self, runner, mock_client):
+        """INVARIANT: Gateway is extracted from ls_provider metadata."""
+        runs = [
+            _create_llm_run(1, model="llama-3.3-70b", ls_provider="groq"),
+            _create_llm_run(2, model="llama-3.3-70b", ls_provider="cerebras"),
+            _create_llm_run(3, model="gpt-4", ls_provider="openai"),
+        ]
+        mock_client.list_runs.return_value = runs
+
+        result = runner.invoke(
+            cli,
+            ["--json", "runs", "usage", "--breakdown", "gateway", "--last", "24h"],
+        )
+
+        assert result.exit_code == 0
+        data = _extract_json(result.output)
+        buckets = data["buckets"]
+        gateways = {b["gateway"] for b in buckets}
+        assert gateways == {"groq", "cerebras", "openai"}
+
+    def test_breakdown_by_gateway_unknown_when_missing(self, runner, mock_client):
+        """INVARIANT: Missing ls_provider yields 'unknown' gateway."""
+        runs = [_create_llm_run(1, model="gpt-4")]
+        mock_client.list_runs.return_value = runs
+
+        result = runner.invoke(
+            cli,
+            ["--json", "runs", "usage", "--breakdown", "gateway", "--last", "24h"],
+        )
+
+        assert result.exit_code == 0
+        data = _extract_json(result.output)
+        assert data["buckets"][0]["gateway"] == "unknown"
+
+    def test_breakdown_provider_and_gateway_together(self, runner, mock_client):
+        """INVARIANT: Provider and gateway can be used as simultaneous breakdowns."""
+        runs = [
+            _create_llm_run(1, model="llama-3.3-70b", ls_provider="groq"),
+            _create_llm_run(2, model="llama-3.3-70b", ls_provider="cerebras"),
+        ]
+        mock_client.list_runs.return_value = runs
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "usage",
+                "--breakdown",
+                "provider",
+                "--breakdown",
+                "gateway",
+                "--last",
+                "24h",
+            ],
+        )
+
+        assert result.exit_code == 0
+        data = _extract_json(result.output)
+        buckets = data["buckets"]
+        assert len(buckets) == 2
+        assert all("provider" in b for b in buckets)
+        assert all("gateway" in b for b in buckets)
+        # Both are Meta but different gateways
+        assert all(b["provider"] == "Meta" for b in buckets)
+        gateways = {b["gateway"] for b in buckets}
+        assert gateways == {"groq", "cerebras"}
+
+    def test_provider_prefix_matching(self, runner, mock_client):
+        """INVARIANT: Provider detection handles slash-separated model names."""
+        runs = [
+            _create_llm_run(
+                1, model="meta-llama/llama-3.3-70b-instruct", ls_provider="openrouter"
+            ),
+        ]
+        mock_client.list_runs.return_value = runs
+
+        result = runner.invoke(
+            cli,
+            ["--json", "runs", "usage", "--breakdown", "provider", "--last", "24h"],
+        )
+
+        assert result.exit_code == 0
+        data = _extract_json(result.output)
+        assert data["buckets"][0]["provider"] == "Meta"
+
+
+class TestUsagePromptCompletionCost:
+    """Tests for prompt_cost and completion_cost in usage output."""
+
+    def test_prompt_completion_cost_aggregated(self, runner, mock_client):
+        """INVARIANT: prompt_cost and completion_cost are summed in buckets."""
+        runs = [
+            _create_llm_run(
+                1,
+                cost="0.05",
+                prompt_cost="0.02",
+                completion_cost="0.03",
+            ),
+            _create_llm_run(
+                2,
+                cost="0.10",
+                prompt_cost="0.04",
+                completion_cost="0.06",
+            ),
+        ]
+        mock_client.list_runs.return_value = runs
+
+        result = runner.invoke(
+            cli,
+            ["--json", "runs", "usage", "--last", "24h"],
+        )
+
+        assert result.exit_code == 0
+        data = _extract_json(result.output)
+        bucket = data["buckets"][0]
+        assert bucket["prompt_cost"] == pytest.approx(0.06, rel=0.001)
+        assert bucket["completion_cost"] == pytest.approx(0.09, rel=0.001)
+
+    def test_prompt_completion_cost_none_treated_as_zero(self, runner, mock_client):
+        """INVARIANT: None prompt_cost/completion_cost are treated as zero."""
+        runs = [
+            _create_llm_run(1, cost="0.05"),  # No prompt_cost/completion_cost
+        ]
+        mock_client.list_runs.return_value = runs
+
+        result = runner.invoke(
+            cli,
+            ["--json", "runs", "usage", "--last", "24h"],
+        )
+
+        assert result.exit_code == 0
+        data = _extract_json(result.output)
+        bucket = data["buckets"][0]
+        assert bucket["prompt_cost"] == pytest.approx(0.0)
+        assert bucket["completion_cost"] == pytest.approx(0.0)
+
+    def test_prompt_completion_cost_in_summary(self, runner, mock_client):
+        """INVARIANT: Summary includes prompt_cost and completion_cost."""
+        runs = [
+            _create_llm_run(1, cost="0.10", prompt_cost="0.04", completion_cost="0.06"),
+        ]
+        mock_client.list_runs.return_value = runs
+
+        result = runner.invoke(
+            cli,
+            ["--json", "runs", "usage", "--last", "24h"],
+        )
+
+        assert result.exit_code == 0
+        data = _extract_json(result.output)
+        summary = data["summary"]
+        assert "prompt_cost" in summary
+        assert "completion_cost" in summary
+        assert summary["prompt_cost"] == pytest.approx(0.04, rel=0.001)
+        assert summary["completion_cost"] == pytest.approx(0.06, rel=0.001)
+
+
+class TestUsageEmptyResults:
+    """Tests for usage command when no data matches filters."""
+
+    def test_json_output_has_summary_when_no_runs(self, runner, mock_client):
+        """INVARIANT: --json always outputs parseable JSON with summary, even when no runs match."""
+        mock_client.list_runs.return_value = []
+
+        result = runner.invoke(cli, ["--json", "runs", "usage", "--last", "24h"])
+        assert result.exit_code == 0
+        data = _extract_json(result.output)
+        assert "summary" in data
+        assert data["summary"]["run_count"] == 0
+        assert data["summary"]["total_tokens"] == 0
+        assert data["summary"]["total_cost"] == 0
+
+    def test_json_output_has_summary_when_no_model_runs(self, runner, mock_client):
+        """INVARIANT: --json outputs empty summary when runs exist but none have model info."""
+        # Chain run without model metadata — will be filtered out
+        run_no_model = Run(
+            id=UUID(make_run_id(1)),
+            name="chain-wrapper",
+            run_type="llm",
+            start_time=datetime(2026, 3, 9, 16, 0, 0, tzinfo=timezone.utc),
+            total_tokens=1000,
+            extra={"metadata": {}},
+        )
+        mock_client.list_runs.return_value = [run_no_model]
+
+        result = runner.invoke(cli, ["--json", "runs", "usage", "--last", "24h"])
+        assert result.exit_code == 0
+        data = _extract_json(result.output)
+        assert "summary" in data
+        assert data["summary"]["run_count"] == 0
