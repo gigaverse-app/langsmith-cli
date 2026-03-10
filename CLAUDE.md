@@ -124,7 +124,7 @@ main.py (entry point)
 │   ├── describe
 │   ├── view-file
 │   ├── usage
-│   ├── pricing
+│   ├── export
 │   └── cache (group)
 │       ├── download
 │       ├── list

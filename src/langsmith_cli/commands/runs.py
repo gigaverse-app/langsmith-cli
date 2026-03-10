@@ -3248,7 +3248,7 @@ def cache_group():
 @click.option(
     "--full",
     is_flag=True,
-    help="Force full re-download (clear existing cache for these projects).",
+    help="Re-fetch all runs in the time range (ignores incremental state, deduplicates safely).",
 )
 @click.option(
     "--workers",
@@ -3297,7 +3297,6 @@ def cache_download(
 
     from langsmith_cli.cache import (
         append_runs_streaming,
-        clear_cache,
         get_cache_path,
         get_existing_run_ids,
         read_cache_metadata,
@@ -3350,11 +3349,9 @@ def cache_download(
         }
 
         try:
-            # Handle full mode
-            if full:
-                clear_cache(proj_name)
-
-            # Check for incremental update
+            # Check for incremental update (--full skips incremental filter
+            # but keeps existing cache data; dedup via existing_ids prevents
+            # duplicates — this is safe even if the download fails mid-way)
             existing_meta = read_cache_metadata(proj_name)
             incremental_filters = base_filters.copy()
             if existing_meta and existing_meta.newest_run_start_time and not full:
