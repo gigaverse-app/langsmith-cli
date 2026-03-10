@@ -679,3 +679,32 @@ class TestStripBinaryData:
         """Empty dicts and lists pass through."""
         data = {"inputs": {}, "tags": [], "name": ""}
         assert strip_binary_data(data) == data
+
+    def test_small_object_returns_unchanged_identity(self):
+        """INVARIANT: Objects with no strings >= threshold are returned as-is (optimization)."""
+        data = {
+            "id": "abc-123",
+            "name": "test-run",
+            "status": "success",
+            "inputs": {"text": "hello", "count": 42},
+            "outputs": {"result": "world"},
+            "tags": ["prod", "v2"],
+        }
+        result = strip_binary_data(data)
+        # The result should be the exact same object (identity) when no stripping needed
+        assert result is data
+
+    def test_mixed_small_and_large_strips_only_large(self):
+        """Only large binary strings are stripped; small values are preserved."""
+        big_b64 = "B" * 15_000
+        data = {
+            "name": "test",
+            "small_field": "keep me",
+            "big_field": big_b64,
+            "number": 99,
+        }
+        result = strip_binary_data(data)
+        assert result["name"] == "test"
+        assert result["small_field"] == "keep me"
+        assert result["big_field"].startswith("[binary:base64:")
+        assert result["number"] == 99

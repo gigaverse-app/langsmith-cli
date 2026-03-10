@@ -49,14 +49,30 @@ def strip_binary_data(
 
     Replaces them with a placeholder that records the original size and type.
     This reduces cache size dramatically for runs containing inline images/videos.
+
+    Optimization: returns the original object unchanged (identity) when no
+    stripping is needed, avoiding unnecessary dict/list reconstruction.
     """
     if isinstance(obj, dict):
-        return {k: strip_binary_data(v) for k, v in obj.items()}
+        changed = False
+        new_dict: dict[str, dict | list | str | int | float | bool | None] = {}
+        for k, v in obj.items():
+            new_v = strip_binary_data(v)
+            if new_v is not v:
+                changed = True
+            new_dict[k] = new_v
+        return new_dict if changed else obj
     elif isinstance(obj, list):
-        return [strip_binary_data(item) for item in obj]
+        changed = False
+        new_list: list[dict | list | str | int | float | bool | None] = []
+        for item in obj:
+            new_item = strip_binary_data(item)
+            if new_item is not item:
+                changed = True
+            new_list.append(new_item)
+        return new_list if changed else obj
     elif isinstance(obj, str):
         if _is_data_uri(obj):
-            # Extract media type from data:image/png;base64,...
             media_type = obj.split(";")[0].replace("data:", "")
             return f"[binary:{media_type}:{len(obj)}bytes:stored_in_langsmith]"
         if _is_likely_base64(obj):
