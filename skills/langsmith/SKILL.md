@@ -670,7 +670,39 @@ sonar:
 - Groq/Cerebras have free tiers — the $0 cost may be correct if the org uses free tier
 - Always verify prices on the provider's official pricing page, not third-party aggregators
 
-### Recipe 5: Find Runs by Metadata and Analyze
+### Recipe 5: Cost Attribution — Lower/Upper Bound Analysis
+
+When runs aren't fully tagged (some projects don't propagate `channel_id` or session metadata to every LLM call), use two queries to establish cost bounds:
+
+```bash
+# Step 1: ALL runs in the time window (upper bound)
+langsmith-cli --json runs usage \
+  --from-cache \
+  --project-name-pattern "prd/*" \
+  --since "2026-02-19T14:00:00Z" --before "2026-02-19T20:30:00Z" \
+  --breakdown model --breakdown project --breakdown provider --breakdown gateway \
+  --active-only --apply-pricing pricing.yaml
+
+# Step 2: Only ATTRIBUTED runs (lower bound) — same query + metadata filter
+langsmith-cli --json runs usage \
+  --from-cache \
+  --project-name-pattern "prd/*" \
+  --metadata channel_id=chat:MyChannel-abc123 \
+  --since "2026-02-19T14:00:00Z" --before "2026-02-19T20:30:00Z" \
+  --breakdown model --breakdown project --breakdown provider --breakdown gateway \
+  --active-only --apply-pricing pricing.yaml
+```
+
+**How to interpret results:**
+- Compare `run_count` and `total_cost` between the two queries
+- **Coverage %** per project = attributed runs / all runs — shows which projects tag their LLM calls
+- Projects at 0% attribution run shared pipelines (costs can't be assigned to a single channel)
+- Projects at 87-100% have good metadata propagation
+- **True cost** is between attributed (lower) and all (upper), adjusted for how many other sessions were active
+- **Cost/hour** = total_cost / time_window_hours — useful for comparing events
+- Compare `prompt_cost` vs `completion_cost` to understand cost drivers (input-heavy vs output-heavy models)
+
+### Recipe 6: Find Runs by Metadata and Analyze
 ```bash
 # Filter by metadata when listing runs
 langsmith-cli --json runs list \
@@ -686,7 +718,7 @@ langsmith-cli --json runs usage \
   --breakdown model
 ```
 
-### Recipe 5: Aggregate Metrics by Tag/Metadata Group
+### Recipe 7: Aggregate Metrics by Tag/Metadata Group
 ```bash
 # Group by a tag dimension and compute metrics
 langsmith-cli --json runs analyze \
