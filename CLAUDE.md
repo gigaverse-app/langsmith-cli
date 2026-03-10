@@ -645,6 +645,25 @@ safe = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name)
 safe = safe.strip(". ")
 ```
 
+### Reuse-First: Search Before Writing
+
+**Before writing new logic, always search for existing helpers in `utils.py` and `commands/runs.py`.** Duplicating logic that already exists creates maintenance burden and drift.
+
+Checklist before writing code:
+1. Search `utils.py` for existing helpers (filter builders, output formatters, project resolution)
+2. Search `commands/runs.py` for existing helpers (tag/metadata filtering, model extraction, grouping)
+3. If the logic is reusable, add it to `utils.py` — not inline in the command function
+4. If adding a new CLI option that exists on another command, check how that command implements it
+
+Key shared helpers:
+- `build_tag_fql_filters(tags)` — FQL `has(tags, ...)` clauses
+- `filter_runs_by_tags(runs, tags)` — Client-side AND-logic tag filtering
+- `build_runs_list_filter(...)` — Canonical filter builder for runs list
+- `build_time_fql_filters(since, last, before)` — Time range FQL
+- `fetch_from_projects(...)` — Multi-project iteration with error handling
+- `resolve_project_filters(...)` — Project name/pattern/regex resolution
+- `parse_fields_option(fields)` — Parse comma-separated field strings
+
 ### Common Anti-Patterns to Avoid
 
 1. **`hasattr()` on Pydantic models** → Use `p.field is not None` instead
@@ -656,6 +675,8 @@ safe = safe.strip(". ")
 7. **ThreadPoolExecutor for local file I/O** → Sequential is faster (no GIL benefit)
 8. **`TYPE_CHECKING` / `__future__` annotations workaround** → Import types directly; langsmith is already loaded at startup
 9. **`client: object` or `client: Any`** → Use `client: langsmith.Client` for strong types
+10. **Inline tag FQL building** → Use `build_tag_fql_filters()` from utils.py
+11. **Manual tag filtering on cached runs** → Use `filter_runs_by_tags()` from utils.py
 
 ## Engineering Standards (from docs/AGENTS.md)
 
