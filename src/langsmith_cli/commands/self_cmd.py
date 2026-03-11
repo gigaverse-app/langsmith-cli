@@ -105,8 +105,9 @@ def check_latest_version() -> str | None:
     import urllib.request
 
     try:
-        url = "https://pypi.org/pypi/langsmith-cli/json"
-        with urllib.request.urlopen(url, timeout=5) as resp:  # noqa: S310
+        with urllib.request.urlopen(  # noqa: S310
+            "https://pypi.org/pypi/langsmith-cli/json", timeout=5
+        ) as resp:
             data = json_mod.loads(resp.read())
             return data["info"]["version"]
     except Exception:

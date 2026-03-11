@@ -393,7 +393,9 @@ def sort_items(
             return items
         key_func: Callable[[T], Any] = sort_key_map[sort_field]
     else:
-        key_func = lambda item: getattr(item, sort_field, None)  # noqa: E731
+
+        def key_func(item: T) -> Any:
+            return getattr(item, sort_field, None)
 
     try:
         return sorted(items, key=key_func, reverse=reverse)

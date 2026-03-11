@@ -29,7 +29,7 @@ import langsmith_cli.commands.runs.watch_cmd  # noqa: F401
 # `langsmith_cli.commands.runs`.
 
 # From analyze_cmd (used by tests and usage_cmd/search_cmd)
-from langsmith_cli.commands.runs.analyze_cmd import (  # noqa: F401
+from langsmith_cli.commands.runs.analyze_cmd import (
     build_grouping_fql_filter,
     build_multi_dimensional_fql_filter,
     compute_metrics,
@@ -38,14 +38,28 @@ from langsmith_cli.commands.runs.analyze_cmd import (  # noqa: F401
 )
 
 # From list_cmd (used by search_cmd via ctx.invoke)
-from langsmith_cli.commands.runs.list_cmd import list_runs  # noqa: F401
+from langsmith_cli.commands.runs.list_cmd import list_runs
 
 # From usage_cmd (used by tests)
-from langsmith_cli.commands.runs.usage_cmd import (  # noqa: F401
+from langsmith_cli.commands.runs.usage_cmd import (
     _get_model_name,
     _metadata_value_matches,
     _truncate_hour,
 )
 
 # From pricing_cmd (used by tests)
-from langsmith_cli.commands.runs.pricing_cmd import _fetch_openrouter_pricing  # noqa: F401
+from langsmith_cli.commands.runs.pricing_cmd import _fetch_openrouter_pricing
+
+__all__ = [
+    "runs",
+    "build_grouping_fql_filter",
+    "build_multi_dimensional_fql_filter",
+    "compute_metrics",
+    "extract_group_value",
+    "parse_grouping_field",
+    "list_runs",
+    "_get_model_name",
+    "_metadata_value_matches",
+    "_truncate_hour",
+    "_fetch_openrouter_pricing",
+]
