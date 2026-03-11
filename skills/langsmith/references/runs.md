@@ -27,7 +27,7 @@ langsmith-cli --json runs list [OPTIONS]
 - `--roots` - Show only root traces (shorthand for `--is-root true`)
 - `--trace-id UUID` - Get all runs in a specific trace tree
 - `--filter TEXT` - Advanced FQL query (see Filter Query Language section)
-- `--since TEXT` - Show runs since this time (ISO format, relative shorthand like `7d`/`24h`, or natural language like `3 days ago`)
+- `--since TEXT` - Show runs since this time (ISO format or shorthand like `7d`, `24h`, `30m`, `2w`)
 - `--last TEXT` - Show runs from last duration (e.g., `24h`, `7d`). When combined with `--since`, defines a time window: runs from `--since` to `--since + --last`.
 - `--trace-filter TEXT` - Filter applied to root run of trace
 - `--tree-filter TEXT` - Filter applied to any run in trace tree
@@ -36,7 +36,7 @@ langsmith-cli --json runs list [OPTIONS]
 - `--name-pattern TEXT` - Wildcard filter on run names (client-side, e.g., `'*auth*'`)
 - `--name-regex TEXT` - Regex filter on run names (client-side)
 - `--model TEXT` - Filter by model name (e.g., `gpt-4`, `claude-3`)
-- `--since TEXT` - Show runs since timestamp or relative time (ISO, `3d`, `3 days ago`)
+- `--since TEXT` - Show runs since timestamp or relative time (ISO or shorthand: `3d`, `24h`, `30m`)
 - `--last TEXT` - Show runs from last duration (e.g., `24h`, `7d`, `30m`, `2w`)
 - `--min-latency TEXT` - Minimum latency (e.g., `2s`, `500ms`)
 - `--max-latency TEXT` - Maximum latency (e.g., `10s`, `2000ms`)
@@ -205,7 +205,7 @@ langsmith-cli --json runs get-latest [OPTIONS]
 - `--today` - Filter to today's runs
 - `--min-latency TEXT` - Minimum latency (e.g., `2s`, `500ms`)
 - `--max-latency TEXT` - Maximum latency (e.g., `10s`)
-- `--since TEXT` - Since time (ISO or relative like `1 hour ago`)
+- `--since TEXT` - Since time (ISO or shorthand: `7d`, `24h`, `30m`, `2w`)
 - `--last TEXT` - From last duration (e.g., `24h`, `7d`)
 - `--filter TEXT` - Custom FQL filter string
 - `--fields TEXT` - Comma-separated field names (reduces context)
@@ -248,7 +248,7 @@ langsmith-cli --json runs search <query> [OPTIONS]
 - `--in [all|inputs|outputs|error]` - Where to search (default: all fields)
 - `--input-contains TEXT` - Filter by content in inputs
 - `--output-contains TEXT` - Filter by content in outputs
-- `--since TEXT` - Since time (ISO, `3d`, or `3 days ago`)
+- `--since TEXT` - Since time (ISO or shorthand: `3d`, `24h`, `30m`)
 - `--last TEXT` - From last duration (e.g., `24h`, `7d`)
 - `--format [table|json|csv|yaml]` - Output format
 
@@ -350,7 +350,7 @@ langsmith-cli runs cache download [OPTIONS]
 
 **Options:**
 - `--last TEXT` - Time range (e.g., `7d`, `24h`)
-- `--since TEXT` - Start time (ISO format, relative, or natural language)
+- `--since TEXT` - Start time (ISO format or shorthand: `7d`, `24h`, `30m`, `2w`)
 - `--full` - Force full re-download (clear existing cache)
 - `--run-type TEXT` - Filter by run type
 - `--workers INTEGER` - Parallel workers (default: min(8, num_projects))

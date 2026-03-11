@@ -92,11 +92,11 @@ from langsmith_cli.utils import (
 @click.option("--max-latency", help="Maximum latency (e.g., '10s', '2000ms').")
 @click.option(
     "--since",
-    help="Show runs since time (ISO format, '3d', or '3 days ago').",
+    help="Show runs since time (ISO or shorthand: '7d', '24h', '30m', '2w').",
 )
 @click.option(
     "--before",
-    help="Show runs before time (ISO format, '3d', or '3 days ago'). Upper bound for time window.",
+    help="Show runs before time (ISO or shorthand: '3d', '24h'). Upper bound for time window.",
 )
 @click.option(
     "--last",
@@ -308,7 +308,7 @@ def list_runs(
         duration = parse_duration_to_seconds(max_latency)
         fql_filters.append(f'lt(latency, "{duration}")')
 
-    # Flexible time filters (supports ISO, relative shorthand, and natural language)
+    # Flexible time filters (supports ISO and relative shorthand: 30m, 2h, 7d, 2w)
     time_filters = build_time_fql_filters(since=since, last=last, before=before)
     fql_filters.extend(time_filters)
 

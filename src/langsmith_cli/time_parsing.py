@@ -72,8 +72,7 @@ def parse_time_input(time_str: str) -> Any:
 
     Supports:
     - ISO format: "2024-01-14T10:00:00Z", "2024-01-14"
-    - Relative shorthand: "24h", "7d", "30m"
-    - Natural language: "3 days ago", "1 hour ago", "2 weeks ago"
+    - Relative shorthand: "30m", "2h", "7d", "2w" (case-insensitive)
 
     Args:
         time_str: Time string in any supported format
@@ -92,7 +91,7 @@ def parse_time_input(time_str: str) -> Any:
     except ValueError:
         pass
 
-    # Try duration formats (relative shorthand and natural language)
+    # Try duration shorthand (30m, 2h, 7d, 2w)
     delta = _parse_duration_str(time_str)
     if delta is not None:
         return datetime.datetime.now(datetime.timezone.utc) - delta
@@ -108,12 +107,11 @@ def parse_time_input(time_str: str) -> Any:
 def parse_time_duration(time_str: str) -> Any:
     """Parse a duration string into a timedelta.
 
-    Supports relative shorthand (24h, 7d, 30m, 2w) and natural language
-    (3 days ago, 1 hour ago). For ISO timestamps, raises BadParameter
-    since they are not durations.
+    Supports relative shorthand only: 30m, 2h, 7d, 2w (case-insensitive).
+    For ISO timestamps, raises BadParameter since they are not durations.
 
     Args:
-        time_str: Duration string (e.g., '24h', '7d', '3 days ago')
+        time_str: Duration string (e.g., '24h', '7d', '2w')
 
     Returns:
         timedelta representing the duration
@@ -197,9 +195,9 @@ def build_time_fql_filters(
     the resulting datetime range to FQL gt/lt expressions.
 
     Args:
-        since: Show items since this time (ISO format, relative, or natural language)
+        since: Show items since this time (ISO format or shorthand like '7d', '30m').
         last: Show items from last duration (e.g., '24h', '7d', '30m').
-        before: Show items before this time (ISO format, relative, or natural language).
+        before: Show items before this time (ISO format or shorthand like '7d', '30m').
 
     Returns:
         List of FQL filter expressions (may be empty)
@@ -247,7 +245,7 @@ def add_time_filter_options(func: Callable[..., Any]) -> Callable[..., Any]:
     """Decorator to add universal time filtering options to a command.
 
     Adds the following Click options:
-    - --since: Show items since time (ISO format, relative, or natural language)
+    - --since: Show items since time (ISO or shorthand: 30m, 2h, 7d, 2w)
     - --last: Show items from last duration (shorthand only)
 
     Usage:
@@ -261,8 +259,7 @@ def add_time_filter_options(func: Callable[..., Any]) -> Callable[..., Any]:
 
     Supported time formats:
         --since "2024-01-14T10:00:00Z"    # ISO format
-        --since "3d"                       # 3 days ago (shorthand)
-        --since "3 days ago"              # Natural language
+        --since "3d"                       # shorthand: 3 days ago
         --last "24h"                       # Last 24 hours
         --last "7d"                        # Last 7 days
     """
@@ -272,10 +269,10 @@ def add_time_filter_options(func: Callable[..., Any]) -> Callable[..., Any]:
     )(func)
     func = click.option(
         "--before",
-        help="Show items before time (ISO format, '3d', or '3 days ago'). Upper bound for time window.",
+        help="Show items before time (ISO or shorthand: '3d', '24h'). Upper bound for time window.",
     )(func)
     func = click.option(
         "--since",
-        help="Show items since time (ISO format, '3d', or '3 days ago').",
+        help="Show items since time (ISO or shorthand: '3d', '7d', '30m', '2w').",
     )(func)
     return func

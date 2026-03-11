@@ -217,7 +217,7 @@ def skill_docs(ctx: click.Context, doc: str | None, list_docs: bool) -> None:
             param_hint="DOC",
         )
 
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     if ctx.obj.get("json"):
         click.echo(json_dumps({"doc": doc or "skill", "content": text}))
     else:

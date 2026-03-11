@@ -1105,17 +1105,9 @@ class TestParseTimeInput:
     @pytest.mark.parametrize(
         "natural_language_input",
         [
-            "3 days ago",
-            "1 hour ago",
-            "30 minutes ago",
-            "2 weeks ago",
-            "5 min ago",
-            "2 hrs ago",
-            "1 wk ago",
-            "10m ago",
-            "2h ago",
-            "3d ago",
-            "1w ago",
+            "3 days ago",  # space-separated natural language
+            "10m ago",  # shorthand with "ago" suffix
+            "1 wk ago",  # abbreviated unit with "ago" suffix
         ],
     )
     def test_natural_language_not_supported(self, natural_language_input):
