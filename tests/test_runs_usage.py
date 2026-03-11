@@ -9,6 +9,7 @@ import pytest
 from langsmith.schemas import Run
 
 from conftest import make_run_id, strip_ansi
+from langsmith_cli.commands.runs import _get_service_tier
 from langsmith_cli.main import cli
 
 
@@ -1460,20 +1461,14 @@ class TestGetServiceTier:
     """Unit tests for _get_service_tier helper."""
 
     def test_returns_tier_from_invocation_params(self):
-        from langsmith_cli.commands.runs import _get_service_tier
-
         run = _create_llm_run(1, service_tier="priority")
         assert _get_service_tier(run) == "priority"
 
     def test_returns_unknown_when_not_set(self):
-        from langsmith_cli.commands.runs import _get_service_tier
-
         run = _create_llm_run(1)
         assert _get_service_tier(run) == "unknown"
 
     def test_returns_unknown_when_extra_is_none(self):
-        from langsmith_cli.commands.runs import _get_service_tier
-
         run = Run(
             id=UUID(make_run_id(99)),
             name="test",
@@ -1484,14 +1479,10 @@ class TestGetServiceTier:
         assert _get_service_tier(run) == "unknown"
 
     def test_returns_flex_tier(self):
-        from langsmith_cli.commands.runs import _get_service_tier
-
         run = _create_llm_run(1, service_tier="flex")
         assert _get_service_tier(run) == "flex"
 
     def test_returns_default_tier(self):
-        from langsmith_cli.commands.runs import _get_service_tier
-
         run = _create_llm_run(1, service_tier="default")
         assert _get_service_tier(run) == "default"
 
