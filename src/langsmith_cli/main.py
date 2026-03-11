@@ -207,6 +207,11 @@ class LangSmithCLIGroup(click.Group):
 def cli_main(ctx, json, verbose, quiet):
     """
     LangSmith CLI - A context-efficient interface for LangSmith.
+
+    \b
+    IMPORTANT FOR AGENTS: Always pass --json as the FIRST argument to get
+    machine-readable output. Without it, the CLI outputs Rich tables that
+    are unparseable. Example: langsmith-cli --json runs list --limit 5
     """
     ctx.ensure_object(dict)
     ctx.obj["json"] = json
