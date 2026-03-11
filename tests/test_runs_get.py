@@ -103,6 +103,70 @@ class TestRunsGet:
         assert "tag1" in result.output or "tags" in result.output
         assert "simple_value" in result.output
 
+    def test_get_with_fields_outputs_nested_null(self, runner, mock_client):
+        """INVARIANT: --fields outputs with complex nested data (including null values) produces parseable JSON.
+
+        This is the 'runs get <id> --fields outputs' use case where the outputs
+        field contains nested dicts and null values. The stdout must contain ONLY
+        valid JSON (no diagnostic text mixed in) so it can be piped to other tools.
+        """
+        mock_client.read_run.return_value = create_run(
+            name="Entity Extraction Run",
+            id_str="12345678-0000-0000-0000-000000000abc",
+            outputs={
+                "extracted_entities": [
+                    {
+                        "canonical_full_name": "Jia",
+                        "details_for_llm_recognized_entities": None,
+                        "entity_type": "Person",
+                        "llm_recognition": False,
+                    },
+                    {
+                        "canonical_full_name": "OpenAI",
+                        "details_for_llm_recognized_entities": {
+                            "one_sentence_relevant_additional_information": "AI company"
+                        },
+                        "entity_type": "Organization",
+                        "llm_recognition": True,
+                    },
+                ]
+            },
+        )
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "get",
+                "12345678-0000-0000-0000-000000000abc",
+                "--fields",
+                "outputs",
+            ],
+        )
+
+        assert result.exit_code == 0
+        # INVARIANT: stdout must be parseable JSON with no diagnostic text mixed in
+        data = json.loads(result.output)
+        assert isinstance(data, dict)
+        assert "outputs" in data
+        assert "inputs" not in data
+        assert "name" not in data
+
+        entities = data["outputs"]["extracted_entities"]
+        assert len(entities) == 2
+
+        # Null nested dict is preserved as null (not coerced)
+        jia = entities[0]
+        assert jia["canonical_full_name"] == "Jia"
+        assert jia["details_for_llm_recognized_entities"] is None
+
+        # Non-null nested dict is preserved intact
+        openai = entities[1]
+        details = openai["details_for_llm_recognized_entities"]
+        assert details is not None
+        assert details["one_sentence_relevant_additional_information"] == "AI company"
+
     def test_get_with_output_writes_file(self, runner, mock_client, tmp_path):
         """INVARIANT: --output writes a single JSON object to file."""
         mock_client.read_run.return_value = create_run(

@@ -30,44 +30,78 @@ See **[Installation Guide](references/installation.md)** for all installation me
 
 ## 🚨 CRITICAL: How AI Agents Should Call This CLI
 
-**Problem:** Shell redirection `> file.json` silently loses errors! You get an empty file with no explanation.
+**Problem:** Shell redirection and piping have several silent failure modes that waste tokens and produce no output.
 
-**Solution:** ALWAYS use the `--output` flag for data extraction:
+**Solution:** ALWAYS use the `--output` flag for data extraction, then read the file:
 
 ```bash
 # ✅ CORRECT - Use --output flag (ALWAYS do this for data extraction)
-langsmith-cli runs list --project my-project --fields id,name,status --output runs.jsonl
+langsmith-cli runs get <id> --fields outputs --output run.json
+python3 -c "import json; data = json.load(open('run.json')); ..."
 
 # Why this is correct:
-# - Writes data to file (JSONL format)
+# - Writes data to file atomically
 # - Shows errors/warnings on screen (you will see them!)
 # - Returns non-zero exit code on failure (you can detect it)
-# - Shows confirmation: "Wrote N items to runs.jsonl"
+# - No shell stdin/stdout plumbing to go wrong
 ```
 
+### Shell Traps That Agents Must Avoid
+
+**Trap 1: Shell redirection `>`**
 ```bash
-# ❌ WRONG - Never use shell redirection for data extraction
+# ❌ WRONG - errors go to stderr (invisible), you get empty/corrupt file
 langsmith-cli --json runs list --project my-project > runs.json
-# If API fails: errors go to stderr (invisible with redirection)
-# You may get a JSON error object instead of data, and won't know what happened
 ```
 
+**Trap 2: Heredoc `<< 'EOF'` combined with a pipe**
 ```bash
-# ✅ OK for quick queries (not data extraction) - use 2>&1 to see errors
-langsmith-cli --json runs list --project my-project --limit 5 2>&1
-# Errors will be visible in the output (mixed with JSON)
-# Check exit code: 0 = success, non-zero = failure
+# ❌ WRONG - bash heredoc overrides the pipe for stdin; python3 reads
+# its script from the heredoc, so sys.stdin is EMPTY inside the script.
+# This always produces: JSONDecodeError: Expecting value: line 1 column 1 (char 0)
+langsmith-cli --json runs get <id> --fields outputs 2>&1 | python3 << 'EOF'
+import sys, json
+data = json.load(sys.stdin)   # ← stdin is empty, not the CLI output!
+EOF
+```
+
+**Trap 3: `python3 -c` with `<< 'EOF'` (same root cause)**
+```bash
+# ❌ WRONG - same as above; heredoc always wins over pipe for stdin
+some-cmd | python3 -c "..." << 'EOF'
+```
+
+**The fix for inline Python — use `--output` then read the file:**
+```bash
+# ✅ CORRECT
+langsmith-cli --json runs get <id> --fields outputs --output /tmp/run.json
+python3 << 'EOF'
+import json
+data = json.load(open('/tmp/run.json'))
+entities = data.get('outputs', {}).get('extracted_entities', [])
+for e in entities:
+    details = e.get('details_for_llm_recognized_entities') or {}
+    info = details.get('one_sentence_relevant_additional_information')
+    print(repr(e.get('canonical_full_name')), '→', repr(info))
+EOF
+```
+
+**Or if you must pipe (no heredoc), use `python3 -c`:**
+```bash
+# ✅ OK - -c flag for the script source, pipe for stdin
+langsmith-cli --json runs get <id> --fields outputs 2>/dev/null | \
+  python3 -c "import sys,json; data=json.load(sys.stdin); print(data)"
 ```
 
 **Quick Reference:**
 | Use Case | Command Pattern |
 |----------|-----------------|
 | Extract data to file | `langsmith-cli runs list --output data.jsonl` |
+| Get single run data | `langsmith-cli --json runs get <id> --fields outputs --output run.json` |
 | Quick query (see results) | `langsmith-cli --json runs list 2>&1` |
 | Count items | `langsmith-cli --json runs list --count` |
 | Debug issues | `langsmith-cli -v runs list 2>&1` |
-
-**Note:** When piping to other processes (`| jq`, `| python3`), prefer using `--output` to write to a file first, then read the file. This avoids potential buffering issues.
+| Pipe to jq | `langsmith-cli --json runs get <id> 2>/dev/null \| jq '.outputs'` |
 
 ## ⚡ MANDATORY: Always Use --json
 
