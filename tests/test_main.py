@@ -29,6 +29,49 @@ def test_json_flag(runner):
     assert "--json" in result.output
 
 
+class TestJsonFlagPlacement:
+    """INVARIANT: --json produces JSON output regardless of where it appears in the command."""
+
+    def test_json_flag_before_subcommand(self, runner, mock_client):
+        """--json before subcommand (canonical position) produces JSON output."""
+        from conftest import create_project
+
+        mock_client.list_projects.return_value = iter([create_project("test-project")])
+
+        result = runner.invoke(cli, ["--json", "projects", "list"])
+
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert isinstance(data, list)
+        assert data[0]["name"] == "test-project"
+
+    def test_json_flag_after_subcommand(self, runner, mock_client):
+        """--json after subcommand (intuitive but previously broken) produces JSON output."""
+        from conftest import create_project
+
+        mock_client.list_projects.return_value = iter([create_project("test-project")])
+
+        result = runner.invoke(cli, ["projects", "list", "--json"])
+
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert isinstance(data, list)
+        assert data[0]["name"] == "test-project"
+
+    def test_json_flag_between_subcommands(self, runner, mock_client):
+        """--json between command group and subcommand also works."""
+        from conftest import create_project
+
+        mock_client.list_projects.return_value = iter([create_project("test-project")])
+
+        result = runner.invoke(cli, ["projects", "--json", "list"])
+
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert isinstance(data, list)
+        assert data[0]["name"] == "test-project"
+
+
 def test_auth_error_handling(runner):
     """Test that authentication errors are caught and shown with a friendly message."""
     from unittest.mock import patch

@@ -35,6 +35,14 @@ console = Console()
 class LangSmithCLIGroup(click.Group):
     """Custom Click Group that handles LangSmith exceptions gracefully."""
 
+    def parse_args(self, ctx, args):
+        # Allow --json anywhere in the command, not just before the subcommand.
+        # Click only parses root-group flags before the subcommand name, so we
+        # hoist --json to the front before normal parsing begins.
+        if "--json" in args:
+            args = ["--json"] + [a for a in args if a != "--json"]
+        return super().parse_args(ctx, args)
+
     def invoke(self, ctx):
         """Override invoke to catch and handle LangSmith exceptions."""
         try:
