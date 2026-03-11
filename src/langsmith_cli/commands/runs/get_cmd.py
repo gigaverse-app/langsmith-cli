@@ -63,11 +63,11 @@ def get_run(ctx, run_id, fields, output):
 @click.option("--min-latency", help="Minimum latency (e.g., '2s', '500ms').")
 @click.option("--max-latency", help="Maximum latency (e.g., '10s', '2000ms').")
 @click.option(
-    "--since", help="Show runs since time (ISO or relative like '1 hour ago')."
+    "--since", help="Show runs since time (ISO or shorthand: '7d', '24h', '30m', '2w')."
 )
 @click.option(
     "--before",
-    help="Show runs before time (ISO format, '3d', or '3 days ago'). Upper bound for time window.",
+    help="Show runs before time (ISO or shorthand: '3d', '24h'). Upper bound for time window.",
 )
 @click.option("--last", help="Show runs from last duration (e.g., '24h', '7d', '30m').")
 @click.option("--filter", "filter_", help="Custom FQL filter string.")

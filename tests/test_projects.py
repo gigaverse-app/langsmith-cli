@@ -40,6 +40,29 @@ def test_projects_list_json(runner):
         assert data[0]["name"] == "proj-json"
 
 
+def test_projects_list_with_fields(runner):
+    """INVARIANT: --fields prunes output to only requested fields, returning a list of objects."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        p1 = create_project(name="proj-a")
+        p2 = create_project(name="proj-b")
+
+        mock_client.list_projects.return_value = iter([p1, p2])
+
+        result = runner.invoke(cli, ["--json", "projects", "list", "--fields", "name"])
+        assert result.exit_code == 0
+
+        data = json.loads(result.output)
+        assert isinstance(data, list), (
+            f"Expected list, got {type(data)}: {result.output}"
+        )
+        assert len(data) == 2
+        assert data[0]["name"] == "proj-a"
+        assert data[1]["name"] == "proj-b"
+        assert "id" not in data[0]
+        assert "run_count" not in data[0]
+
+
 def test_projects_create(runner):
     """INVARIANT: Create command should return success message."""
     with patch("langsmith.Client") as MockClient:

@@ -231,7 +231,7 @@ def sample_runs(
           --project my-project \\
           --stratify-by "tag:length_category" \\
           --values "short,medium,long" \\
-          --since "3 days ago" \\
+          --since "3d" \\
           --samples-per-stratum 100
     """
     from langsmith_cli.commands.runs import (

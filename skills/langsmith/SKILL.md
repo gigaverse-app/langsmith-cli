@@ -146,8 +146,8 @@ langsmith-cli runs list --project my-project --limit 5
   - **Multi-project:** `--project-name <text>`, `--project-name-exact <text>`, `--project-name-pattern <pattern>`, `--project-name-regex <regex>`
   - `--limit <n>`: Max results (default 10, keep it small).
   - `--status <success|error>`: Filter by status.
-  - `--since <time>`: Show runs since this time (ISO, relative like `7d`, or `3 days ago`).
-  - `--before <time>`: Show runs before this time (ISO, relative like `3d`, or `3 days ago`). Upper bound for time window.
+  - `--since <time>`: Show runs since this time. Accepted formats: shorthand (`30m`, `2h`, `7d`, `2w`) or ISO (`2024-01-14T10:00:00Z`, `2024-01-14`). Natural language like `"3 days ago"` is NOT supported.
+  - `--before <time>`: Show runs before this time. Same formats as `--since`. Upper bound for time window.
   - `--last <duration>`: Show runs from last duration (e.g., `24h`, `7d`). Combinable: `--since + --last` = forward window, `--before + --last` = backward window, `--since + --before` = explicit window.
   - **Convenience shortcuts:** `--failed`, `--succeeded`, `--slow` (>5s), `--recent` (last hour), `--today`
   - `--filter <string>`: Advanced FQL query string (see FQL examples below).

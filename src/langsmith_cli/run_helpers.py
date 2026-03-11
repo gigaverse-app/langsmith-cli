@@ -203,7 +203,7 @@ def build_runs_list_filter(
         today: Filter to today's runs
         min_latency: Minimum latency (e.g., '2s', '500ms')
         max_latency: Maximum latency (e.g., '10s', '2000ms')
-        since: Show runs since time (ISO or relative like '1 hour ago')
+        since: Show runs since time (ISO or shorthand like '7d', '24h', '30m')
         last: Show runs from last duration (e.g., '24h', '7d')
 
     Returns:
@@ -269,7 +269,7 @@ def build_runs_list_filter(
         duration = parse_duration_to_seconds(max_latency)
         fql_filters.append(f'lt(latency, "{duration}")')
 
-    # Flexible time filters (supports ISO, relative shorthand, and natural language)
+    # Flexible time filters (supports ISO and relative shorthand: 30m, 2h, 7d, 2w)
     time_filters = build_time_fql_filters(since=since, last=last, before=before)
     fql_filters.extend(time_filters)
 

@@ -1084,76 +1084,53 @@ class TestParseTimeInput:
         now = datetime.now(timezone.utc)
         assert result < now
 
-    @pytest.mark.parametrize(
-        "natural,expected_delta_type",
-        [
-            ("3 days ago", "days"),
-            ("1 hour ago", "hours"),
-            ("30 minutes ago", "minutes"),
-            ("2 weeks ago", "weeks"),
-            ("5 min ago", "minutes"),
-            ("2 hrs ago", "hours"),
-            ("1 wk ago", "weeks"),
-        ],
-    )
-    def test_natural_language_formats(self, natural, expected_delta_type):
-        """Test parsing natural language time formats."""
-        result = parse_time_input(natural)
-        now = datetime.now(timezone.utc)
-        assert result < now
-
     def test_invalid_format_raises_error(self):
-        """Test that invalid format raises BadParameter."""
+        """INVARIANT: Unrecognized format raises BadParameter."""
         with pytest.raises(click.BadParameter, match="Invalid time format"):
             parse_time_input("invalid")
 
-    def test_invalid_format_with_partial_match(self):
-        """Test that partial matches don't work."""
-        with pytest.raises(click.BadParameter):
-            parse_time_input("yesterday")  # Not supported
-
-    def test_whitespace_handling(self):
-        """Test that whitespace is properly trimmed."""
-        result = parse_time_input("  3 days ago  ")
+    def test_whitespace_is_stripped(self):
+        """INVARIANT: Leading/trailing whitespace is ignored."""
+        result = parse_time_input("  7d  ")
         now = datetime.now(timezone.utc)
         assert result < now
 
     def test_weeks_shorthand(self):
-        """Test parsing weeks shorthand '2w'."""
+        """INVARIANT: '2w' shorthand parses to ~14 days ago."""
         result = parse_time_input("2w")
-        now = datetime.now(timezone.utc)
-        # Should be approximately 14 days ago
-        assert result < now
-        delta = now - result
-        assert 13 <= delta.days <= 15  # Allow for test timing
-
-    def test_weeks_natural_language(self):
-        """Test parsing '2 weeks ago' natural language."""
-        result = parse_time_input("2 weeks ago")
         now = datetime.now(timezone.utc)
         delta = now - result
         assert 13 <= delta.days <= 15
 
-    def test_wk_natural_language(self):
-        """Test parsing '1 wk ago' abbreviated natural language."""
-        result = parse_time_input("1 wk ago")
-        now = datetime.now(timezone.utc)
-        delta = now - result
-        assert 6 <= delta.days <= 8
+    @pytest.mark.parametrize(
+        "natural_language_input",
+        [
+            "3 days ago",  # space-separated natural language
+            "10m ago",  # shorthand with "ago" suffix
+            "1 wk ago",  # abbreviated unit with "ago" suffix
+        ],
+    )
+    def test_natural_language_not_supported(self, natural_language_input):
+        """INVARIANT: Natural language / mixed forms are not supported.
 
-    def test_hour_abbrev_hr(self):
-        """Test parsing '2 hr ago' abbreviated hours."""
-        result = parse_time_input("2 hr ago")
-        now = datetime.now(timezone.utc)
-        delta = now - result
-        assert 1 <= delta.seconds / 3600 <= 3 or delta.days == 0
+        Use shorthand (30m, 2h, 7d, 2w) or ISO format instead.
+        These forms were removed to reduce ambiguity and parser complexity.
+        """
+        with pytest.raises(click.BadParameter):
+            parse_time_input(natural_language_input)
 
-    def test_minute_abbrev_min(self):
-        """Test parsing '30 min ago' abbreviated minutes."""
-        result = parse_time_input("30 min ago")
-        now = datetime.now(timezone.utc)
-        delta = now - result
-        assert 29 <= delta.seconds / 60 <= 31 or delta.days == 0
+    def test_error_message_shows_valid_formats(self):
+        """INVARIANT: BadParameter error shows valid shorthand and ISO examples."""
+        with pytest.raises(click.BadParameter) as exc_info:
+            parse_time_input("10m ago")
+        msg = str(exc_info.value)
+        assert any(ex in msg for ex in ["30m", "24h", "7d"]), (
+            "Error must show shorthand examples"
+        )
+        assert "ISO" in msg or "2024" in msg, "Error must mention ISO format"
+        assert "ago" not in msg.lower() or "not supported" in msg.lower(), (
+            "Error must not suggest 'ago' as valid syntax"
+        )
 
 
 class TestBuildTimeFqlFilters:
@@ -1191,11 +1168,10 @@ class TestBuildTimeFqlFilters:
         assert len(gt_filters) == 1
         assert len(lt_filters) == 1
 
-    def test_natural_language_since(self):
-        """Test that natural language works in --since."""
-        result = build_time_fql_filters(since="3 days ago")
-        assert len(result) == 1
-        assert "gt(start_time" in result[0]
+    def test_natural_language_since_not_supported(self):
+        """INVARIANT: Natural language is not accepted in --since; only shorthand and ISO are valid."""
+        with pytest.raises(click.BadParameter):
+            build_time_fql_filters(since="3 days ago")
 
     def test_invalid_since_raises_error(self):
         """Test that invalid --since raises BadParameter."""
