@@ -560,6 +560,10 @@ class TestRunsListValidation:
             (["--max-latency", "5x"], "Invalid duration format"),
             (["--last", "5x"], "Invalid time format"),
             (["--since", "invalid"], "Invalid time format"),
+            (["--since", "10m ago"], "Invalid time format"),
+            (["--since", "3 days ago"], "Invalid time format"),
+            (["--since", "1 hour ago"], "Invalid time format"),
+            (["--last", "2h ago"], "Invalid time format"),
         ],
     )
     def test_invalid_format_errors(self, runner, mock_client, args, error_msg):
@@ -570,6 +574,27 @@ class TestRunsListValidation:
 
         assert result.exit_code != 0
         assert error_msg in result.output
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ["--since", "7d"],
+            ["--since", "24h"],
+            ["--since", "30m"],
+            ["--since", "2w"],
+            ["--last", "7d"],
+            ["--last", "24h"],
+            ["--since", "2024-01-14T10:00:00Z"],
+            ["--since", "2024-01-14"],
+        ],
+    )
+    def test_valid_time_formats_accepted(self, runner, mock_client, args):
+        """INVARIANT: Valid time formats (shorthand and ISO) are accepted without error."""
+        mock_client.list_runs.return_value = []
+
+        result = runner.invoke(cli, ["--json", "runs", "list"] + args)
+
+        assert result.exit_code == 0
 
     def test_invalid_regex_error(self, runner, mock_client):
         """Invalid regex produces helpful error."""

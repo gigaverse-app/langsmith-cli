@@ -42,10 +42,9 @@ def parse_relative_time(time_str: str) -> Any:
 
 
 def _parse_duration_str(time_str: str) -> Any:
-    """Try to parse a duration string into a timedelta.
+    """Try to parse a shorthand duration string into a timedelta.
 
-    Supports relative shorthand (24h, 7d, 30m, 2w) and natural language
-    (3 days ago, 1 hour ago, 2 weeks ago).
+    Supports relative shorthand only: 30m, 2h, 7d, 2w (case-insensitive).
 
     Args:
         time_str: Pre-stripped duration string
@@ -53,7 +52,6 @@ def _parse_duration_str(time_str: str) -> Any:
     Returns:
         timedelta if parsed successfully, None otherwise
     """
-    # Try relative shorthand (24h, 7d, 30m)
     match = re.match(r"^(\d+)(m|h|d|w)$", time_str, re.IGNORECASE)
     if match:
         value, unit = int(match.group(1)), match.group(2).lower()
@@ -64,21 +62,6 @@ def _parse_duration_str(time_str: str) -> Any:
         elif unit == "d":
             return datetime.timedelta(days=value)
         elif unit == "w":
-            return datetime.timedelta(weeks=value)
-
-    # Try natural language ("3 days ago", "1 hour ago", "2 weeks ago")
-    match = re.match(
-        r"^(\d+)\s*(minute|min|hour|hr|day|week|wk)s?\s*ago$", time_str, re.IGNORECASE
-    )
-    if match:
-        value, unit = int(match.group(1)), match.group(2).lower()
-        if unit in ("minute", "min"):
-            return datetime.timedelta(minutes=value)
-        elif unit in ("hour", "hr"):
-            return datetime.timedelta(hours=value)
-        elif unit == "day":
-            return datetime.timedelta(days=value)
-        elif unit in ("week", "wk"):
             return datetime.timedelta(weeks=value)
 
     return None
@@ -115,10 +98,10 @@ def parse_time_input(time_str: str) -> Any:
         return datetime.datetime.now(datetime.timezone.utc) - delta
 
     raise click.BadParameter(
-        f"Invalid time format: {time_str}. "
-        "Use ISO format (2024-01-14T10:00:00Z), "
-        "relative shorthand (24h, 7d, 30m), "
-        "or natural language (3 days ago, 1 hour ago)"
+        f"Invalid time format: {time_str!r}. Valid formats:\n"
+        "  Shorthand:    30m  2h  7d  2w\n"
+        "  ISO datetime: 2024-01-14T10:00:00Z  or  2024-01-14\n"
+        "Natural language ('3 days ago', '1 hour ago') is not supported."
     )
 
 
@@ -143,9 +126,7 @@ def parse_time_duration(time_str: str) -> Any:
         return delta
 
     raise click.BadParameter(
-        f"Invalid duration format: {time_str}. "
-        "Use relative shorthand (24h, 7d, 30m) "
-        "or natural language (3 days ago, 1 hour ago)"
+        f"Invalid duration format: {time_str!r}. Use shorthand: 30m  2h  7d  2w"
     )
 
 
