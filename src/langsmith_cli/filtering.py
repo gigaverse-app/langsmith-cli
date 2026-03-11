@@ -394,8 +394,10 @@ def sort_items(
         key_func: Callable[[T], Any] = sort_key_map[sort_field]
     else:
 
-        def key_func(item: T) -> Any:
+        def _attr_key(item: T) -> Any:
             return getattr(item, sort_field, None)
+
+        key_func = _attr_key
 
     try:
         return sorted(items, key=key_func, reverse=reverse)
