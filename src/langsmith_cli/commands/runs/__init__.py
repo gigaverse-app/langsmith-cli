@@ -43,6 +43,7 @@ from langsmith_cli.commands.runs.list_cmd import list_runs
 # From usage_cmd (used by tests)
 from langsmith_cli.commands.runs.usage_cmd import (
     _get_model_name,
+    _get_service_tier,
     _metadata_value_matches,
     _truncate_hour,
 )
@@ -59,6 +60,7 @@ __all__ = [
     "parse_grouping_field",
     "list_runs",
     "_get_model_name",
+    "_get_service_tier",
     "_metadata_value_matches",
     "_truncate_hour",
     "_fetch_openrouter_pricing",

@@ -66,6 +66,21 @@ def _get_gateway(run: Run) -> str:
     return str(metadata.get("ls_provider", "unknown"))
 
 
+def _get_service_tier(run: Run) -> str:
+    """Extract service_tier from invocation_params.
+
+    service_tier lives in extra.invocation_params.service_tier, NOT metadata.
+    Known values: 'priority' (~2x cost), 'default' (1x), 'flex' (~0.5x).
+    Returns 'unknown' when not set.
+    """
+    extra = run.extra or {}
+    invocation = extra.get("invocation_params", {}) or {}
+    tier = invocation.get("service_tier")
+    if tier:
+        return str(tier)
+    return "unknown"
+
+
 # Model name prefix -> original provider (who made the model)
 _MODEL_PROVIDER_PREFIXES: list[tuple[str, str]] = [
     ("gemini", "Google"),
@@ -146,7 +161,11 @@ def _estimate_run_cost(
     Only applies when the run has tokens but zero cost from LangSmith.
     """
     model = _get_model_name(run).lower()
-    pricing = pricing_table.get(model)
+    tier = _get_service_tier(run)
+    tier_key = f"{model}+{tier}" if tier != "unknown" else None
+    pricing = (pricing_table.get(tier_key) if tier_key else None) or pricing_table.get(
+        model
+    )
     if pricing is None:
         return None
 
@@ -282,8 +301,8 @@ def _truncate_hour(dt: Any) -> str:
 @click.option(
     "--breakdown",
     multiple=True,
-    type=click.Choice(["model", "project", "provider", "gateway"]),
-    help="Add breakdown dimensions (can specify multiple: --breakdown model --breakdown project --breakdown provider --breakdown gateway).",
+    type=click.Choice(["model", "project", "provider", "gateway", "service_tier"]),
+    help="Add breakdown dimensions (can specify multiple: --breakdown model --breakdown project --breakdown provider --breakdown gateway --breakdown service_tier).",
 )
 @click.option(
     "--interval",
@@ -681,6 +700,8 @@ def usage_runs(
                 breakdown_vals.append(_get_provider(run))
             elif dim == "gateway":
                 breakdown_vals.append(_get_gateway(run))
+            elif dim == "service_tier":
+                breakdown_vals.append(_get_service_tier(run))
 
         key = (time_key, group_val, *breakdown_vals)
 

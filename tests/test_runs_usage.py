@@ -35,6 +35,7 @@ def _create_llm_run(
     channel_id: str | None = None,
     tag_env: str | None = None,
     ls_provider: str | None = None,
+    service_tier: str | None = None,
 ) -> Run:
     """Create an LLM run with model metadata for usage tests."""
     metadata: dict = {"ls_model_name": model}
@@ -47,6 +48,10 @@ def _create_llm_run(
     if tag_env:
         tags.append(f"env:{tag_env}")
 
+    extra: dict = {"metadata": metadata}
+    if service_tier:
+        extra["invocation_params"] = {"service_tier": service_tier}
+
     return Run(
         id=UUID(make_run_id(n)),
         name="ChatModel",
@@ -58,7 +63,7 @@ def _create_llm_run(
         total_cost=Decimal(cost),
         prompt_cost=Decimal(prompt_cost) if prompt_cost else None,
         completion_cost=Decimal(completion_cost) if completion_cost else None,
-        extra={"metadata": metadata},
+        extra=extra,
         tags=tags,
     )
 
@@ -1449,3 +1454,302 @@ class TestUsageApplyPricing:
         data = _extract_json(result.output)
         bucket = data["buckets"][0]
         assert bucket["total_cost"] == pytest.approx(0.0)
+
+
+class TestGetServiceTier:
+    """Unit tests for _get_service_tier helper."""
+
+    def test_returns_tier_from_invocation_params(self):
+        from langsmith_cli.commands.runs import _get_service_tier
+
+        run = _create_llm_run(1, service_tier="priority")
+        assert _get_service_tier(run) == "priority"
+
+    def test_returns_unknown_when_not_set(self):
+        from langsmith_cli.commands.runs import _get_service_tier
+
+        run = _create_llm_run(1)
+        assert _get_service_tier(run) == "unknown"
+
+    def test_returns_unknown_when_extra_is_none(self):
+        from langsmith_cli.commands.runs import _get_service_tier
+
+        run = Run(
+            id=UUID(make_run_id(99)),
+            name="test",
+            run_type="llm",
+            start_time=datetime(2026, 3, 9, 16, 0, 0, tzinfo=timezone.utc),
+            extra=None,
+        )
+        assert _get_service_tier(run) == "unknown"
+
+    def test_returns_flex_tier(self):
+        from langsmith_cli.commands.runs import _get_service_tier
+
+        run = _create_llm_run(1, service_tier="flex")
+        assert _get_service_tier(run) == "flex"
+
+    def test_returns_default_tier(self):
+        from langsmith_cli.commands.runs import _get_service_tier
+
+        run = _create_llm_run(1, service_tier="default")
+        assert _get_service_tier(run) == "default"
+
+
+class TestUsageServiceTierBreakdown:
+    """Tests for --breakdown service_tier dimension."""
+
+    def test_breakdown_by_service_tier_groups_runs(self, runner, mock_client):
+        """INVARIANT: --breakdown service_tier separates runs by their tier value."""
+        runs = [
+            _create_llm_run(1, total_tokens=100, service_tier="priority"),
+            _create_llm_run(2, total_tokens=200, service_tier="default"),
+            _create_llm_run(3, total_tokens=400, service_tier="priority"),
+        ]
+        mock_client.list_runs.return_value = runs
+
+        result = runner.invoke(
+            cli,
+            ["--json", "runs", "usage", "--breakdown", "service_tier", "--last", "24h"],
+        )
+
+        assert result.exit_code == 0
+        data = _extract_json(result.output)
+        buckets = data["buckets"]
+        tiers = {b["service_tier"] for b in buckets}
+        assert tiers == {"priority", "default"}
+        priority_bucket = next(b for b in buckets if b["service_tier"] == "priority")
+        assert priority_bucket["total_tokens"] == 500
+
+    def test_breakdown_service_tier_unknown_when_not_set(self, runner, mock_client):
+        """INVARIANT: Runs without service_tier get 'unknown' as tier value."""
+        runs = [_create_llm_run(1, total_tokens=1000)]
+        mock_client.list_runs.return_value = runs
+
+        result = runner.invoke(
+            cli,
+            ["--json", "runs", "usage", "--breakdown", "service_tier", "--last", "24h"],
+        )
+
+        assert result.exit_code == 0
+        data = _extract_json(result.output)
+        assert data["buckets"][0]["service_tier"] == "unknown"
+
+    def test_breakdown_service_tier_combined_with_model(self, runner, mock_client):
+        """INVARIANT: service_tier and model breakdowns can be combined."""
+        runs = [
+            _create_llm_run(
+                1, model="gpt-5-nano", total_tokens=100, service_tier="priority"
+            ),
+            _create_llm_run(
+                2, model="gpt-5-nano", total_tokens=200, service_tier="default"
+            ),
+        ]
+        mock_client.list_runs.return_value = runs
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "usage",
+                "--breakdown",
+                "model",
+                "--breakdown",
+                "service_tier",
+                "--last",
+                "24h",
+            ],
+        )
+
+        assert result.exit_code == 0
+        data = _extract_json(result.output)
+        assert len(data["buckets"]) == 2
+        assert all("model" in b for b in data["buckets"])
+        assert all("service_tier" in b for b in data["buckets"])
+
+
+class TestUsageApplyPricingWithTiers:
+    """Tests for --apply-pricing with model+tier compound keys."""
+
+    def test_tier_compound_key_takes_precedence_over_base_model(
+        self, runner, mock_client, tmp_path
+    ):
+        """INVARIANT: model+tier key is used when present, overriding plain model key."""
+        runs = [
+            _create_llm_run(
+                1,
+                model="gpt-5-nano",
+                total_tokens=1000,
+                prompt_tokens=700,
+                completion_tokens=300,
+                cost="0",
+                service_tier="priority",
+            ),
+        ]
+        mock_client.list_runs.return_value = runs
+
+        pricing_file = tmp_path / "pricing.yaml"
+        pricing_file.write_text(
+            "gpt-5-nano:\n"
+            "  input_per_million: 1.10\n"
+            "  output_per_million: 4.40\n"
+            "gpt-5-nano+priority:\n"
+            "  input_per_million: 2.20\n"
+            "  output_per_million: 8.80\n"
+        )
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "usage",
+                "--last",
+                "24h",
+                "--apply-pricing",
+                str(pricing_file),
+            ],
+        )
+
+        assert result.exit_code == 0
+        data = _extract_json(result.output)
+        bucket = data["buckets"][0]
+        # priority pricing: 700 * 2.20/1M = 0.00154; 300 * 8.80/1M = 0.00264
+        assert bucket["prompt_cost"] == pytest.approx(0.00154, rel=0.01)
+        assert bucket["completion_cost"] == pytest.approx(0.00264, rel=0.01)
+
+    def test_apply_pricing_falls_back_to_base_model_when_no_tier_key(
+        self, runner, mock_client, tmp_path
+    ):
+        """INVARIANT: Falls back to plain model key when no tier-specific entry exists."""
+        runs = [
+            _create_llm_run(
+                1,
+                model="gpt-5-nano",
+                total_tokens=1000,
+                prompt_tokens=700,
+                completion_tokens=300,
+                cost="0",
+                service_tier="priority",
+            ),
+        ]
+        mock_client.list_runs.return_value = runs
+
+        pricing_file = tmp_path / "pricing.yaml"
+        pricing_file.write_text(
+            "gpt-5-nano:\n  input_per_million: 1.10\n  output_per_million: 4.40\n"
+        )
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "usage",
+                "--last",
+                "24h",
+                "--apply-pricing",
+                str(pricing_file),
+            ],
+        )
+
+        assert result.exit_code == 0
+        data = _extract_json(result.output)
+        bucket = data["buckets"][0]
+        # base pricing: 700 * 1.10/1M = 0.00077; 300 * 4.40/1M = 0.00132
+        assert bucket["prompt_cost"] == pytest.approx(0.00077, rel=0.01)
+        assert bucket["completion_cost"] == pytest.approx(0.00132, rel=0.01)
+
+    def test_apply_pricing_unknown_tier_skips_tier_key_lookup(
+        self, runner, mock_client, tmp_path
+    ):
+        """INVARIANT: When service_tier is 'unknown', only the base model key is tried."""
+        runs = [
+            _create_llm_run(
+                1,
+                model="gpt-5-nano",
+                total_tokens=1000,
+                prompt_tokens=700,
+                completion_tokens=300,
+                cost="0",
+            ),
+        ]
+        mock_client.list_runs.return_value = runs
+
+        pricing_file = tmp_path / "pricing.yaml"
+        pricing_file.write_text(
+            "gpt-5-nano:\n"
+            "  input_per_million: 1.10\n"
+            "  output_per_million: 4.40\n"
+            "gpt-5-nano+unknown:\n"
+            "  input_per_million: 999.0\n"
+            "  output_per_million: 999.0\n"
+        )
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "usage",
+                "--last",
+                "24h",
+                "--apply-pricing",
+                str(pricing_file),
+            ],
+        )
+
+        assert result.exit_code == 0
+        data = _extract_json(result.output)
+        bucket = data["buckets"][0]
+        # Should use base pricing, not gpt-5-nano+unknown
+        assert bucket["prompt_cost"] == pytest.approx(0.00077, rel=0.01)
+        assert bucket["completion_cost"] == pytest.approx(0.00132, rel=0.01)
+
+    def test_apply_pricing_flex_tier_uses_tier_compound_key(
+        self, runner, mock_client, tmp_path
+    ):
+        """INVARIANT: flex tier uses model+flex key when available."""
+        runs = [
+            _create_llm_run(
+                1,
+                model="gpt-5-nano",
+                total_tokens=1000,
+                prompt_tokens=700,
+                completion_tokens=300,
+                cost="0",
+                service_tier="flex",
+            ),
+        ]
+        mock_client.list_runs.return_value = runs
+
+        pricing_file = tmp_path / "pricing.yaml"
+        pricing_file.write_text(
+            "gpt-5-nano:\n"
+            "  input_per_million: 1.10\n"
+            "  output_per_million: 4.40\n"
+            "gpt-5-nano+flex:\n"
+            "  input_per_million: 0.55\n"
+            "  output_per_million: 2.20\n"
+        )
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "usage",
+                "--last",
+                "24h",
+                "--apply-pricing",
+                str(pricing_file),
+            ],
+        )
+
+        assert result.exit_code == 0
+        data = _extract_json(result.output)
+        bucket = data["buckets"][0]
+        # flex pricing: 700 * 0.55/1M = 0.000385; 300 * 2.20/1M = 0.00066
+        assert bucket["prompt_cost"] == pytest.approx(0.000385, rel=0.01)
+        assert bucket["completion_cost"] == pytest.approx(0.00066, rel=0.01)
