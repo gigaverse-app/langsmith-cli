@@ -432,9 +432,9 @@ def list_runs(
             "name": lambda r: (r.name or "").lower(),
             "status": lambda r: r.status or "",
             "latency": lambda r: r.latency if r.latency is not None else 0,
-            "start_time": lambda r: r.start_time
-            if hasattr(r, "start_time")
-            else datetime.datetime.min,
+            "start_time": lambda r: (
+                r.start_time if hasattr(r, "start_time") else datetime.datetime.min
+            ),
         }
         runs = sort_items(runs, sort_by, sort_key_map, console)
 
