@@ -52,6 +52,7 @@ dev = [
     "pytest>=9.0.2",
     "pytest-benchmark>=5.2.3",
     "pytest-cov>=7.0.0",
+    "pytest-dotenv>=0.5.2",
     "pytest-integration>=0.2.3",
     "pytest-xdist>=3.8.0",
     "ruff>=0.14.11",
@@ -73,6 +74,7 @@ markers = [
 # Parallel execution by default (most aggressive: uses all CPU cores)
 # For coverage runs, use: pytest --cov -n 0 (serial is faster for coverage)
 addopts = "--strict-markers -n auto"
+env_files = [".env"]
 
 [tool.pyright]
 include = ["src", "tests"]
