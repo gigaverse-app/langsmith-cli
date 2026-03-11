@@ -4,6 +4,7 @@ from typing import Any
 
 import click
 from langsmith.schemas import Run
+from pydantic import BaseModel
 from rich.table import Table
 
 from langsmith_cli.commands.runs._group import console, runs
@@ -24,6 +25,18 @@ from langsmith_cli.utils import (
     output_formatted_data,
     resolve_project_filters,
 )
+
+
+class UsageBucket(BaseModel):
+    """Accumulated token/cost metrics for a single time+group+breakdown bucket."""
+
+    total_tokens: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_cost: float = 0.0
+    prompt_cost: float = 0.0
+    completion_cost: float = 0.0
+    run_count: int = 0
 
 
 def _get_model_name(run: Run) -> str:
@@ -634,17 +647,7 @@ def usage_runs(
 
     # Aggregate into buckets
     # Key: (time_bucket, group_value, *breakdown_values) -> metrics
-    buckets: dict[tuple[str, ...], dict[str, float | int | str]] = defaultdict(
-        lambda: {
-            "total_tokens": 0,
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_cost": 0.0,
-            "prompt_cost": 0.0,
-            "completion_cost": 0.0,
-            "run_count": 0,
-        }
-    )
+    buckets: dict[tuple[str, ...], UsageBucket] = defaultdict(UsageBucket)
 
     # Load external pricing table if provided
     pricing_table: dict[str, dict[str, float]] = {}
@@ -682,13 +685,10 @@ def usage_runs(
         key = (time_key, group_val, *breakdown_vals)
 
         bucket = buckets[key]
-        bucket["total_tokens"] = int(bucket["total_tokens"]) + (run.total_tokens or 0)
-        bucket["prompt_tokens"] = int(bucket["prompt_tokens"]) + (
-            run.prompt_tokens or 0
-        )
-        bucket["completion_tokens"] = int(bucket["completion_tokens"]) + (
-            run.completion_tokens or 0
-        )
+        bucket.total_tokens += run.total_tokens or 0
+        bucket.prompt_tokens += run.prompt_tokens or 0
+        bucket.completion_tokens += run.completion_tokens or 0
+
         run_total = float(run.total_cost or 0.0)
         run_prompt = float(run.prompt_cost or 0.0)
         run_completion = float(run.completion_cost or 0.0)
@@ -700,10 +700,10 @@ def usage_runs(
                 run_prompt, run_completion = estimated
                 run_total = run_prompt + run_completion
 
-        bucket["total_cost"] = float(bucket["total_cost"]) + run_total
-        bucket["prompt_cost"] = float(bucket["prompt_cost"]) + run_prompt
-        bucket["completion_cost"] = float(bucket["completion_cost"]) + run_completion
-        bucket["run_count"] = int(bucket["run_count"]) + 1
+        bucket.total_cost += run_total
+        bucket.prompt_cost += run_prompt
+        bucket.completion_cost += run_completion
+        bucket.run_count += 1
 
     # Build results list
     results: list[dict[str, Any]] = []
@@ -716,7 +716,7 @@ def usage_runs(
         for i, dim in enumerate(breakdown):
             row[dim] = key[2 + i]
 
-        row.update(metrics)
+        row.update(metrics.model_dump())
         results.append(row)
 
     # Sort by time, then group
