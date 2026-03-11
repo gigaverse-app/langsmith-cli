@@ -9,6 +9,7 @@ import re
 from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, overload
 
 from langsmith.schemas import Run
 from platformdirs import user_cache_dir
@@ -42,9 +43,23 @@ def _is_data_uri(s: str) -> bool:
     return s.startswith("data:") and ";base64," in s[:100]
 
 
+@overload
+def strip_binary_data(obj: dict[str, Any]) -> dict[str, Any]: ...
+
+
+@overload
+def strip_binary_data(obj: list[Any]) -> list[Any]: ...
+
+
+@overload
 def strip_binary_data(
-    obj: dict | list | str | int | float | bool | None,
-) -> dict | list | str | int | float | bool | None:
+    obj: str | int | float | bool | None,
+) -> str | int | float | bool | None: ...
+
+
+def strip_binary_data(
+    obj: dict[str, Any] | list[Any] | str | int | float | bool | None,
+) -> dict[str, Any] | list[Any] | str | int | float | bool | None:
     """Recursively strip large base64/binary strings from a JSON-like structure.
 
     Replaces them with a placeholder that records the original size and type.
