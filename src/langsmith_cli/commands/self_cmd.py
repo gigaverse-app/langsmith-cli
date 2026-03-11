@@ -153,16 +153,73 @@ def detect(ctx: click.Context) -> None:
     console.print(table)
 
 
-@self_group.command("skill")
-@click.pass_context
-def skill_docs(ctx: click.Context) -> None:
-    """Print the agent skill guide (SKILL.md) for using this CLI effectively."""
+def _discover_skill_docs() -> dict[str, str]:
+    """Discover available reference docs by scanning the skill_docs/ package directory."""
     import importlib.resources
 
-    text = importlib.resources.files("langsmith_cli").joinpath("SKILL.md").read_text()
+    docs: dict[str, str] = {}
+    skill_docs_pkg = importlib.resources.files("langsmith_cli").joinpath("skill_docs")
+    try:
+        for entry in skill_docs_pkg.iterdir():  # type: ignore[union-attr]
+            name = entry.name  # type: ignore[union-attr]
+            if name.endswith(".md"):
+                docs[name[:-3]] = f"skill_docs/{name}"
+    except Exception:
+        pass
+    return docs
 
+
+@self_group.command("skill")
+@click.argument("doc", required=False, default=None)
+@click.option(
+    "--list", "list_docs", is_flag=True, help="List available reference docs."
+)
+@click.pass_context
+def skill_docs(ctx: click.Context, doc: str | None, list_docs: bool) -> None:
+    """Print the agent usage guide or a specific reference doc.
+
+    \b
+    Without arguments: prints the main skill guide (SKILL.md).
+    With a doc name: prints that reference document.
+    With --list: shows all available reference doc names.
+
+    \b
+    Example:
+      langsmith-cli self skill
+      langsmith-cli self skill --list
+      langsmith-cli self skill runs
+      langsmith-cli self skill fql
+    """
+    import importlib.resources
+
+    pkg = importlib.resources.files("langsmith_cli")
+    available = _discover_skill_docs()
+
+    if list_docs:
+        if ctx.obj.get("json"):
+            click.echo(json_dumps({"docs": sorted(available.keys()), "main": "skill"}))
+        else:
+            click.echo("Available skill docs (use: langsmith-cli self skill <name>):\n")
+            click.echo("  (main)            Main agent guide (default)")
+            for name in sorted(available.keys()):
+                click.echo(f"  {name:<18}  self skill {name}")
+        return
+
+    if doc is None:
+        path = pkg.joinpath("SKILL.md")
+    elif doc in available:
+        path = pkg.joinpath(available[doc])
+    else:
+        names = ", ".join(sorted(available.keys()))
+        raise click.BadParameter(
+            f"Unknown doc '{doc}'. Run 'self skill --list' to see available docs. "
+            f"Available: {names}",
+            param_hint="DOC",
+        )
+
+    text = path.read_text()
     if ctx.obj.get("json"):
-        click.echo(json_dumps({"skill": text}))
+        click.echo(json_dumps({"doc": doc or "skill", "content": text}))
     else:
         click.echo(text)
 

@@ -209,9 +209,15 @@ def cli_main(ctx, json, verbose, quiet):
     LangSmith CLI - A context-efficient interface for LangSmith.
 
     \b
-    IMPORTANT FOR AGENTS: Always pass --json as the FIRST argument to get
-    machine-readable output. Without it, the CLI outputs Rich tables that
-    are unparseable. Example: langsmith-cli --json runs list --limit 5
+    AGENT QUICK START:
+      langsmith-cli self skill              # Full usage guide (read this first)
+      langsmith-cli self skill --list       # List all reference docs
+      langsmith-cli self skill runs         # Runs/traces reference
+      langsmith-cli self skill fql          # Filter Query Language reference
+
+    \b
+    Always pass --json FIRST for machine-readable output:
+      langsmith-cli --json runs list --limit 5
     """
     ctx.ensure_object(dict)
     ctx.obj["json"] = json

@@ -470,18 +470,45 @@ class TestSelfUpdateCLI:
 class TestSkillCommand:
     """Tests for self skill command."""
 
-    def test_skill_outputs_markdown(self, runner):
-        """INVARIANT: self skill outputs SKILL.md content as plain text."""
+    def test_skill_outputs_main_guide(self, runner):
+        """INVARIANT: self skill with no args prints main SKILL.md content."""
         result = runner.invoke(cli, ["self", "skill"])
         assert result.exit_code == 0
         assert "langsmith" in result.output
         assert "--json" in result.output
 
     def test_skill_json_mode(self, runner):
-        """INVARIANT: --json mode wraps skill content in {"skill": ...}."""
+        """INVARIANT: --json mode wraps skill content in {"doc": ..., "content": ...}."""
         result = runner.invoke(cli, ["--json", "self", "skill"])
         assert result.exit_code == 0
         data = json.loads(result.output)
-        assert "skill" in data
-        assert "langsmith" in data["skill"]
-        assert "--json" in data["skill"]
+        assert "content" in data
+        assert "--json" in data["content"]
+
+    def test_skill_list_shows_discovered_docs(self, runner):
+        """INVARIANT: --list auto-discovers docs from skill_docs/ directory."""
+        result = runner.invoke(cli, ["self", "skill", "--list"])
+        assert result.exit_code == 0
+        assert "runs" in result.output
+        assert "fql" in result.output
+
+    def test_skill_list_json_mode(self, runner):
+        """INVARIANT: --list --json returns sorted list of doc names."""
+        result = runner.invoke(cli, ["--json", "self", "skill", "--list"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert "docs" in data
+        assert "runs" in data["docs"]
+        assert "fql" in data["docs"]
+
+    def test_skill_reference_doc(self, runner):
+        """INVARIANT: self skill <name> returns that reference doc."""
+        result = runner.invoke(cli, ["self", "skill", "runs"])
+        assert result.exit_code == 0
+        assert len(result.output) > 100
+
+    def test_skill_unknown_doc_error(self, runner):
+        """INVARIANT: Unknown doc name gives a clear error with available list."""
+        result = runner.invoke(cli, ["self", "skill", "nonexistent"])
+        assert result.exit_code != 0
+        assert "nonexistent" in result.output
