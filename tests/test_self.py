@@ -465,3 +465,23 @@ class TestSelfUpdateCLI:
             result = runner.invoke(cli, ["self", "update"])
 
         assert result.exit_code == 0
+
+
+class TestSkillCommand:
+    """Tests for self skill command."""
+
+    def test_skill_outputs_markdown(self, runner):
+        """INVARIANT: self skill outputs SKILL.md content as plain text."""
+        result = runner.invoke(cli, ["self", "skill"])
+        assert result.exit_code == 0
+        assert "langsmith" in result.output
+        assert "--json" in result.output
+
+    def test_skill_json_mode(self, runner):
+        """INVARIANT: --json mode wraps skill content in {"skill": ...}."""
+        result = runner.invoke(cli, ["--json", "self", "skill"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert "skill" in data
+        assert "langsmith" in data["skill"]
+        assert "--json" in data["skill"]

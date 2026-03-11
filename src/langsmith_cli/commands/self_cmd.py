@@ -153,6 +153,20 @@ def detect(ctx: click.Context) -> None:
     console.print(table)
 
 
+@self_group.command("skill")
+@click.pass_context
+def skill_docs(ctx: click.Context) -> None:
+    """Print the agent skill guide (SKILL.md) for using this CLI effectively."""
+    import importlib.resources
+
+    text = importlib.resources.files("langsmith_cli").joinpath("SKILL.md").read_text()
+
+    if ctx.obj.get("json"):
+        click.echo(json_dumps({"skill": text}))
+    else:
+        click.echo(text)
+
+
 @self_group.command("update")
 @click.pass_context
 def update(ctx: click.Context) -> None:
