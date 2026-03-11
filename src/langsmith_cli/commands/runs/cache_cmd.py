@@ -538,7 +538,7 @@ def cache_grep(
 
     render_output(
         matched,
-        lambda runs: build_runs_table(runs),
+        lambda runs: build_runs_table(runs, f"Runs matching '{pattern}'"),
         ctx,
         include_fields=include_fields,
         empty_message=f"No runs matching '{pattern}' found",

@@ -297,7 +297,7 @@ def pricing_check(
                         p = openrouter_prices[model_name]
                         price_table.add_row(
                             model_name,
-                            p.get("openrouter_id", ""),
+                            str(p.get("openrouter_id", "")),
                             f"${p['input_per_million']:.4f}",
                             f"${p['output_per_million']:.4f}",
                         )

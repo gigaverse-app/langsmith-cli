@@ -7,6 +7,7 @@ from langsmith.schemas import Run
 from rich.table import Table
 
 from langsmith_cli.commands.runs._group import console, runs
+from langsmith_cli.output import json_dumps
 from langsmith_cli.utils import (
     add_grep_options,
     add_metadata_filter_options,
@@ -41,13 +42,8 @@ def _get_model_name(run: Run) -> str:
 
 def _get_project_name(run: Run) -> str:
     """Extract project name from a run, handling missing attribute when using select."""
-    try:
-        name = run.session_name
-        if name:
-            return name
-    except AttributeError:
-        pass
-    return "unknown"
+    name: str | None = getattr(run, "session_name", None)
+    return name if name else "unknown"
 
 
 def _get_gateway(run: Run) -> str:
@@ -186,23 +182,27 @@ def _extract_input_context(run: Run) -> dict[str, str]:
 def _emit_empty_usage_json(output_format: str | None, ctx: Any, interval: str) -> None:
     """Emit an empty usage JSON summary when no data matches filters."""
     format_type = determine_output_format(output_format, ctx.obj.get("json"))
-    if format_type != "table":
-        empty_data: dict[str, Any] = {
-            "summary": {
-                "total_tokens": 0,
-                "total_cost": 0,
-                "prompt_cost": 0,
-                "completion_cost": 0,
-                "active_buckets": 0,
-                "unique_groups": 0,
-                "max_concurrent_groups": 0,
-                "avg_concurrent_groups": 0,
-                "interval": interval,
-                "run_count": 0,
-            },
-            "buckets": [],
-        }
-        output_formatted_data(empty_data, format_type)
+    if format_type == "table":
+        return
+    empty_data: dict[str, Any] = {
+        "summary": {
+            "total_tokens": 0,
+            "total_cost": 0,
+            "prompt_cost": 0,
+            "completion_cost": 0,
+            "active_buckets": 0,
+            "unique_groups": 0,
+            "max_concurrent_groups": 0,
+            "avg_concurrent_groups": 0,
+            "interval": interval,
+            "run_count": 0,
+        },
+        "buckets": [],
+    }
+    if format_type in ("csv", "yaml"):
+        output_formatted_data([empty_data], format_type)
+    else:
+        click.echo(json_dumps(empty_data))
 
 
 def _metadata_value_matches(candidate: str | None, pattern: str) -> bool:
@@ -496,10 +496,10 @@ def usage_runs(
                 # Check tags: value may appear as a tag directly ("chat:Foo")
                 # or as "key:value" ("channel_id:chat:Foo")
                 if r.tags:
-                    for tag in r.tags:
+                    for run_tag in r.tags:
                         if _metadata_value_matches(
-                            tag, value
-                        ) or _metadata_value_matches(tag, f"{key}:{value}"):
+                            run_tag, value
+                        ) or _metadata_value_matches(run_tag, f"{key}:{value}"):
                             filtered.append(r)
                             break
                     else:
@@ -634,8 +634,7 @@ def usage_runs(
 
     # Aggregate into buckets
     # Key: (time_bucket, group_value, *breakdown_values) -> metrics
-    UsageBucket = dict[str, float | int | str]
-    buckets: dict[tuple[str, ...], UsageBucket] = defaultdict(
+    buckets: dict[tuple[str, ...], dict[str, float | int | str]] = defaultdict(
         lambda: {
             "total_tokens": 0,
             "prompt_tokens": 0,
@@ -757,25 +756,26 @@ def usage_runs(
     format_type = determine_output_format(output_format, ctx.obj.get("json"))
 
     if format_type != "table":
-        output_data: dict[str, Any] | list[dict[str, Any]] = {
-            "summary": {
-                "total_tokens": total_tokens_all,
-                "total_cost": round(total_cost_all, 6),
-                "prompt_cost": round(prompt_cost_all, 6),
-                "completion_cost": round(completion_cost_all, 6),
-                "active_buckets": len(unique_times),
-                "unique_groups": len(unique_groups),
-                "max_concurrent_groups": max_concurrent,
-                "avg_concurrent_groups": round(avg_concurrent, 1),
-                "interval": interval,
-                "run_count": sum(r["run_count"] for r in results),
-            },
-            "buckets": results,
-        }
-        # CSV/YAML need a flat list; JSON gets the full structure
+        # CSV/YAML need a flat list; JSON gets the full nested structure
         if format_type in ("csv", "yaml"):
-            output_data = results
-        output_formatted_data(output_data, format_type)
+            output_formatted_data(results, format_type)
+        else:
+            output_data: dict[str, Any] = {
+                "summary": {
+                    "total_tokens": total_tokens_all,
+                    "total_cost": round(total_cost_all, 6),
+                    "prompt_cost": round(prompt_cost_all, 6),
+                    "completion_cost": round(completion_cost_all, 6),
+                    "active_buckets": len(unique_times),
+                    "unique_groups": len(unique_groups),
+                    "max_concurrent_groups": max_concurrent,
+                    "avg_concurrent_groups": round(avg_concurrent, 1),
+                    "interval": interval,
+                    "run_count": sum(r["run_count"] for r in results),
+                },
+                "buckets": results,
+            }
+            click.echo(json_dumps(output_data))
         return
 
     # Print summary
