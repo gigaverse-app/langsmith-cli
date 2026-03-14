@@ -253,6 +253,30 @@ class TestCacheCommands:
         output = strip_ansi(result.output)
         assert "test-project" in output
 
+    def test_cache_dir_prints_cache_directory(self, runner, tmp_path, monkeypatch):
+        """INVARIANT: cache dir command prints the cache directory path."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+
+        result = runner.invoke(cli, ["runs", "cache", "dir"])
+
+        assert result.exit_code == 0
+        assert str(tmp_path) in result.output.strip()
+
+    def test_cache_list_json_includes_path(self, runner, tmp_path, monkeypatch):
+        """INVARIANT: cache list --json includes the file path for each project."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+
+        append_runs_to_cache("test-project", [_make_run(1)])
+
+        result = runner.invoke(cli, ["--json", "runs", "cache", "list"])
+
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert len(data) == 1
+        assert "path" in data[0]
+        assert data[0]["path"].endswith(".jsonl")
+        assert "test-project" in data[0]["path"]
+
     def test_cache_clear_with_yes(self, runner, tmp_path, monkeypatch):
         """Clear command removes cache with --yes flag."""
         monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)

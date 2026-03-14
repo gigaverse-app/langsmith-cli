@@ -406,7 +406,10 @@ langsmith-cli runs list --project my-project --limit 5
   - `--workers <n>`: Parallel workers (default: min(4, num_projects)).
   - Example: `langsmith-cli runs cache download --project-name-pattern "prd/*" --last 7d`
   - Example: `langsmith-cli runs cache download --project my-project --since 2025-02-17 --before 2025-02-20`
-- `langsmith-cli runs cache list`: List cached projects with run counts and sizes.
+- `langsmith-cli runs cache dir`: Print the cache directory path. Useful for piping to external tools (jq, DuckDB, pandas).
+  - Example: `duckdb -c "SELECT * FROM read_ndjson_auto('$(langsmith-cli runs cache dir)/*.jsonl')"`
+  - Example: `cat "$(langsmith-cli runs cache dir)/my-project.jsonl" | jq '.name'`
+- `langsmith-cli runs cache list`: List cached projects with run counts, sizes, and time ranges. JSON output includes `path` field with the absolute JSONL file path for each project.
 - `langsmith-cli runs cache grep <pattern> [OPTIONS]`: Search cached runs for text patterns in inputs/outputs/error.
   - `-i`: Case-insensitive search.
   - `-E`: Treat pattern as regex.

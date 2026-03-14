@@ -341,6 +341,23 @@ def cache_download(
                 )
 
 
+@cache_group.command("dir")
+@click.pass_context
+def cache_dir(ctx: click.Context) -> None:
+    """Print the cache directory path.
+
+    Useful for piping to other tools:
+
+    Examples:
+        langsmith-cli runs cache dir
+        duckdb -c "SELECT * FROM read_ndjson_auto('$(langsmith-cli runs cache dir)/*.jsonl')"
+        cat "$(langsmith-cli runs cache dir)/my-project.jsonl" | jq '.name'
+    """
+    from langsmith_cli.cache import get_cache_dir
+
+    click.echo(get_cache_dir())
+
+
 @cache_group.command("list")
 @click.pass_context
 def cache_list(ctx: click.Context) -> None:
@@ -360,7 +377,11 @@ def cache_list(ctx: click.Context) -> None:
         return
 
     if ctx.obj.get("json"):
-        data = [p.model_dump(mode="json") for p in projects]
+        data = []
+        for p in projects:
+            entry = p.model_dump(mode="json")
+            entry["path"] = str(get_cache_path(p.project_name))
+            data.append(entry)
         click.echo(json.dumps(data, default=str))
         return
 
