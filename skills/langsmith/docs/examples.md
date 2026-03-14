@@ -779,82 +779,164 @@ done
    }
    ```
 
-## Finding Recognized Entities in Extraction Chain Outputs
+## Searching for Text in Inputs or Outputs of a Run Subset
 
-**Scenario:** You have a namedrop/entity-extraction chain and want to find all runs where a specific person's name (e.g. "Niklas", "Jacob") was recognized as a known entity in the output — not just mentioned in the transcript or prompt.
+**Scenario:** Find runs in a project where specific text appears in inputs or outputs, optionally scoped to a subset (by time window, channel, tag, run name, etc.).
 
-**Why this is tricky:** `runs cache grep "Niklas"` will match runs where the name appears *anywhere* in outputs — including in the LLM prompt template, channel names, or transcript context. You need to filter specifically for `extracted_entities[].canonical_full_name` with `llm_recognition: true`.
+This is a three-level strategy — try each level in order, stop when you have enough results:
 
-### Step 1: Check and populate cache
-
-```bash
-# Check if project is already cached
-langsmith-cli runs cache list
-
-# If not cached, download in background (may take 5-10+ min for large projects)
-# --json is REQUIRED to get parseable progress events
-langsmith-cli --json runs cache download --project "dev/namedrop_service" --last 30d
-# Poll TaskOutput for: {"event": "progress", "project": "...", "new_runs": N}
-# Final: {"event": "download_complete", "total_new_runs": N}
-
-# Get cache file path
-CACHE_DIR=$(langsmith-cli runs cache dir)
-ls "$CACHE_DIR"/*namedrop*
-# → /home/user/.cache/langsmith-cli/runs/dev_namedrop_service.jsonl
+```
+Level 1: Cache + cache grep         → instant, no API, best for large projects
+Level 2: Server-side filter + grep  → fast API filter narrows set, client grep finds text
+Level 3: Python JSONL scan          → for nested/structured fields cache grep can't target
 ```
 
-### Step 2: Search structured entity fields with Python
+---
 
-`runs cache grep` is for triage only. For nested fields like `extracted_entities[].canonical_full_name`, scan the JSONL directly:
+### Level 1: Cache + `cache grep` (preferred)
+
+```bash
+# Step 1: Check what's already cached
+langsmith-cli runs cache list
+
+# Step 2a: Project is cached → search directly, zero API calls
+langsmith-cli runs cache grep "Niklas|Jacob" -E \
+  --grep-in outputs \
+  --project "dev/namedrop_service" \
+  --limit 50
+
+# With time filter
+langsmith-cli runs cache grep "Niklas" \
+  --grep-in outputs \
+  --project "dev/namedrop_service" \
+  --since 2026-01-15 --before 2026-01-29
+
+# Step 2b: Project NOT cached → download first (--json required for progress)
+langsmith-cli --json runs cache download \
+  --project "dev/namedrop_service" \
+  --last 30d
+# Run in background, poll TaskOutput for:
+#   {"event": "progress", "project": "...", "new_runs": N}   ← per batch
+#   {"event": "download_complete", "total_new_runs": N}      ← final
+# Then use cache grep as above
+```
+
+---
+
+### Level 2: Server-side filter + client `--grep` (when cache unavailable)
+
+Use server-side filters to narrow the subset first, then `--grep` to find text within it.
+This avoids downloading the entire project.
+
+```bash
+# Narrow by time + metadata (server-side), then grep content (client-side)
+langsmith-cli --json runs list \
+  --project "dev/namedrop_service" \
+  --since 2026-01-15 --before 2026-01-29 \
+  --metadata channel_id=Gigaverse_Daily_Standup* \
+  --grep "Niklas|Jacob" --grep-regex --grep-in outputs \
+  --roots \
+  --limit 50 --fetch 2000 \
+  --fields id,name,start_time,outputs \
+  --output /tmp/results.jsonl
+
+# Narrow by run name pattern + grep
+langsmith-cli --json runs list \
+  --project "dev/namedrop_service" \
+  --name-pattern "task-name-extraction-chain" \
+  --grep "Niklas" --grep-in outputs \
+  --limit 50 --fetch 1000 \
+  --fields id,name,start_time \
+  --output /tmp/results.jsonl
+
+# Narrow by tag + grep
+langsmith-cli --json runs list \
+  --project "dev/namedrop_service" \
+  --tag "namedrop_service_names_extraction" \
+  --grep "error" --grep-in error \
+  --limit 20 --fields id,name,error
+```
+
+**Key:** `--fetch N` controls how many runs are pulled from the API to evaluate the client-side `--grep`. Higher `--fetch` = more coverage, more API cost. Always pair with server-side filters to keep the set small.
+
+---
+
+### Level 3: Python JSONL scan (for nested/structured fields)
+
+`cache grep` and `--grep` search the full serialized JSON string — they find text anywhere, including in prompt templates, channel names, or metadata. When you need to match a specific nested field (e.g. `extracted_entities[].canonical_full_name`), scan the JSONL directly:
 
 ```python
 import json, re
+from pathlib import Path
+import subprocess
 
+# Get cache directory
+cache_dir = subprocess.check_output(
+    ["langsmith-cli", "runs", "cache", "dir"], text=True
+).strip()
+
+pattern = re.compile(r'Niklas|Jacob', re.IGNORECASE)
 results = []
-for fname, env in [
-    ('/path/to/cache/dev_namedrop_service.jsonl', 'dev'),
-    ('/path/to/cache/prd_namedrop_service.jsonl', 'prd'),
-]:
-    with open(fname) as f:
+
+for jsonl_path in Path(cache_dir).glob("*namedrop*.jsonl"):
+    with open(jsonl_path) as f:
         for line in f:
             try:
                 run = json.loads(line)
-            except:
+            except Exception:
                 continue
             if not isinstance(run, dict):
                 continue
+
+            # Scope to a subset: filter by run name, channel, time, etc.
+            meta = (run.get('extra') or {}).get('metadata', {})
+            channel = meta.get('channel_id', '')
+            if 'Gigaverse_Daily_Standup' not in channel:
+                continue  # remove this line to search all channels
+
+            # Search a specific nested field
             entities = (run.get('outputs') or {}).get('extracted_entities') or []
             matched = [
                 e for e in entities
                 if isinstance(e, dict)
-                and re.search(r'Niklas|Jacob', str(e.get('canonical_full_name') or ''), re.IGNORECASE)
-                and e.get('llm_recognition', True)   # only confirmed recognitions
+                and pattern.search(str(e.get('canonical_full_name') or ''))
+                # add field-specific filters here, e.g.:
+                # and e.get('llm_recognition', True)
             ]
-            if matched:
-                ch = (run.get('extra') or {}).get('metadata', {}).get('channel_id', '')
-                start = run.get('start_time', '')[:19]
-                results.append((env, start, run['id'], run.get('name', ''), ch, matched))
 
-# Deduplicate — each trace appears multiple times (once per sub-run)
+            if matched:
+                start = run.get('start_time', '')[:19]
+                results.append((start, run['id'], run.get('name', ''), channel, matched))
+
+# Each trace appears multiple times (once per sub-run: RunnableSequence,
+# RunnableWithFallbacks, task-name-extraction-chain, etc.)
+# Deduplicate by (minute, channel, matched value)
 seen = set()
-for env, start, rid, name, ch, entities in sorted(results):
-    for e in entities:
-        key = (env, start[:16], ch, e.get('canonical_full_name'))
+for start, rid, name, channel, matched in sorted(results):
+    for item in matched:
+        key = (start[:16], channel, str(item.get('canonical_full_name')))
         if key not in seen:
             seen.add(key)
-            ctx = (e.get('details_for_llm_recognized_entities') or {}).get('mention_context', '')
-            info = (e.get('details_for_llm_recognized_entities') or {}).get('one_sentence_relevant_additional_information', '')
-            print(f"[{env}] {start} | ch={ch}")
-            print(f"  → {e['canonical_full_name']!r}  ctx={ctx!r}")
-            print(f"     info={info!r}")
+            print(f"{start} | {name} | ch={channel}")
+            print(f"  → {json.dumps(item, indent=4)}")
 ```
 
-### Key lessons
+### When each level applies
 
-- **`runs cache grep` is for triage** — finds runs where text appears anywhere in outputs. For structured fields like `extracted_entities[].canonical_full_name`, scan the JSONL with Python.
-- **Each trace appears multiple times** in cache (once per sub-run: `RunnableSequence`, `RunnableWithFallbacks`, `task-name-extraction-chain`, etc.) — deduplicate by `(start_time[:16], channel_id, entity_name)`.
-- **`llm_recognition: false`** means the entity was extracted as a candidate but the LLM couldn't verify it against public knowledge — filter these out for confirmed hits.
-- **Sub-run outputs ≠ chain output** — `ChatPromptTemplate` sub-runs have the LLM prompt in `outputs.output.messages`, which contains entity names from examples/instructions. Root-level chain runs (`task-name-extraction-chain`, `RunnableSequence`) have the actual `extracted_entities`.
+| Situation | Use |
+|-----------|-----|
+| Project is cached, any field search | Level 1: `cache grep` |
+| Project is cached, specific nested field | Level 3: Python JSONL scan |
+| Project not cached, narrow subset (time/channel/tag) | Level 2: server filter + `--grep` |
+| Project not cached, broad search | Download cache → Level 1 |
+| Text may appear in prompt/metadata but you only want output payload | Level 3: Python JSONL scan |
+
+### Watch out for sub-run false positives
+
+Large chains (LangChain, LangGraph) create many sub-runs per trace: `ChatPromptTemplate`, `RunnableWithFallbacks`, `RunnableSequence`, `task-name-extraction-chain`, etc. The LLM prompt (including examples and instructions) often contains the same names you're searching for.
+
+- Use `--roots` to limit to root traces when using `runs list`
+- When scanning JSONL, deduplicate by `(start_time[:16], channel_id, matched_value)` since the same run data appears in multiple sub-run records
 
 ## Additional Resources
 
