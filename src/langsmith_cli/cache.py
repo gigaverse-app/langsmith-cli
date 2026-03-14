@@ -247,6 +247,8 @@ def append_runs_streaming(
                 data = strip_binary_data(data)
                 f.write(json.dumps(data, default=str) + "\n")
                 t = run.start_time
+                if t.tzinfo is None:
+                    t = t.replace(tzinfo=timezone.utc)
                 if min_time is None or t < min_time:
                     min_time = t
                 if max_time is None or t > max_time:
@@ -322,7 +324,10 @@ def append_runs_to_cache(project_name: str, runs: list[Run]) -> CacheMetadata:
     if meta.newest_run_start_time:
         all_start_times.append(meta.newest_run_start_time)
     for r in new_runs:
-        all_start_times.append(r.start_time)
+        t = r.start_time
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=timezone.utc)
+        all_start_times.append(t)
 
     if all_start_times:
         meta.oldest_run_start_time = min(all_start_times)

@@ -40,6 +40,21 @@ def _make_run(n: int, hour: int = 16, minute: int = 0, project: str = "test") ->
     )
 
 
+def _make_naive_run(n: int, hour: int = 16, minute: int = 0) -> Run:
+    """Create a run with a timezone-naive start_time (as the SDK sometimes returns)."""
+    return Run(
+        id=UUID(make_run_id(n)),
+        name=f"run-{n}",
+        run_type="llm",
+        start_time=datetime(2026, 3, 9, hour, minute, 0),  # no tzinfo — naive
+        total_tokens=1000 * n,
+        prompt_tokens=700 * n,
+        completion_tokens=300 * n,
+        total_cost=Decimal(f"0.00{n}"),
+        extra={"metadata": {"ls_model_name": "gpt-4", "channel_id": f"room-{n}"}},
+    )
+
+
 class TestSanitizeProjectName:
     def test_simple_name(self):
         assert sanitize_project_name("my-project") == "my-project"
@@ -133,6 +148,28 @@ class TestCacheReadWrite:
     def test_read_nonexistent_project(self, tmp_path, monkeypatch):
         monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
         assert read_cached_runs("nonexistent") == []
+
+    def test_naive_start_time_appended_to_existing_metadata(
+        self, tmp_path, monkeypatch
+    ):
+        """INVARIANT: append_runs_to_cache accepts naive start_time runs when existing
+        metadata has tz-aware datetimes — must not raise TypeError on min/max.
+        """
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+
+        # Seed cache with tz-aware runs (creates tz-aware oldest/newest metadata)
+        append_runs_to_cache("test-project", [_make_run(1, hour=12)])
+
+        # Append naive runs — must not raise
+        meta = append_runs_to_cache(
+            "test-project", [_make_naive_run(2, hour=10), _make_naive_run(3, hour=18)]
+        )
+
+        assert meta.run_count == 3
+        assert meta.oldest_run_start_time is not None
+        assert meta.newest_run_start_time is not None
+        assert meta.oldest_run_start_time.tzinfo is not None
+        assert meta.newest_run_start_time.tzinfo is not None
 
     def test_read_skips_corrupt_lines(self, tmp_path, monkeypatch):
         """INVARIANT: read_cached_runs skips corrupt/invalid JSONL lines and returns valid runs.
@@ -659,6 +696,49 @@ class TestAppendRunsStreaming:
         assert meta.newest_run_start_time == datetime(
             2026, 3, 9, 18, 0, 0, tzinfo=timezone.utc
         )
+
+    def test_naive_start_time_does_not_raise_when_cache_empty(
+        self, tmp_path, monkeypatch
+    ):
+        """INVARIANT: Runs with naive start_time are accepted into a fresh cache
+        without raising a TypeError about offset-naive vs offset-aware comparison.
+        """
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+
+        naive_runs = [_make_naive_run(1, hour=10), _make_naive_run(2, hour=18)]
+        meta, count = append_runs_streaming("test-project", iter(naive_runs))
+
+        assert count == 2
+        assert meta.oldest_run_start_time is not None
+        assert meta.newest_run_start_time is not None
+        assert meta.oldest_run_start_time.tzinfo is not None
+        assert meta.newest_run_start_time.tzinfo is not None
+
+    def test_naive_start_time_does_not_raise_when_cache_has_existing_metadata(
+        self, tmp_path, monkeypatch
+    ):
+        """INVARIANT: Naive start_time runs can be appended to a project that already
+        has timezone-aware metadata — the comparison must not raise TypeError.
+
+        This is the regression case: existing metadata has tz-aware datetimes,
+        incoming run has naive datetime → old code crashed with
+        "can't compare offset-naive and offset-aware datetimes".
+        """
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+
+        # First populate with tz-aware runs (creates tz-aware metadata)
+        append_runs_streaming("test-project", iter([_make_run(1, hour=12)]))
+
+        # Now append naive runs — must not raise
+        naive_runs = [_make_naive_run(2, hour=10), _make_naive_run(3, hour=18)]
+        meta, count = append_runs_streaming("test-project", iter(naive_runs))
+
+        assert count == 2
+        assert meta.oldest_run_start_time is not None
+        assert meta.newest_run_start_time is not None
+        # All stored timestamps must be tz-aware
+        assert meta.oldest_run_start_time.tzinfo is not None
+        assert meta.newest_run_start_time.tzinfo is not None
 
 
 # Tests for strip_binary_data
