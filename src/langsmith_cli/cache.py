@@ -203,6 +203,16 @@ def get_existing_run_ids(project_name: str) -> set[str]:
     return ids
 
 
+def _update_meta_times(meta: CacheMetadata, t: datetime) -> None:
+    """Update oldest/newest run time bounds in metadata in-place."""
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=timezone.utc)
+    if meta.oldest_run_start_time is None or t < meta.oldest_run_start_time:
+        meta.oldest_run_start_time = t
+    if meta.newest_run_start_time is None or t > meta.newest_run_start_time:
+        meta.newest_run_start_time = t
+
+
 def append_runs_streaming(
     project_name: str,
     runs_iter: Iterator[Run],
@@ -212,6 +222,9 @@ def append_runs_streaming(
     batch_size: int = 100,
 ) -> tuple[CacheMetadata, int]:
     """Stream runs from an iterator into cache, writing in batches.
+
+    Metadata is flushed to disk after every batch so an interrupted download
+    always leaves the sidecar consistent with what was actually written.
 
     Args:
         project_name: Project name
@@ -231,14 +244,13 @@ def append_runs_streaming(
         existing_ids = get_existing_run_ids(project_name)
 
     meta = read_cache_metadata(project_name) or CacheMetadata(project_name=project_name)
+    initial_count = meta.run_count
 
     total_new = 0
     batch: list[Run] = []
-    min_time = meta.oldest_run_start_time
-    max_time = meta.newest_run_start_time
 
     def flush_batch() -> None:
-        nonlocal total_new, min_time, max_time
+        nonlocal total_new
         if not batch:
             return
         with open(cache_path, "a") as f:
@@ -246,15 +258,13 @@ def append_runs_streaming(
                 data = run.model_dump(mode="json")
                 data = strip_binary_data(data)
                 f.write(json.dumps(data, default=str) + "\n")
-                t = run.start_time
-                if t.tzinfo is None:
-                    t = t.replace(tzinfo=timezone.utc)
-                if min_time is None or t < min_time:
-                    min_time = t
-                if max_time is None or t > max_time:
-                    max_time = t
+                _update_meta_times(meta, run.start_time)
         total_new += len(batch)
         batch.clear()
+        # Write metadata after every batch — crash-safe
+        meta.run_count = initial_count + total_new
+        meta.last_updated = datetime.now(timezone.utc)
+        write_cache_metadata(project_name, meta)
         if on_progress:
             on_progress(total_new)
 
@@ -268,21 +278,13 @@ def append_runs_streaming(
             flush_batch()
 
     flush_batch()  # Final partial batch
-
-    # Update metadata
-    if min_time:
-        meta.oldest_run_start_time = min_time
-    if max_time:
-        meta.newest_run_start_time = max_time
-    meta.run_count += total_new
-    meta.last_updated = datetime.now(timezone.utc)
-    write_cache_metadata(project_name, meta)
-
     return meta, total_new
 
 
 def append_runs_to_cache(project_name: str, runs: list[Run]) -> CacheMetadata:
     """Append runs to a project's JSONL cache and update metadata.
+
+    Delegates to append_runs_streaming for consistent crash-safe behaviour.
 
     Args:
         project_name: Project name
@@ -291,51 +293,70 @@ def append_runs_to_cache(project_name: str, runs: list[Run]) -> CacheMetadata:
     Returns:
         Updated CacheMetadata
     """
+    meta, _ = append_runs_streaming(project_name, iter(runs))
+    return meta
+
+
+def find_orphaned_cache_files() -> list[str]:
+    """Return sanitized names of JSONL cache files that have no metadata sidecar.
+
+    An orphaned file is a .jsonl with no matching .meta.json — typically caused
+    by a download that was interrupted before the final metadata write.
+    """
+    cache_dir = get_cache_dir()
+    if not cache_dir.exists():
+        return []
+    orphaned = []
+    for jsonl_file in sorted(cache_dir.glob("*.jsonl")):
+        meta_path = jsonl_file.parent / (jsonl_file.stem + ".meta.json")
+        if not meta_path.exists():
+            orphaned.append(jsonl_file.stem)
+    return orphaned
+
+
+def repair_cache_metadata(project_name: str) -> CacheMetadata:
+    """Regenerate cache metadata by scanning the JSONL file.
+
+    Use this to fix an orphaned cache file (JSONL present, no .meta.json),
+    or to reconcile a stale metadata count after a partial download.
+
+    Args:
+        project_name: Project name (or sanitized stem from find_orphaned_cache_files)
+
+    Returns:
+        Regenerated CacheMetadata written to disk
+
+    Raises:
+        FileNotFoundError: If no JSONL cache exists for the project
+    """
+    import logging
+
+    logger = logging.getLogger(__name__)
+
     cache_path = get_cache_path(project_name)
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    if not cache_path.exists():
+        raise FileNotFoundError(f"No cache found for {project_name!r}")
 
-    # Read existing metadata
-    meta = read_cache_metadata(project_name) or CacheMetadata(project_name=project_name)
+    meta = CacheMetadata(project_name=project_name)
 
-    # Deduplicate against existing run IDs
-    existing_ids: set[str] = set()
-    if cache_path.exists():
-        for line in cache_path.read_text().splitlines():
-            line = line.strip()
-            if not line:
-                continue
+    for line in cache_path.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
             data = json.loads(line)
-            if "id" in data:
-                existing_ids.add(str(data["id"]))
+        except Exception:
+            continue
+        t_str = data.get("start_time")
+        if t_str:
+            try:
+                t = datetime.fromisoformat(str(t_str).replace("Z", "+00:00"))
+                _update_meta_times(meta, t)
+            except Exception as e:
+                logger.debug("Could not parse start_time %r: %s", t_str, e)
+        meta.run_count += 1
 
-    new_runs = [r for r in runs if str(r.id) not in existing_ids]
-
-    if new_runs:
-        with open(cache_path, "a") as f:
-            for run in new_runs:
-                data = run.model_dump(mode="json")
-                data = strip_binary_data(data)
-                f.write(json.dumps(data, default=str) + "\n")
-
-    # Update metadata
-    all_start_times = []
-    if meta.oldest_run_start_time:
-        all_start_times.append(meta.oldest_run_start_time)
-    if meta.newest_run_start_time:
-        all_start_times.append(meta.newest_run_start_time)
-    for r in new_runs:
-        t = r.start_time
-        if t.tzinfo is None:
-            t = t.replace(tzinfo=timezone.utc)
-        all_start_times.append(t)
-
-    if all_start_times:
-        meta.oldest_run_start_time = min(all_start_times)
-        meta.newest_run_start_time = max(all_start_times)
-
-    meta.run_count += len(new_runs)
     meta.last_updated = datetime.now(timezone.utc)
-
     write_cache_metadata(project_name, meta)
     return meta
 
@@ -361,7 +382,7 @@ def clear_cache(project_name: str | None = None) -> int:
 
 
 def list_cached_projects() -> list[CacheMetadata]:
-    """List all cached projects with their metadata."""
+    """List all cached projects that have a metadata sidecar."""
     cache_dir = get_cache_dir()
     if not cache_dir.exists():
         return []

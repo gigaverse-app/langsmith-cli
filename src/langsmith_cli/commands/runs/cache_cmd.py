@@ -435,12 +435,18 @@ def cache_list(ctx: click.Context) -> None:
         langsmith-cli runs cache list
         langsmith-cli --json runs cache list
     """
-    from langsmith_cli.cache import get_cache_path, list_cached_projects
+    from langsmith_cli.cache import (
+        find_orphaned_cache_files,
+        get_cache_path,
+        list_cached_projects,
+    )
 
     logger = ctx.obj["logger"]
 
     projects = list_cached_projects()
-    if not projects:
+    orphaned = find_orphaned_cache_files()
+
+    if not projects and not orphaned:
         logger.info("No cached projects. Use 'runs cache download' to cache runs.")
         return
 
@@ -451,6 +457,11 @@ def cache_list(ctx: click.Context) -> None:
             entry["path"] = str(get_cache_path(p.project_name))
             data.append(entry)
         click.echo(json.dumps(data, default=str))
+        if orphaned:
+            logger.warning(
+                f"{len(orphaned)} orphaned JSONL file(s) have no metadata "
+                f"(run 'runs cache repair' to fix): {', '.join(orphaned)}"
+            )
         return
 
     table = Table(title="Cached Projects")
@@ -484,6 +495,14 @@ def cache_list(ctx: click.Context) -> None:
 
     console.print(table)
 
+    if orphaned:
+        logger.warning(
+            f"\n⚠️  {len(orphaned)} orphaned cache file(s) found (JSONL without metadata):"
+        )
+        for name in orphaned:
+            logger.warning(f"  • {name}")
+        logger.warning("Run 'langsmith-cli runs cache repair' to regenerate metadata.")
+
 
 @cache_group.command("clear")
 @click.option("--project", help="Clear cache for a specific project only.")
@@ -512,6 +531,68 @@ def cache_clear(ctx: click.Context, project: str | None, yes: bool) -> None:
         logger.success(f"Cleared cache for {target} ({deleted} files)")
     else:
         logger.info("No cache files to clear.")
+
+
+@cache_group.command("repair")
+@click.option(
+    "--project", help="Repair only this project (default: all orphaned files)."
+)
+@click.pass_context
+def cache_repair(ctx: click.Context, project: str | None) -> None:
+    """Regenerate missing metadata sidecars from JSONL cache files.
+
+    A metadata sidecar (.meta.json) can go missing when a download is interrupted
+    before the final write. This command scans each orphaned JSONL file and
+    rebuilds the metadata (run count, time range) from its contents.
+
+    Examples:
+        # Repair all orphaned cache files
+        langsmith-cli runs cache repair
+
+        # Repair a specific project
+        langsmith-cli runs cache repair --project dev/namedrop_service
+    """
+    from langsmith_cli.cache import (
+        find_orphaned_cache_files,
+        get_cache_path,
+        repair_cache_metadata,
+        sanitize_project_name,
+    )
+
+    logger = ctx.obj["logger"]
+
+    if project:
+        # Check if the project actually has an orphaned file or just needs repair
+        cache_path = get_cache_path(project)
+        if not cache_path.exists():
+            raise click.ClickException(f"No cache file found for '{project}'.")
+        targets = [sanitize_project_name(project)]
+    else:
+        targets = find_orphaned_cache_files()
+        if not targets:
+            logger.info("No orphaned cache files found. Everything looks healthy.")
+            return
+
+    for stem in targets:
+        try:
+            meta = repair_cache_metadata(stem)
+            oldest = (
+                meta.oldest_run_start_time.strftime("%Y-%m-%d")
+                if meta.oldest_run_start_time
+                else "?"
+            )
+            newest = (
+                meta.newest_run_start_time.strftime("%Y-%m-%d")
+                if meta.newest_run_start_time
+                else "?"
+            )
+            logger.success(
+                f"Repaired '{stem}': {meta.run_count} runs, {oldest} → {newest}"
+            )
+        except FileNotFoundError as e:
+            logger.warning(f"Skipping '{stem}': {e}")
+        except Exception as e:
+            logger.warning(f"Failed to repair '{stem}': {e}")
 
 
 @cache_group.command("grep")
@@ -569,7 +650,12 @@ def cache_grep(
         # Search only inputs field, output as JSON
         langsmith-cli --json runs cache grep "error" --grep-in inputs
     """
-    from langsmith_cli.cache import list_cached_projects, load_runs_from_cache
+    from langsmith_cli.cache import (
+        find_orphaned_cache_files,
+        get_cache_path,
+        list_cached_projects,
+        load_runs_from_cache,
+    )
     from langsmith_cli.filters import parse_time_filter
 
     logger = ctx.obj["logger"]
@@ -578,10 +664,27 @@ def cache_grep(
 
     # Determine which projects to search
     if project:
+        # Check if this specific project has a JSONL but no meta — suggest repair
+        cache_path = get_cache_path(project)
+        if (
+            cache_path.exists()
+            and not (cache_path.parent / (cache_path.stem + ".meta.json")).exists()
+        ):
+            logger.warning(
+                f"Cache for '{project}' has no metadata sidecar "
+                f"(likely an interrupted download). "
+                f"Run 'langsmith-cli runs cache repair --project {project}' to fix."
+            )
         project_names = [project]
     else:
         cached = list_cached_projects()
         project_names = [p.project_name for p in cached]
+        orphaned = find_orphaned_cache_files()
+        if orphaned:
+            logger.warning(
+                f"{len(orphaned)} orphaned cache file(s) are not being searched "
+                f"(missing metadata). Run 'langsmith-cli runs cache repair' to include them."
+            )
 
     if not project_names:
         logger.warning("No cached projects. Run 'runs cache download' first.")
