@@ -127,8 +127,8 @@ langsmith-cli runs list --project my-project --limit 5
 2. Is the project listed with recent data?
    YES → Use `runs cache grep` directly. NO download needed. STOP.
    NO  → Tell user: "Project X is not in cache. Downloading may take 1-10+ minutes
-          depending on run count. Shall I proceed?"
-         Wait for confirmation before running `runs cache download`.
+          depending on run count. I'll run it in the background and update you."
+         Run `runs cache download` in background, relay progress updates from stderr.
 ```
 
 **Red flags — STOP if you're about to:**
@@ -179,10 +179,13 @@ langsmith-cli runs cache download --project "dev/my-project" --last 30d
    - Example: `langsmith-cli --json -qq runs list | jq` (clean JSON, no diagnostics)
    - Example: `langsmith-cli -v runs list` (debug info for troubleshooting)
 8. **Error Handling:** See the "🚨 CRITICAL" section above. Use `--output` flag for data extraction, or `2>&1` for quick queries.
-9. **Long-Running Commands:** Commands like `runs cache download`, `runs list` with large `--limit`, and `runs export` can take **minutes to over 10 minutes** for large datasets. **BEFORE starting these commands, tell the user the estimated time and ask for consent.** Never start a long download silently or in the background without warning. After consent, run with a background task and report progress when done.
-   - Example announcement: "Downloading dev/namedrop_service for the last 30 days. This may take 5-10 minutes. Shall I proceed?"
-   - Example: `langsmith-cli runs cache download --project-name-pattern "prd/*" --last 7d` may take several minutes for many projects.
-   - Example: `langsmith-cli -v runs cache download --project my-project --last 30d` shows detailed download progress.
+9. **Long-Running Commands:** Commands like `runs cache download`, `runs list` with large `--limit`, and `runs export` can take **minutes to over 10 minutes** for large datasets. Follow this pattern:
+   1. **Announce before starting:** Tell the user what you're downloading and that it may take several minutes.
+   2. **Run in background** using `run_in_background: true` so the conversation stays interactive.
+   3. **Read progress from the output file** periodically — the CLI emits lines like `"dev/namedrop_service: 500 runs fetched"` to stderr. Use `TaskOutput(block=false)` to check and relay progress updates to the user while it runs.
+   4. **Report when done** with the final count from the output file.
+   - Example: "Starting download of dev/namedrop_service (last 30d). Running in background — I'll update you as it progresses."
+   - Progress output looks like: `dev/namedrop_service: DONE ━━━━━━━━━ 1234 runs 0:02:31`
 10. **Client-Side Filtering Budget:** When using client-side filters (`--grep`, `--name-pattern`, `--name-regex`), the CLI fetches more runs than `--limit` to ensure enough matches. Use `--fetch <n>` to control the fetch budget (e.g., `--limit 10 --fetch 500` fetches 500 runs, returns up to 10 matches).
 
 ## API Reference
