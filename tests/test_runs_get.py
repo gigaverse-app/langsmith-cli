@@ -561,31 +561,79 @@ class TestRunsStats:
         assert "id:" in output
 
 
+RUN_ID = "019cdd82-6584-74c0-82f5-3dc7bf5582d6"
+TRACE_ID = "019cdd82-5b79-74e3-8852-09f00ea5f8aa"
+PROJECT_ID = "730acc6c-ec97-4f08-915e-7d3f7f775300"
+ORG_ID = "b658ea18-0431-42c0-8d03-337d43fed8cf"
+EXPECTED_URL = (
+    f"https://smith.langchain.com/o/{ORG_ID}/projects/p/{PROJECT_ID}"
+    f"?peek={RUN_ID}&peeked_trace={TRACE_ID}"
+)
+
+
 class TestRunsOpen:
     """Tests for runs open command."""
 
-    def test_open_command(self, runner):
-        """Open command launches browser with correct URL."""
+    def test_open_json_generates_correct_langsmith_url(self, runner, mock_client):
+        """INVARIANT: runs open --json generates the correct LangSmith URL.
+
+        The correct format is:
+          /o/{tenant_id}/projects/p/{project_id}?peek={run_id}&peeked_trace={trace_id}
+
+        tenant_id and project_id come from the run's session_id and project's tenant_id.
+        """
+        mock_client.read_run.return_value = create_run(
+            id_str=RUN_ID, trace_id=TRACE_ID, session_id=PROJECT_ID
+        )
+        mock_client.read_project.return_value = create_project(
+            project_id=PROJECT_ID, tenant_id=ORG_ID
+        )
+
         with patch("webbrowser.open") as mock_browser:
-            result = runner.invoke(cli, ["runs", "open", "test-run-id"])
+            result = runner.invoke(cli, ["--json", "runs", "open", RUN_ID])
 
-            assert result.exit_code == 0
-            assert "Opening run test-run-id" in result.output
-            assert "https://smith.langchain.com/r/test-run-id" in result.output
-            mock_browser.assert_called_once_with(
-                "https://smith.langchain.com/r/test-run-id"
-            )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["run_id"] == RUN_ID
+        assert data["url"] == EXPECTED_URL
+        mock_browser.assert_called_once_with(EXPECTED_URL)
 
-    def test_open_command_json_mode_outputs_json(self, runner):
-        """Invariant: --json mode open outputs JSON with URL, not diagnostic text."""
+    def test_open_table_mode_shows_correct_url(self, runner, mock_client):
+        """INVARIANT: runs open (table mode) displays the correct LangSmith URL."""
+        mock_client.read_run.return_value = create_run(
+            id_str=RUN_ID, trace_id=TRACE_ID, session_id=PROJECT_ID
+        )
+        mock_client.read_project.return_value = create_project(
+            project_id=PROJECT_ID, tenant_id=ORG_ID
+        )
+
+        with patch("webbrowser.open"):
+            result = runner.invoke(cli, ["runs", "open", RUN_ID])
+
+        assert result.exit_code == 0
+        assert EXPECTED_URL in result.output
+
+    def test_open_root_run_trace_id_equals_run_id(self, runner, mock_client):
+        """INVARIANT: for a root run (no parent), trace_id == run_id in the URL."""
+        mock_client.read_run.return_value = create_run(
+            id_str=RUN_ID,
+            session_id=PROJECT_ID,  # trace_id defaults to run_id
+        )
+        mock_client.read_project.return_value = create_project(
+            project_id=PROJECT_ID, tenant_id=ORG_ID
+        )
+
         with patch("webbrowser.open") as mock_browser:
-            result = runner.invoke(cli, ["--json", "runs", "open", "test-run-id"])
+            result = runner.invoke(cli, ["--json", "runs", "open", RUN_ID])
 
-            assert result.exit_code == 0
-            data = json.loads(result.output)
-            assert data["run_id"] == "test-run-id"
-            assert "https://smith.langchain.com/r/test-run-id" in data["url"]
-            mock_browser.assert_called_once()
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        expected = (
+            f"https://smith.langchain.com/o/{ORG_ID}/projects/p/{PROJECT_ID}"
+            f"?peek={RUN_ID}&peeked_trace={RUN_ID}"
+        )
+        assert data["url"] == expected
+        mock_browser.assert_called_once_with(expected)
 
 
 class TestRunsWatch:

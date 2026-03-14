@@ -20,9 +20,19 @@ def open_run(ctx, run_id):
     """Open a run in the LangSmith UI."""
     import webbrowser
 
-    # Construct the URL. Note: A generic URL works if the user is logged in.
-    # The SDK also has a way to get the URL but it might require project name.
-    url = f"https://smith.langchain.com/r/{run_id}"
+    client = get_or_create_client(ctx)
+
+    run = client.read_run(run_id)
+    project = client.read_project(project_id=run.session_id)
+
+    org_id = project.tenant_id
+    project_id = run.session_id
+    trace_id = run.trace_id or run.id
+
+    url = (
+        f"https://smith.langchain.com/o/{org_id}/projects/p/{project_id}"
+        f"?peek={run_id}&peeked_trace={trace_id}"
+    )
 
     if ctx.obj.get("json"):
         click.echo(json_dumps({"run_id": run_id, "url": url}))

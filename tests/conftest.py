@@ -179,6 +179,8 @@ def create_project(
     last_run_start_time: datetime | None = None,
     error_rate: float | None = None,
     total_cost: float | None = None,
+    tenant_id: str = "00000000-0000-0000-0000-000000000000",
+    project_id: str = "f47ac10b-58cc-4372-a567-0e02b2c3d479",
 ) -> TracerSessionResult:
     """Create a real TracerSessionResult (project) Pydantic model instance.
 
@@ -194,12 +196,12 @@ def create_project(
     total_cost_decimal = Decimal(str(total_cost)) if total_cost is not None else None
 
     return TracerSessionResult(
-        id=UUID("f47ac10b-58cc-4372-a567-0e02b2c3d479"),
+        id=UUID(project_id),
         name=name,
         description="Test project",
         start_time=datetime(2024, 7, 3, 9, 27, 16, tzinfo=timezone.utc),
         run_count=run_count,
-        tenant_id=UUID("00000000-0000-0000-0000-000000000000"),  # required field
+        tenant_id=UUID(tenant_id),
         reference_dataset_id=None,  # optional field
         last_run_start_time=last_run_start_time,
         error_rate=error_rate,
@@ -222,6 +224,7 @@ def create_run(
     latency: float | None = None,
     total_tokens: int | None = None,
     status: str | None = None,
+    session_id: str | None = None,
 ) -> Run:
     """Create a real Run Pydantic model instance.
 
@@ -290,6 +293,7 @@ def create_run(
         trace_id=trace_uuid,
         latency=latency,
         total_tokens=total_tokens,
+        session_id=UUID(session_id) if session_id else None,
     )
 
 
