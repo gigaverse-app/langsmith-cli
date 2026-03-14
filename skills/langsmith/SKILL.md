@@ -138,6 +138,7 @@ langsmith-cli runs list --project my-project --limit 5
 - Download data the user didn't ask you to download
 - Use `--fetch <n>` or API queries AFTER you already have the project in cache — if it's cached, use `runs cache grep` instead, always
 - Download a project that is already listed in `runs cache list`
+- Run `runs cache download` **without `--json`** — without it, Rich Progress output is swallowed when captured to a file and you get zero visibility into progress
 
 **The right order:**
 ```bash
@@ -187,12 +188,14 @@ The cache is always faster, uses no API quota, and won't hit rate limits.
    - Example: `langsmith-cli -v runs list` (debug info for troubleshooting)
 8. **Error Handling:** See the "🚨 CRITICAL" section above. Use `--output` flag for data extraction, or `2>&1` for quick queries.
 9. **Long-Running Commands:** Commands like `runs cache download`, `runs list` with large `--limit`, and `runs export` can take **minutes to over 10 minutes** for large datasets. Follow this pattern:
-   1. **Announce before starting:** Tell the user what you're downloading and that it may take several minutes.
-   2. **Run in background** using `run_in_background: true` so the conversation stays interactive.
-   3. **Read progress from the output file** periodically — the CLI emits lines like `"dev/namedrop_service: 500 runs fetched"` to stderr. Use `TaskOutput(block=false)` to check and relay progress updates to the user while it runs.
-   4. **Report when done** with the final count from the output file.
+   1. **ALWAYS use `--json`** (mandatory for agents — see section above). Without it, Rich Progress renders to a terminal and produces NO output when captured to a file, making background progress tracking impossible.
+   2. **Announce before starting:** Tell the user what you're downloading and that it may take several minutes.
+   3. **Run in background** using `run_in_background: true` so the conversation stays interactive.
+   4. **Poll progress** with `TaskOutput(block=false)` periodically — with `--json`, the CLI emits `{"event": "progress", "project": "...", "new_runs": N}` lines to stderr as batches are streamed, and `{"event": "project_done", ...}` when complete.
+   5. **Report when done** with the final `{"event": "download_complete", "total_new_runs": N}` from stdout.
    - Example: "Starting download of dev/namedrop_service (last 30d). Running in background — I'll update you as it progresses."
-   - Progress output looks like: `dev/namedrop_service: DONE ━━━━━━━━━ 1234 runs 0:02:31`
+   - ✅ Correct: `langsmith-cli --json runs cache download --project "dev/namedrop_service" --last 30d`
+   - ❌ Wrong: `langsmith-cli runs cache download ...` — Rich output is swallowed, no progress visible to agent
 10. **Client-Side Filtering Budget:** When using client-side filters (`--grep`, `--name-pattern`, `--name-regex`), the CLI fetches more runs than `--limit` to ensure enough matches. Use `--fetch <n>` to control the fetch budget (e.g., `--limit 10 --fetch 500` fetches 500 runs, returns up to 10 matches).
 
 ## API Reference

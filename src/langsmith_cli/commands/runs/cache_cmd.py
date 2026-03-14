@@ -8,9 +8,12 @@ from rich.table import Table
 
 from langsmith_cli.commands.runs._group import console, runs
 from langsmith_cli.utils import (
+    add_metadata_filter_options,
     add_project_filter_options,
     add_time_filter_options,
     apply_grep_filter,
+    apply_metadata_filter,
+    build_metadata_fql_filters,
     build_runs_table,
     build_time_fql_filters,
     combine_fql_filters,
@@ -20,6 +23,7 @@ from langsmith_cli.utils import (
     get_or_create_client,
     output_option,
     parse_fields_option,
+    partition_metadata_filters,
     render_output,
     resolve_project_filters,
     write_output_to_file,
@@ -45,6 +49,10 @@ def cache_group():
     help="Filter by run type (llm, chain, tool, etc).",
 )
 @click.option(
+    "--name-pattern",
+    help="Only cache runs whose name matches this wildcard pattern (e.g. 'Gigaverse_Daily_Standup', '*standup*'). Client-side filter applied during streaming.",
+)
+@click.option(
     "--full",
     is_flag=True,
     help="Re-fetch all runs in the time range (ignores incremental state, deduplicates safely).",
@@ -55,6 +63,7 @@ def cache_group():
     default=None,
     help="Number of parallel workers (default: min(4, num_projects)).",
 )
+@add_metadata_filter_options
 @click.pass_context
 def cache_download(
     ctx: click.Context,
@@ -69,8 +78,10 @@ def cache_download(
     last: str | None,
     additional_filter: str | None,
     run_type: str | None,
+    name_pattern: str | None,
     full: bool,
     workers: int | None,
+    metadata_filters: tuple[str, ...],
 ) -> None:
     """Download runs to local JSONL cache for fast offline analysis.
 
@@ -90,6 +101,15 @@ def cache_download(
 
         # Cache only LLM runs
         langsmith-cli runs cache download --project-name-pattern "prd/*" --run-type llm
+
+        # Cache only runs matching a name pattern (e.g. a specific channel/standup)
+        langsmith-cli runs cache download --project dev/namedrop_service --name-pattern "Gigaverse_Daily_Standup" --since 2026-01-15 --before 2026-01-29
+
+        # Download only runs from a specific channel (exact match, server-side)
+        langsmith-cli runs cache download --project dev/namedrop_service --metadata channel_id=Gigaverse_Daily_Standup
+
+        # Download runs from channels matching a wildcard (client-side filter)
+        langsmith-cli runs cache download --project dev/namedrop_service --metadata "channel_id=Gigaverse_Daily_Standup*"
     """
     import time
     from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -129,6 +149,11 @@ def cache_download(
         base_filters.append(additional_filter)
     if run_type:
         base_filters.append(f'eq(run_type, "{run_type}")')
+
+    # Metadata filtering: exact values → FQL (server-side); wildcards → client-side
+    server_meta, client_meta = partition_metadata_filters(metadata_filters)
+    if server_meta:
+        base_filters.extend(build_metadata_fql_filters(server_meta))
 
     # Results tracking
     results: list[dict[str, Any]] = []
@@ -181,12 +206,39 @@ def cache_download(
                         progress_task_ids[proj_name],
                         completed=cumulative_count,
                     )
+                if is_json:
+                    import json as _json
+                    import sys
+
+                    print(
+                        _json.dumps(
+                            {
+                                "event": "progress",
+                                "project": proj_name,
+                                "new_runs": cumulative_count,
+                            }
+                        ),
+                        file=sys.stderr,
+                        flush=True,
+                    )
 
             runs_iter = client.list_runs(
                 **proj_kwargs,
                 filter=combined_filter,
                 limit=None,
             )
+
+            # Apply client-side name filter if requested
+            if name_pattern:
+                import fnmatch
+
+                runs_iter = (
+                    r for r in runs_iter if fnmatch.fnmatch(r.name or "", name_pattern)
+                )
+
+            # Apply client-side metadata wildcard filter if needed
+            if client_meta:
+                runs_iter = apply_metadata_filter(runs_iter, client_meta)
 
             meta, new_count = append_runs_streaming(
                 proj_name,
@@ -471,6 +523,7 @@ def cache_clear(ctx: click.Context, project: str | None, yes: bool) -> None:
 @fields_option()
 @count_option()
 @output_option()
+@add_metadata_filter_options
 @click.pass_context
 def cache_grep(
     ctx: click.Context,
@@ -486,6 +539,7 @@ def cache_grep(
     fields: str | None,
     count: bool,
     output: str | None,
+    metadata_filters: tuple[str, ...],
 ) -> None:
     """Search cached runs for a text pattern in inputs/outputs/error.
 
@@ -531,6 +585,15 @@ def cache_grep(
             click.echo(json.dumps([]))
         return
 
+    # Apply metadata filter (always client-side for cached data)
+    filtered_items = list(apply_metadata_filter(result.items, metadata_filters))
+
+    if not filtered_items:
+        logger.warning("No cached runs matched the metadata filter.")
+        if ctx.obj.get("json"):
+            click.echo(json.dumps([]))
+        return
+
     # Parse grep-in fields
     grep_fields_tuple: tuple[str, ...] = ()
     if grep_in:
@@ -538,7 +601,7 @@ def cache_grep(
 
     # Apply grep filter
     matched = apply_grep_filter(
-        result.items,
+        filtered_items,
         grep_pattern=pattern,
         grep_fields=grep_fields_tuple,
         ignore_case=ignore_case,
