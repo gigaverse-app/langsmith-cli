@@ -136,21 +136,28 @@ langsmith-cli runs list --project my-project --limit 5
 - Start `runs cache download` without first checking `runs cache list`
 - Launch a background download without telling the user it will take time
 - Download data the user didn't ask you to download
+- Use `--fetch <n>` or API queries AFTER you already have the project in cache — if it's cached, use `runs cache grep` instead, always
+- Download a project that is already listed in `runs cache list`
 
 **The right order:**
 ```bash
 # Step 1: Always check cache first (fast, no API calls)
 langsmith-cli runs cache list
+# → shows all cached projects with run counts and time ranges
 
-# Step 2a: Data is there → search it directly
+# Step 2a: Project IS in cache → search it directly, NEVER use API
 langsmith-cli runs cache grep "pattern" -E --grep-in outputs --project "my-project"
 
-# Step 2b: Data is NOT there → warn user, wait for consent, THEN download
-# Tell user: "dev/my-project is not cached. This will take ~2-5 min. OK to proceed?"
+# Step 2b: Project is NOT in cache → warn user, download in background, relay progress
+# Tell user: "dev/my-project is not cached. Downloading in background — will update you."
 langsmith-cli runs cache download --project "dev/my-project" --last 30d
+# (run in background, check TaskOutput periodically, then use cache grep when done)
 ```
 
-**Why this matters:** Cache downloads for large projects can take 5-10+ minutes and hit rate limits. Searching the cache is instant and uses no API quota. Always exhaust cached data before touching the API.
+**Once a project is in cache, NEVER use API queries (`runs list`, `--fetch`) for that project.**
+The cache is always faster, uses no API quota, and won't hit rate limits.
+
+**Why this matters:** Cache downloads take 5-10+ minutes and can hit rate limits. Searching cache is instant. `--fetch 5000` wastes API quota and time when the same data sits in a local file.
 
 ## ⚡ Efficient Usage Guidelines (READ THIS)
 1. **Machine Output:** ALWAYS add `--json` as the FIRST argument to `langsmith-cli` (e.g. `langsmith-cli --json runs list ...`) to get parseable output. Never use table output for agents.
