@@ -109,7 +109,7 @@ langsmith-cli --json runs get <id> --fields inputs,outputs,error
 
 ## 📚 When to Read Reference Files
 
-Read these files **only when your task matches** — don't load them speculatively.
+When your task matches one of the sections below, **you MUST load that reference file before proceeding** — don't load them speculatively for unrelated tasks.
 
 ### → Read [references/runs.md](references/runs.md) when:
 - You need the full flag list for `runs list`, `runs get`, `runs get-latest`, `runs search`, `runs sample`, `runs analyze`, `runs tags`, `runs fields`, `runs export`
