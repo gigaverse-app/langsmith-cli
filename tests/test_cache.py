@@ -13,11 +13,13 @@ from langsmith_cli.cache import (
     append_runs_streaming,
     append_runs_to_cache,
     clear_cache,
+    find_orphaned_cache_files,
     get_existing_run_ids,
     list_cached_projects,
     load_runs_from_cache,
     read_cache_metadata,
     read_cached_runs,
+    repair_cache_metadata,
     sanitize_project_name,
     strip_binary_data,
     write_cache_metadata,
@@ -1226,3 +1228,212 @@ class TestCacheGrepCommand:
         assert result.exit_code == 0
         data = json.loads(result.output.strip().split("\n")[-1])
         assert data == []
+
+
+class TestFindOrphanedCacheFiles:
+    def test_no_cache_dir_returns_empty(self, tmp_path, monkeypatch):
+        """INVARIANT: Returns empty list when cache dir does not exist."""
+        nonexistent = tmp_path / "does_not_exist"
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: nonexistent)
+        assert find_orphaned_cache_files() == []
+
+    def test_no_orphans_when_all_have_meta(self, tmp_path, monkeypatch):
+        """INVARIANT: Returns empty list when every JSONL has a matching meta file."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+        (tmp_path / "project-a.jsonl").write_text("{}\n")
+        (tmp_path / "project-a.meta.json").write_text("{}")
+        assert find_orphaned_cache_files() == []
+
+    def test_detects_jsonl_without_meta(self, tmp_path, monkeypatch):
+        """INVARIANT: JSONL files without a matching .meta.json are orphaned."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+        (tmp_path / "project-a.jsonl").write_text("{}\n")
+        (tmp_path / "project-b.jsonl").write_text("{}\n")
+        (tmp_path / "project-b.meta.json").write_text("{}")
+        orphaned = find_orphaned_cache_files()
+        assert orphaned == ["project-a"]
+
+    def test_multiple_orphans_sorted(self, tmp_path, monkeypatch):
+        """INVARIANT: Multiple orphaned files are returned in sorted order."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+        for name in ["z-proj", "a-proj", "m-proj"]:
+            (tmp_path / f"{name}.jsonl").write_text("{}\n")
+        orphaned = find_orphaned_cache_files()
+        assert orphaned == ["a-proj", "m-proj", "z-proj"]
+
+
+class TestRepairCacheMetadata:
+    def test_raises_for_missing_cache(self, tmp_path, monkeypatch):
+        """INVARIANT: FileNotFoundError when no JSONL file exists."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+        import pytest
+
+        with pytest.raises(FileNotFoundError, match="no-such-project"):
+            repair_cache_metadata("no-such-project")
+
+    def test_regenerates_meta_from_jsonl(self, tmp_path, monkeypatch):
+        """INVARIANT: Repaired metadata matches run count and time bounds in JSONL."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+        runs = [_make_run(i) for i in range(1, 4)]
+        append_runs_to_cache("test", runs)
+        # Remove the meta file to simulate an orphaned cache
+        (tmp_path / "test.meta.json").unlink()
+        assert not (tmp_path / "test.meta.json").exists()
+
+        meta = repair_cache_metadata("test")
+
+        assert meta.run_count == 3
+        assert meta.oldest_run_start_time is not None
+        assert meta.newest_run_start_time is not None
+        assert meta.oldest_run_start_time <= meta.newest_run_start_time
+        # Meta file is written back to disk
+        assert (tmp_path / "test.meta.json").exists()
+
+    def test_skips_corrupt_lines(self, tmp_path, monkeypatch):
+        """INVARIANT: Corrupt JSON lines are silently skipped during repair."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+        jsonl = tmp_path / "test.jsonl"
+        jsonl.write_text(
+            '{"start_time": "2026-03-09T16:00:00+00:00"}\n'
+            "NOT VALID JSON\n"
+            '{"start_time": "2026-03-09T17:00:00+00:00"}\n'
+        )
+
+        meta = repair_cache_metadata("test")
+
+        assert meta.run_count == 2
+
+    def test_handles_missing_start_time(self, tmp_path, monkeypatch):
+        """INVARIANT: Lines without start_time are counted but don't affect time range."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+        (tmp_path / "test.jsonl").write_text('{"id": "abc"}\n{"id": "def"}\n')
+
+        meta = repair_cache_metadata("test")
+
+        assert meta.run_count == 2
+        assert meta.oldest_run_start_time is None
+        assert meta.newest_run_start_time is None
+
+
+class TestCacheRepairCommand:
+    @staticmethod
+    def _make_orphaned(tmp_path, stem: str) -> None:
+        """Write a JSONL without a matching .meta.json."""
+        run = _make_run(1)
+        data = run.model_dump(mode="json")
+        (tmp_path / f"{stem}.jsonl").write_text(json.dumps(data, default=str) + "\n")
+
+    def test_repair_all_orphaned(self, runner, tmp_path, monkeypatch):
+        """INVARIANT: repair command regenerates metadata for all orphaned JSONL files."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+        self._make_orphaned(tmp_path, "proj-a")
+        self._make_orphaned(tmp_path, "proj-b")
+
+        result = runner.invoke(cli, ["runs", "cache", "repair"])
+
+        assert result.exit_code == 0
+        assert (tmp_path / "proj-a.meta.json").exists()
+        assert (tmp_path / "proj-b.meta.json").exists()
+        assert "Repaired" in result.output
+
+    def test_repair_specific_project(self, runner, tmp_path, monkeypatch):
+        """INVARIANT: repair --project targets exactly one project."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+        self._make_orphaned(tmp_path, "proj-a")
+        self._make_orphaned(tmp_path, "proj-b")
+
+        result = runner.invoke(cli, ["runs", "cache", "repair", "--project", "proj-a"])
+
+        assert result.exit_code == 0
+        assert (tmp_path / "proj-a.meta.json").exists()
+        # proj-b was NOT targeted
+        assert not (tmp_path / "proj-b.meta.json").exists()
+
+    def test_repair_no_orphans_prints_healthy_message(
+        self, runner, tmp_path, monkeypatch
+    ):
+        """INVARIANT: repair with no orphans prints a healthy message and exits cleanly."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+
+        result = runner.invoke(cli, ["runs", "cache", "repair"])
+
+        assert result.exit_code == 0
+        assert (
+            "healthy" in result.output.lower() or "no orphaned" in result.output.lower()
+        )
+
+    def test_repair_missing_project_exits_with_error(
+        self, runner, tmp_path, monkeypatch
+    ):
+        """INVARIANT: repair --project for a non-existent file exits with non-zero code."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+
+        result = runner.invoke(cli, ["runs", "cache", "repair", "--project", "ghost"])
+
+        assert result.exit_code != 0
+
+
+class TestCacheListOrphanWarning:
+    def test_warns_about_orphaned_files(self, runner, tmp_path, monkeypatch):
+        """INVARIANT: cache list warns when orphaned JSONL files are present."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+        # One proper project
+        run = _make_run(1)
+        append_runs_to_cache("good-project", [run])
+        # One orphaned JSONL
+        data = run.model_dump(mode="json")
+        (tmp_path / "orphaned.jsonl").write_text(json.dumps(data, default=str) + "\n")
+
+        result = runner.invoke(cli, ["runs", "cache", "list"])
+
+        assert result.exit_code == 0
+        output = strip_ansi(result.output)
+        assert "orphan" in output.lower() or "repair" in output.lower()
+
+    def test_no_warning_when_no_orphans(self, runner, tmp_path, monkeypatch):
+        """INVARIANT: cache list shows no repair warning when everything is healthy."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+        run = _make_run(1)
+        append_runs_to_cache("good-project", [run])
+
+        result = runner.invoke(cli, ["runs", "cache", "list"])
+
+        assert result.exit_code == 0
+        assert "repair" not in result.output.lower()
+
+
+class TestCacheGrepOrphanWarning:
+    def test_warns_about_orphaned_files_when_no_project_specified(
+        self, runner, tmp_path, monkeypatch
+    ):
+        """INVARIANT: cache grep warns about orphaned files when searching all projects."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+        run = _make_run(1)
+        append_runs_to_cache("good-project", [run])
+        # Orphaned JSONL
+        data = run.model_dump(mode="json")
+        (tmp_path / "orphaned.jsonl").write_text(json.dumps(data, default=str) + "\n")
+
+        result = runner.invoke(cli, ["runs", "cache", "grep", "run-1"])
+
+        assert result.exit_code == 0
+        output = strip_ansi(result.output)
+        assert "orphan" in output.lower() or "repair" in output.lower()
+
+    def test_warns_for_specific_project_with_no_meta(
+        self, runner, tmp_path, monkeypatch
+    ):
+        """INVARIANT: cache grep warns when the named project's meta is missing."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+        run = _make_run(1)
+        data = run.model_dump(mode="json")
+        (tmp_path / "my-project.jsonl").write_text(json.dumps(data, default=str) + "\n")
+        # No .meta.json
+
+        result = runner.invoke(
+            cli, ["runs", "cache", "grep", "run-1", "--project", "my-project"]
+        )
+
+        assert result.exit_code == 0
+        output = strip_ansi(result.output)
+        assert "repair" in output.lower()
