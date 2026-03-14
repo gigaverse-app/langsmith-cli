@@ -117,6 +117,41 @@ langsmith-cli --json runs list --project my-project --limit 5
 langsmith-cli runs list --project my-project --limit 5
 ```
 
+## 🗄️ Cache-First Workflow (MANDATORY)
+
+**ALWAYS follow this decision tree before ANY search or analysis task:**
+
+```
+1. Run: langsmith-cli runs cache list
+         ↓
+2. Is the project listed with recent data?
+   YES → Use `runs cache grep` directly. NO download needed. STOP.
+   NO  → Tell user: "Project X is not in cache. Downloading may take 1-10+ minutes
+          depending on run count. Shall I proceed?"
+         Wait for confirmation before running `runs cache download`.
+```
+
+**Red flags — STOP if you're about to:**
+- Run `runs list` or `runs search` via API when the project might already be cached
+- Start `runs cache download` without first checking `runs cache list`
+- Launch a background download without telling the user it will take time
+- Download data the user didn't ask you to download
+
+**The right order:**
+```bash
+# Step 1: Always check cache first (fast, no API calls)
+langsmith-cli runs cache list
+
+# Step 2a: Data is there → search it directly
+langsmith-cli runs cache grep "pattern" -E --grep-in outputs --project "my-project"
+
+# Step 2b: Data is NOT there → warn user, wait for consent, THEN download
+# Tell user: "dev/my-project is not cached. This will take ~2-5 min. OK to proceed?"
+langsmith-cli runs cache download --project "dev/my-project" --last 30d
+```
+
+**Why this matters:** Cache downloads for large projects can take 5-10+ minutes and hit rate limits. Searching the cache is instant and uses no API quota. Always exhaust cached data before touching the API.
+
 ## ⚡ Efficient Usage Guidelines (READ THIS)
 1. **Machine Output:** ALWAYS add `--json` as the FIRST argument to `langsmith-cli` (e.g. `langsmith-cli --json runs list ...`) to get parseable output. Never use table output for agents.
 2. **Context Saving:** Use `--fields` on ALL list/get commands to reduce token usage (~90% reduction).
@@ -144,7 +179,8 @@ langsmith-cli runs list --project my-project --limit 5
    - Example: `langsmith-cli --json -qq runs list | jq` (clean JSON, no diagnostics)
    - Example: `langsmith-cli -v runs list` (debug info for troubleshooting)
 8. **Error Handling:** See the "🚨 CRITICAL" section above. Use `--output` flag for data extraction, or `2>&1` for quick queries.
-9. **Long-Running Commands:** Commands like `runs cache download`, `runs list` with large `--limit`, and `runs export` can take minutes for large datasets. These commands emit progress messages to stderr (e.g., "Downloading project X... 500 runs fetched"). **When running long tasks, inform the user that the command may take a while and report progress updates from stderr.** Use `-v` for more detailed progress, or `-qq` to suppress all progress and just wait for completion.
+9. **Long-Running Commands:** Commands like `runs cache download`, `runs list` with large `--limit`, and `runs export` can take **minutes to over 10 minutes** for large datasets. **BEFORE starting these commands, tell the user the estimated time and ask for consent.** Never start a long download silently or in the background without warning. After consent, run with a background task and report progress when done.
+   - Example announcement: "Downloading dev/namedrop_service for the last 30 days. This may take 5-10 minutes. Shall I proceed?"
    - Example: `langsmith-cli runs cache download --project-name-pattern "prd/*" --last 7d` may take several minutes for many projects.
    - Example: `langsmith-cli -v runs cache download --project my-project --last 30d` shows detailed download progress.
 10. **Client-Side Filtering Budget:** When using client-side filters (`--grep`, `--name-pattern`, `--name-regex`), the CLI fetches more runs than `--limit` to ensure enough matches. Use `--fetch <n>` to control the fetch budget (e.g., `--limit 10 --fetch 500` fetches 500 runs, returns up to 10 matches).
