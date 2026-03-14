@@ -29,11 +29,11 @@ classifiers = [
     "Topic :: System :: Monitoring",
 ]
 dependencies = [
-    "click>=8.3.1",
+    "click>=8.0",
     "langdetect>=1.0.9",
     "langsmith>=0.6.2",
     "platformdirs>=4.0",
-    "pydantic>=2.12.5",
+    "pydantic>=2.11.0",
     "python-dotenv>=1.2.1",
     "pyyaml>=6.0.3",
     "rich>=14.2.0",
