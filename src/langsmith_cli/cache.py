@@ -160,12 +160,19 @@ def read_cached_runs(
     if not cache_path.exists():
         return []
 
+    import logging
+
+    logger = logging.getLogger(__name__)
     runs: list[Run] = []
     for line in cache_path.read_text().splitlines():
         line = line.strip()
         if not line:
             continue
-        run = Run.model_validate(json.loads(line))
+        try:
+            run = Run.model_validate(json.loads(line))
+        except Exception as e:
+            logger.warning("Skipping corrupt cache line in %s: %s", cache_path, e)
+            continue
         start = run.start_time
         if start.tzinfo is None:
             start = start.replace(tzinfo=timezone.utc)

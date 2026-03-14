@@ -134,6 +134,33 @@ class TestCacheReadWrite:
         monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
         assert read_cached_runs("nonexistent") == []
 
+    def test_read_skips_corrupt_lines(self, tmp_path, monkeypatch):
+        """INVARIANT: read_cached_runs skips corrupt/invalid JSONL lines and returns valid runs.
+
+        When a cache file contains lines that are not valid Run JSON (e.g., from a
+        test that wrote MagicMock repr strings), those lines are silently skipped
+        and the valid runs are still returned.
+        """
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+
+        # Write one valid run and one corrupt line (MagicMock repr as JSON string)
+        valid_run = _make_run(1)
+        from langsmith_cli.cache import get_cache_path
+        import json as _json
+
+        cache_path = get_cache_path("test-project")
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(cache_path, "w") as f:
+            f.write(_json.dumps(valid_run.model_dump(mode="json")) + "\n")
+            # Simulate what happens when MagicMock.model_dump() is json.dumps'd with default=str
+            f.write("\"<MagicMock name='mock.model_dump()' id='12345'>\"" + "\n")
+            # Also test a completely invalid JSON line
+            f.write("not-valid-json\n")
+
+        result = read_cached_runs("test-project")
+        assert len(result) == 1
+        assert result[0].name == "run-1"
+
 
 class TestClearCache:
     def test_clear_specific_project(self, tmp_path, monkeypatch):
