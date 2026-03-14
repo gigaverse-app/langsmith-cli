@@ -103,7 +103,7 @@ def pricing_check(
 
     logger = ctx.obj["logger"]
     is_json = ctx.obj.get("json")
-    logger.use_stderr = bool(is_json)
+    logger.use_stderr = bool(is_json) or output_format == "yaml"
 
     # Fetch runs
     all_runs: list[Run] = []

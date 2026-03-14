@@ -9,6 +9,7 @@ from langsmith_cli.utils import (
     add_name_filter_options,
     apply_exclude_filter,
     apply_name_filters,
+    configure_logger_streams,
     count_option,
     exclude_option,
     fields_option,
@@ -69,8 +70,7 @@ def list_datasets(
 ):
     """List all available datasets."""
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json") or bool(output) or bool(fields)
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger, output=output, fields=fields)
 
     logger.debug(
         f"Listing datasets: limit={limit}, data_type={data_type}, "
@@ -151,8 +151,7 @@ def list_datasets(
 def get_dataset(ctx, dataset_id, fields, output):
     """Fetch details of a single dataset."""
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json") or bool(fields) or bool(output)
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger, output=output, fields=fields)
 
     logger.debug(f"Fetching dataset: dataset_id={dataset_id}")
 

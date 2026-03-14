@@ -29,6 +29,21 @@ def json_dumps(obj: Any, **kwargs: Any) -> str:
     return json.dumps(obj, ensure_ascii=False, default=str, **kwargs)
 
 
+def configure_logger_streams(
+    ctx: click.Context,
+    logger: Any,
+    *,
+    output: str | None = None,
+    fields: str | None = None,
+) -> None:
+    """Set logger.use_stderr when output is machine-readable.
+
+    Machine-readable modes (--json, --output, --fields) must write data to
+    stdout and diagnostics to stderr so the two streams don't mix.
+    """
+    logger.use_stderr = bool(ctx.obj.get("json")) or bool(output) or bool(fields)
+
+
 class ConsoleProtocol(Protocol):
     """Protocol for Rich Console interface - avoids heavy import."""
 

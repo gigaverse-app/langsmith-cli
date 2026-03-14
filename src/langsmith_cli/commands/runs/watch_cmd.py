@@ -134,7 +134,7 @@ def watch_runs(
 
         # Add failure count to title if any projects failed
         if failed_count > 0:
-            title += f" [yellow]({failed_count} failed)[/yellow]"
+            table.title = title + f" ({failed_count} failed)"
 
         for proj_name, r in all_runs:
             # Access SDK model fields directly (type-safe)

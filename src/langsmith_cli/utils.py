@@ -16,6 +16,7 @@ specific module directly:
 
 from langsmith_cli.output import (
     ConsoleProtocol,
+    configure_logger_streams,
     determine_output_format,
     json_dumps,
     output_formatted_data,
@@ -92,6 +93,7 @@ from langsmith_cli.run_helpers import (
 __all__ = [
     # output
     "ConsoleProtocol",
+    "configure_logger_streams",
     "determine_output_format",
     "json_dumps",
     "output_formatted_data",

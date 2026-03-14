@@ -3,6 +3,7 @@ from rich.console import Console
 from rich.table import Table
 from langsmith_cli.utils import (
     apply_exclude_filter,
+    configure_logger_streams,
     count_option,
     exclude_option,
     fields_option,
@@ -42,8 +43,7 @@ def prompts():
 def list_prompts(ctx, limit, is_public, sort_by, exclude, fields, count, output):
     """List available prompt repositories."""
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json") or bool(output) or bool(fields)
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger, output=output, fields=fields)
 
     logger.debug(f"Listing prompts: limit={limit}, is_public={is_public}")
 
@@ -100,8 +100,7 @@ def get_prompt(ctx, name, commit, fields, output):
     from langsmith.utils import LangSmithNotFoundError
 
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json") or fields or output
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger, output=output, fields=fields)
 
     logger.debug(f"Fetching prompt: name={name}, commit={commit}")
 
@@ -204,8 +203,7 @@ def pull_prompt(ctx, name, commit, include_model, fields, output):
     from langsmith.utils import LangSmithNotFoundError
 
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json") or fields or output
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger, output=output, fields=fields)
 
     identifier = name + (f":{commit}" if commit else "")
     logger.debug(f"Pulling prompt commit: {identifier}")
@@ -332,8 +330,7 @@ def create_prompt_cmd(ctx, name, description, tags, is_public):
 def list_commits(ctx, name, limit, offset, include_model, fields, count, output):
     """List version history (commits) for a prompt."""
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json") or bool(output) or bool(fields)
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger, output=output, fields=fields)
 
     logger.debug(f"Listing commits for prompt: {name}, limit={limit}")
 

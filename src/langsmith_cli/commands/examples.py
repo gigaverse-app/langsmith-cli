@@ -3,6 +3,7 @@ from rich.console import Console
 from rich.table import Table
 from langsmith_cli.utils import (
     apply_exclude_filter,
+    configure_logger_streams,
     count_option,
     exclude_option,
     fields_option,
@@ -74,8 +75,7 @@ def list_examples(
 ):
     """List examples for a dataset."""
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json") or bool(output) or bool(fields)
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger, output=output, fields=fields)
 
     logger.debug(
         f"Listing examples: dataset={dataset}, limit={limit}, "
@@ -156,8 +156,7 @@ def list_examples(
 def get_example(ctx, example_id, as_of, fields, output):
     """Fetch details of a single example."""
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json") or bool(fields) or bool(output)
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger, output=output, fields=fields)
 
     logger.debug(f"Fetching example: example_id={example_id}, as_of={as_of}")
 

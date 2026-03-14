@@ -6,7 +6,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from conftest import create_run, create_project
+from conftest import create_run, create_project, strip_ansi
 from langsmith_cli.main import cli
 
 
@@ -490,6 +490,76 @@ class TestRunsStats:
         assert result.exit_code == 0
         mock_client.get_run_stats.assert_called_once()
 
+    def test_stats_no_matching_projects_json(self, runner, mock_client):
+        """INVARIANT: stats returns JSON error when no projects match."""
+        from langsmith_cli.commands.runs import stats_cmd
+        from langsmith_cli.project_resolution import ProjectQuery
+
+        empty_pq = ProjectQuery(names=[], project_id=None)
+        with patch.object(stats_cmd, "resolve_project_filters", return_value=empty_pq):
+            result = runner.invoke(
+                cli,
+                ["--json", "runs", "stats", "--project-name-pattern", "nonexistent/*"],
+            )
+
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert "error" in data or "message" in data
+
+    def test_stats_no_matching_projects_table(self, runner, mock_client):
+        """INVARIANT: stats prints warning when no projects match in table mode."""
+        from langsmith_cli.commands.runs import stats_cmd
+        from langsmith_cli.project_resolution import ProjectQuery
+
+        empty_pq = ProjectQuery(names=[], project_id=None)
+        with patch.object(stats_cmd, "resolve_project_filters", return_value=empty_pq):
+            result = runner.invoke(
+                cli,
+                ["runs", "stats", "--project-name-pattern", "nonexistent/*"],
+            )
+
+        assert result.exit_code == 0
+        assert "No matching projects" in result.output
+
+    def test_stats_multi_project_title(self, runner, mock_client):
+        """INVARIANT: stats table title shows count when multiple projects match."""
+        from conftest import create_project
+
+        proj1 = create_project(name="proj-a")
+        proj2 = create_project(name="proj-b")
+        mock_client.list_projects.return_value = [proj1, proj2]
+        mock_client.read_project.side_effect = lambda project_name=None: (
+            proj1 if project_name == "proj-a" else proj2
+        )
+        mock_client.get_run_stats.return_value = {"run_count": 5}
+
+        result = runner.invoke(
+            cli,
+            ["runs", "stats", "--project-name", "proj"],
+        )
+
+        assert result.exit_code == 0
+        output = strip_ansi(result.output)
+        assert "2 projects" in output
+
+    def test_stats_project_id_flag(self, runner, mock_client):
+        """INVARIANT: --project-id uses pq.use_id branch, title shows 'id:'."""
+        mock_client.get_run_stats.return_value = {"run_count": 42}
+
+        result = runner.invoke(
+            cli,
+            [
+                "runs",
+                "stats",
+                "--project-id",
+                "00000000-0000-0000-0000-000000000001",
+            ],
+        )
+
+        assert result.exit_code == 0
+        output = strip_ansi(result.output)
+        assert "id:" in output
+
 
 class TestRunsOpen:
     """Tests for runs open command."""
@@ -545,3 +615,104 @@ class TestRunsWatch:
             result = runner.invoke(cli, ["runs", "watch", "--project", "test"])
 
         assert result.exit_code == 0
+
+    def test_watch_project_id_branch(self, runner, mock_client):
+        """INVARIANT: --project-id uses pq.use_id=True branch in generate_table."""
+        mock_client.list_runs.return_value = [create_run(name="id-branch-run")]
+
+        with patch("time.sleep") as mock_sleep:
+            mock_sleep.side_effect = KeyboardInterrupt()
+            result = runner.invoke(
+                cli,
+                [
+                    "runs",
+                    "watch",
+                    "--project-id",
+                    "00000000-0000-0000-0000-000000000001",
+                ],
+            )
+
+        assert result.exit_code == 0
+        output = strip_ansi(result.output)
+        assert "id:" in output
+
+    def test_watch_project_name_pattern_title(self, runner, mock_client):
+        """INVARIANT: --project-name-pattern shows pattern in title."""
+        from conftest import create_project
+
+        mock_client.list_projects.return_value = [
+            create_project(name="prd/svc-a"),
+            create_project(name="prd/svc-b"),
+        ]
+        mock_client.list_runs.return_value = []
+
+        with patch("time.sleep") as mock_sleep:
+            mock_sleep.side_effect = KeyboardInterrupt()
+            result = runner.invoke(
+                cli,
+                ["runs", "watch", "--project-name-pattern", "prd/*"],
+            )
+
+        assert result.exit_code == 0
+        output = strip_ansi(result.output)
+        assert "prd/*" in output
+
+    def test_watch_project_name_regex_title(self, runner, mock_client):
+        """INVARIANT: --project-name-regex shows regex in title."""
+        from conftest import create_project
+
+        mock_client.list_projects.return_value = [create_project(name="dev-api-v2")]
+        mock_client.list_runs.return_value = []
+
+        with patch("time.sleep") as mock_sleep:
+            mock_sleep.side_effect = KeyboardInterrupt()
+            result = runner.invoke(
+                cli,
+                ["runs", "watch", "--project-name-regex", "^dev-.*-v[0-9]+$"],
+            )
+
+        assert result.exit_code == 0
+        output = strip_ansi(result.output)
+        assert "regex(" in output
+
+    def test_watch_project_name_fuzzy_title(self, runner, mock_client):
+        """INVARIANT: --project-name shows fuzzy match title with * wildcards."""
+        from conftest import create_project
+
+        mock_client.list_projects.return_value = [
+            create_project(name="my-service"),
+            create_project(name="my-other-service"),
+        ]
+        mock_client.list_runs.return_value = []
+
+        with patch("time.sleep") as mock_sleep:
+            mock_sleep.side_effect = KeyboardInterrupt()
+            result = runner.invoke(
+                cli,
+                ["runs", "watch", "--project-name", "my"],
+            )
+
+        assert result.exit_code == 0
+        output = strip_ansi(result.output)
+        assert "*my*" in output
+
+    def test_watch_failed_project_shows_count(self, runner, mock_client):
+        """INVARIANT: When projects fail to fetch runs, failed count appears in title."""
+        from conftest import create_project
+
+        mock_client.list_projects.return_value = [
+            create_project(name="svc-a"),
+            create_project(name="svc-b"),
+        ]
+        mock_client.list_runs.side_effect = Exception("API error")
+
+        with patch("time.sleep") as mock_sleep:
+            mock_sleep.side_effect = KeyboardInterrupt()
+            result = runner.invoke(
+                cli,
+                ["runs", "watch", "--project-name", "svc"],
+            )
+
+        assert result.exit_code == 0
+        output = strip_ansi(result.output)
+        assert "failed" in output.lower()
