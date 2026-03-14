@@ -152,6 +152,7 @@ Read these files **only when your task matches** — don't load them speculative
 ### → Read [docs/examples.md](docs/examples.md) when:
 - You want end-to-end workflow examples (debugging, dataset management, production monitoring)
 - You want common patterns without having to piece together flags yourself
+- You need to **search for recognized entities in extraction chain outputs** (e.g. find all runs where "Niklas" was recognized as a known entity in `extracted_entities`) — there's a complete recipe covering cache download, Python JSONL scanning, deduplication of sub-runs, and `llm_recognition` filtering
 
 ### → Read [references/troubleshooting.md](references/troubleshooting.md) when:
 - CLI commands fail, return unexpected results, or produce authentication errors

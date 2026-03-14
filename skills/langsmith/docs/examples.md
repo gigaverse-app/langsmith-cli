@@ -779,6 +779,83 @@ done
    }
    ```
 
+## Finding Recognized Entities in Extraction Chain Outputs
+
+**Scenario:** You have a namedrop/entity-extraction chain and want to find all runs where a specific person's name (e.g. "Niklas", "Jacob") was recognized as a known entity in the output — not just mentioned in the transcript or prompt.
+
+**Why this is tricky:** `runs cache grep "Niklas"` will match runs where the name appears *anywhere* in outputs — including in the LLM prompt template, channel names, or transcript context. You need to filter specifically for `extracted_entities[].canonical_full_name` with `llm_recognition: true`.
+
+### Step 1: Check and populate cache
+
+```bash
+# Check if project is already cached
+langsmith-cli runs cache list
+
+# If not cached, download in background (may take 5-10+ min for large projects)
+# --json is REQUIRED to get parseable progress events
+langsmith-cli --json runs cache download --project "dev/namedrop_service" --last 30d
+# Poll TaskOutput for: {"event": "progress", "project": "...", "new_runs": N}
+# Final: {"event": "download_complete", "total_new_runs": N}
+
+# Get cache file path
+CACHE_DIR=$(langsmith-cli runs cache dir)
+ls "$CACHE_DIR"/*namedrop*
+# → /home/user/.cache/langsmith-cli/runs/dev_namedrop_service.jsonl
+```
+
+### Step 2: Search structured entity fields with Python
+
+`runs cache grep` is for triage only. For nested fields like `extracted_entities[].canonical_full_name`, scan the JSONL directly:
+
+```python
+import json, re
+
+results = []
+for fname, env in [
+    ('/path/to/cache/dev_namedrop_service.jsonl', 'dev'),
+    ('/path/to/cache/prd_namedrop_service.jsonl', 'prd'),
+]:
+    with open(fname) as f:
+        for line in f:
+            try:
+                run = json.loads(line)
+            except:
+                continue
+            if not isinstance(run, dict):
+                continue
+            entities = (run.get('outputs') or {}).get('extracted_entities') or []
+            matched = [
+                e for e in entities
+                if isinstance(e, dict)
+                and re.search(r'Niklas|Jacob', str(e.get('canonical_full_name') or ''), re.IGNORECASE)
+                and e.get('llm_recognition', True)   # only confirmed recognitions
+            ]
+            if matched:
+                ch = (run.get('extra') or {}).get('metadata', {}).get('channel_id', '')
+                start = run.get('start_time', '')[:19]
+                results.append((env, start, run['id'], run.get('name', ''), ch, matched))
+
+# Deduplicate — each trace appears multiple times (once per sub-run)
+seen = set()
+for env, start, rid, name, ch, entities in sorted(results):
+    for e in entities:
+        key = (env, start[:16], ch, e.get('canonical_full_name'))
+        if key not in seen:
+            seen.add(key)
+            ctx = (e.get('details_for_llm_recognized_entities') or {}).get('mention_context', '')
+            info = (e.get('details_for_llm_recognized_entities') or {}).get('one_sentence_relevant_additional_information', '')
+            print(f"[{env}] {start} | ch={ch}")
+            print(f"  → {e['canonical_full_name']!r}  ctx={ctx!r}")
+            print(f"     info={info!r}")
+```
+
+### Key lessons
+
+- **`runs cache grep` is for triage** — finds runs where text appears anywhere in outputs. For structured fields like `extracted_entities[].canonical_full_name`, scan the JSONL with Python.
+- **Each trace appears multiple times** in cache (once per sub-run: `RunnableSequence`, `RunnableWithFallbacks`, `task-name-extraction-chain`, etc.) — deduplicate by `(start_time[:16], channel_id, entity_name)`.
+- **`llm_recognition: false`** means the entity was extracted as a candidate but the LLM couldn't verify it against public knowledge — filter these out for confirmed hits.
+- **Sub-run outputs ≠ chain output** — `ChatPromptTemplate` sub-runs have the LLM prompt in `outputs.output.messages`, which contains entity names from examples/instructions. Root-level chain runs (`task-name-extraction-chain`, `RunnableSequence`) have the actual `extracted_entities`.
+
 ## Additional Resources
 
 - [SKILL.md](SKILL.md) - Quick reference and core commands
