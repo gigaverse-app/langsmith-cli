@@ -1,6 +1,7 @@
 """Project resolution, fetch helpers, and multi-project query utilities."""
 
 import re
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Generic, TypeVar
 
@@ -12,6 +13,43 @@ from pydantic import BaseModel, Field
 from langsmith_cli.utils import apply_regex_filter, apply_wildcard_filter
 
 T = TypeVar("T")
+
+
+def _is_rate_limited(error_msg: str) -> bool:
+    """Check if an error message indicates a rate limit (429) response."""
+    msg = error_msg.lower()
+    return "429" in msg or "too many requests" in msg or "rate limit" in msg
+
+
+def _fetch_with_rate_limit_retry(
+    func: Callable[[], Any],
+    max_retries: int = 3,
+    initial_delay: float = 2.0,
+) -> list[Any]:
+    """Call func, retrying on 429 rate limit errors with exponential backoff.
+
+    Args:
+        func: Zero-argument callable that returns an iterable of items
+        max_retries: Maximum number of retry attempts (default 3)
+        initial_delay: Initial delay in seconds before first retry (default 2.0)
+
+    Returns:
+        List of items from the successful call
+    """
+    delay = initial_delay
+    for attempt in range(max_retries + 1):
+        try:
+            items = func()
+            if hasattr(items, "__iter__") and not isinstance(items, (list, tuple)):
+                items = list(items)
+            return items  # type: ignore[return-value]
+        except Exception as e:
+            if attempt < max_retries and _is_rate_limited(str(e)):
+                time.sleep(delay)
+                delay *= 2
+            else:
+                raise
+    return []  # unreachable
 
 
 class CLIFetchError(click.ClickException):
@@ -234,15 +272,15 @@ def fetch_from_projects(
     # When project_id is available, bypass name-based iteration
     if project_query and project_query.use_id:
         try:
-            items = fetch_func(
-                client,
-                None,
-                limit=limit,
-                project_id=project_query.project_id,
-                **fetch_kwargs,
+            items = _fetch_with_rate_limit_retry(
+                lambda: fetch_func(
+                    client,
+                    None,
+                    limit=limit,
+                    project_id=project_query.project_id,
+                    **fetch_kwargs,
+                )
             )
-            if not isinstance(items, list):
-                items = list(items)
             result = FetchResult(
                 items=items,
                 successful_sources=[f"id:{project_query.project_id}"],
@@ -264,13 +302,9 @@ def fetch_from_projects(
 
     for proj_name in project_names:
         try:
-            # Call fetch function with project name and all kwargs
-            items = fetch_func(client, proj_name, limit=limit, **fetch_kwargs)
-
-            # Handle iterators (like client.list_runs returns)
-            if hasattr(items, "__iter__") and not isinstance(items, (list, tuple)):
-                items = list(items)
-
+            items = _fetch_with_rate_limit_retry(
+                lambda pn=proj_name: fetch_func(client, pn, limit=limit, **fetch_kwargs)
+            )
             all_items.extend(items)
             successful.append(proj_name)
         except Exception as e:

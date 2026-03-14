@@ -453,8 +453,13 @@ The cache is always faster, uses no API quota, and won't hit rate limits.
   - `--full`: Force full re-download (clear existing cache).
   - `--run-type <type>`: Filter by run type (optional, downloads all by default).
   - `--workers <n>`: Parallel workers (default: min(4, num_projects)).
+  - `--name-pattern <pattern>`: Filter by **run name** (not metadata/content). Exact names (`FACTCHECK`) use server-side FQL. Wildcards (`*CHECK*`) filter client-side after downloading. Run names are short identifiers like `FACTCHECK`, `SUMMARIZATION`, `MODERATION` — not channel names or metadata values.
+  - `--metadata key=value[*]`: Filter by metadata field. Exact values → server-side FQL (fast, avoids downloading irrelevant data). Wildcard values (`key=Gigaverse*`) → client-side filter after downloading. Use this to scope downloads to a specific channel: `--metadata channel_id=Gigaverse_Daily_Standup`.
   - Example: `langsmith-cli runs cache download --project-name-pattern "prd/*" --last 7d`
   - Example: `langsmith-cli runs cache download --project my-project --since 2025-02-17 --before 2025-02-20`
+  - Example: `langsmith-cli runs cache download --project dev/namedrop_service --metadata channel_id=Gigaverse_Daily_Standup --since 2026-01-15 --before 2026-01-29`
+  - Example: `langsmith-cli runs cache download --project dev/svc --metadata "channel_id=Gigaverse*" --last 14d`
+  - Example: `langsmith-cli runs cache download --project dev/svc --name-pattern "FACTCHECK" --last 7d`
 - `langsmith-cli runs cache dir`: Print the cache directory path. Useful for piping to external tools (jq, DuckDB, pandas).
   - Example: `duckdb -c "SELECT * FROM read_ndjson_auto('$(langsmith-cli runs cache dir)/*.jsonl')"`
   - Example: `cat "$(langsmith-cli runs cache dir)/my-project.jsonl" | jq '.name'`
@@ -466,7 +471,10 @@ The cache is always faster, uses no API quota, and won't hit rate limits.
   - `--project <name>`: Search only one project's cache.
   - `--limit <n>`: Max results (default 20).
   - `--since <time>` / `--before <time>` / `--last <duration>`: Time filters.
+  - `--metadata key=value[*]`: Filter by metadata field (client-side, supports wildcards). Use to scope grep to a specific channel: `--metadata channel_id=Gigaverse_Daily_Standup`.
   - Example: `langsmith-cli --json runs cache grep "error" --project my-proj`
+  - Example: `langsmith-cli --json runs cache grep "Jacob" --project dev/namedrop_service --metadata channel_id=Gigaverse_Daily_Standup`
+  - Example: `langsmith-cli --json runs cache grep "." --project dev/svc --metadata "channel_id=Gigaverse*" --limit 100`
   - Example: `langsmith-cli runs cache grep -i -E "\\buser_id\\b" --grep-in inputs`
   - Example: `langsmith-cli runs cache grep "hello" --count`
 - `langsmith-cli runs cache clear [--project <name>] [--yes]`: Clear cached data.

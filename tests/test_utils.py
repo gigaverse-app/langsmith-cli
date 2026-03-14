@@ -1848,3 +1848,186 @@ class TestFilterRunsByTags:
         result = filter_runs_by_tags([r1, r2], ("prod",))
         assert len(result) == 1
         assert r1 in result
+
+
+class TestFetchWithRateLimitRetry:
+    """INVARIANT: _fetch_with_rate_limit_retry retries on 429 and succeeds on eventual success."""
+
+    def test_succeeds_immediately_when_no_rate_limit(self):
+        from langsmith_cli.project_resolution import _fetch_with_rate_limit_retry
+
+        items = [create_run(id_str="auto")]
+        result = _fetch_with_rate_limit_retry(lambda: iter(items))
+        assert result == items
+
+    def test_retries_on_429_and_succeeds(self):
+        from unittest.mock import patch
+        from langsmith_cli.project_resolution import _fetch_with_rate_limit_retry
+
+        items = [create_run(id_str="auto")]
+        call_count = 0
+
+        def flaky_fetch():
+            nonlocal call_count
+            call_count += 1
+            if call_count < 3:
+                raise Exception("429 Client Error: Too Many Requests")
+            return iter(items)
+
+        with patch("langsmith_cli.project_resolution.time.sleep"):
+            result = _fetch_with_rate_limit_retry(flaky_fetch, max_retries=3)
+
+        assert result == items
+        assert call_count == 3
+
+    def test_raises_after_max_retries_exceeded(self):
+        from unittest.mock import patch
+        from langsmith_cli.project_resolution import _fetch_with_rate_limit_retry
+
+        def always_rate_limited():
+            raise Exception("429 Client Error: Too Many Requests")
+
+        with patch("langsmith_cli.project_resolution.time.sleep"):
+            with pytest.raises(Exception, match="429"):
+                _fetch_with_rate_limit_retry(always_rate_limited, max_retries=2)
+
+    def test_does_not_retry_non_rate_limit_errors(self):
+        from unittest.mock import patch
+        from langsmith_cli.project_resolution import _fetch_with_rate_limit_retry
+
+        call_count = 0
+
+        def raises_other_error():
+            nonlocal call_count
+            call_count += 1
+            raise ValueError("Some other error")
+
+        with patch("langsmith_cli.project_resolution.time.sleep") as mock_sleep:
+            with pytest.raises(ValueError, match="Some other error"):
+                _fetch_with_rate_limit_retry(raises_other_error, max_retries=3)
+
+        assert call_count == 1
+        mock_sleep.assert_not_called()
+
+    def test_exponential_backoff_doubles_delay(self):
+        from unittest.mock import call, patch
+        from langsmith_cli.project_resolution import _fetch_with_rate_limit_retry
+
+        items = [create_run(id_str="auto")]
+        call_count = 0
+
+        def flaky_fetch():
+            nonlocal call_count
+            call_count += 1
+            if call_count < 3:
+                raise Exception("Too Many Requests rate limit exceeded")
+            return iter(items)
+
+        with patch("langsmith_cli.project_resolution.time.sleep") as mock_sleep:
+            _fetch_with_rate_limit_retry(flaky_fetch, max_retries=3, initial_delay=1.0)
+
+        assert mock_sleep.call_count == 2
+        assert mock_sleep.call_args_list == [call(1.0), call(2.0)]
+
+
+class TestPartitionMetadataFilters:
+    """INVARIANT: partition_metadata_filters correctly separates exact and wildcard filters."""
+
+    def test_exact_values_go_to_server_side(self):
+        from langsmith_cli.utils import partition_metadata_filters
+
+        server, client = partition_metadata_filters(("key=exact_value",))
+        assert server == ("key=exact_value",)
+        assert client == ()
+
+    def test_wildcard_values_go_to_client_side(self):
+        from langsmith_cli.utils import partition_metadata_filters
+
+        server, client = partition_metadata_filters(("key=prefix*",))
+        assert server == ()
+        assert client == ("key=prefix*",)
+
+    def test_mixed_filters_partitioned_correctly(self):
+        from langsmith_cli.utils import partition_metadata_filters
+
+        filters = ("channel_id=Gigaverse*", "env=production", "name=*standup*")
+        server, client = partition_metadata_filters(filters)
+        assert server == ("env=production",)
+        assert client == ("channel_id=Gigaverse*", "name=*standup*")
+
+    def test_question_mark_wildcard_is_client_side(self):
+        from langsmith_cli.utils import partition_metadata_filters
+
+        server, client = partition_metadata_filters(("key=val?e",))
+        assert server == ()
+        assert client == ("key=val?e",)
+
+    def test_empty_filters_returns_empty_tuples(self):
+        from langsmith_cli.utils import partition_metadata_filters
+
+        server, client = partition_metadata_filters(())
+        assert server == ()
+        assert client == ()
+
+
+class TestApplyMetadataFilter:
+    """INVARIANT: apply_metadata_filter correctly filters runs by metadata key=value[*]."""
+
+    def _make_run_with_meta(self, n: int, **meta: str) -> Run:
+        return create_run(id_str="auto", name=f"run-{n}", extra={"metadata": meta})
+
+    def test_exact_match_filters_correctly(self):
+        from langsmith_cli.utils import apply_metadata_filter
+
+        r1 = self._make_run_with_meta(1, channel_id="Gigaverse_Daily_Standup")
+        r2 = self._make_run_with_meta(2, channel_id="Other_Channel")
+
+        result = list(
+            apply_metadata_filter([r1, r2], ("channel_id=Gigaverse_Daily_Standup",))
+        )
+        assert result == [r1]
+
+    def test_wildcard_match_filters_correctly(self):
+        from langsmith_cli.utils import apply_metadata_filter
+
+        r1 = self._make_run_with_meta(1, channel_id="Gigaverse_Daily_Standup")
+        r2 = self._make_run_with_meta(2, channel_id="Gigaverse_Weekly")
+        r3 = self._make_run_with_meta(3, channel_id="Other_Channel")
+
+        result = list(apply_metadata_filter([r1, r2, r3], ("channel_id=Gigaverse*",)))
+        assert len(result) == 2
+        names = {r.name for r in result}
+        assert names == {"run-1", "run-2"}
+
+    def test_empty_filters_returns_all(self):
+        from langsmith_cli.utils import apply_metadata_filter
+
+        r1 = self._make_run_with_meta(1, channel_id="A")
+        r2 = self._make_run_with_meta(2, channel_id="B")
+
+        result = list(apply_metadata_filter([r1, r2], ()))
+        assert result == [r1, r2]
+
+    def test_multiple_filters_require_all_to_match(self):
+        from langsmith_cli.utils import apply_metadata_filter
+
+        r1 = self._make_run_with_meta(
+            1, channel_id="Gigaverse_Daily_Standup", env="prod"
+        )
+        r2 = self._make_run_with_meta(
+            2, channel_id="Gigaverse_Daily_Standup", env="staging"
+        )
+
+        result = list(
+            apply_metadata_filter([r1, r2], ("channel_id=Gigaverse*", "env=prod"))
+        )
+        assert result == [r1]
+
+    def test_run_without_metadata_excluded(self):
+        from langsmith_cli.utils import apply_metadata_filter
+
+        r1 = create_run(id_str="auto", name="no-meta")  # no extra metadata
+        r2 = self._make_run_with_meta(2, channel_id="Gigaverse_Daily_Standup")
+
+        result = list(apply_metadata_filter([r1, r2], ("channel_id=Gigaverse*",)))
+        assert result == [r2]

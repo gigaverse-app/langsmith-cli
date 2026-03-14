@@ -600,6 +600,276 @@ class TestCacheCommands:
         # We verify indirectly: no rate limiting errors
         # The actual cap is tested via the code path
 
+    def test_cache_download_with_name_pattern_exact_uses_fql(
+        self, runner, mock_client, tmp_path, monkeypatch
+    ):
+        """INVARIANT: --name-pattern with no wildcards adds FQL eq(name) for server-side filtering."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+        mock_client.list_runs.return_value = []
+
+        result = runner.invoke(
+            cli,
+            [
+                "runs",
+                "cache",
+                "download",
+                "--project",
+                "default",
+                "--name-pattern",
+                "Gigaverse_Daily_Standup",
+                "--last",
+                "24h",
+            ],
+        )
+
+        assert result.exit_code == 0
+        call_kwargs = mock_client.list_runs.call_args
+        fql_filter = call_kwargs.kwargs.get("filter", "")
+        assert 'eq(name, "Gigaverse_Daily_Standup")' in fql_filter
+
+    def test_cache_download_with_name_pattern_wildcard(
+        self, runner, mock_client, tmp_path, monkeypatch
+    ):
+        """INVARIANT: --name-pattern supports wildcards like '*standup*'."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+
+        runs = [
+            Run(
+                id=UUID(make_run_id(1)),
+                name="Gigaverse_Daily_Standup",
+                run_type="chain",
+                start_time=datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc),
+            ),
+            Run(
+                id=UUID(make_run_id(2)),
+                name="Weekly_Standup",
+                run_type="chain",
+                start_time=datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc),
+            ),
+            Run(
+                id=UUID(make_run_id(3)),
+                name="unrelated_run",
+                run_type="chain",
+                start_time=datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc),
+            ),
+        ]
+        mock_client.list_runs.return_value = runs
+
+        result = runner.invoke(
+            cli,
+            [
+                "runs",
+                "cache",
+                "download",
+                "--project",
+                "default",
+                "--name-pattern",
+                "*Standup*",
+                "--last",
+                "24h",
+            ],
+        )
+
+        assert result.exit_code == 0
+        from langsmith_cli.cache import read_cached_runs
+
+        cached = read_cached_runs("default")
+        assert len(cached) == 2
+        names = {r.name for r in cached}
+        assert names == {"Gigaverse_Daily_Standup", "Weekly_Standup"}
+
+    def test_cache_download_without_name_pattern_caches_all(
+        self, runner, mock_client, tmp_path, monkeypatch
+    ):
+        """INVARIANT: Without --name-pattern, all runs are cached (no filtering)."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+
+        runs = [_make_run(1), _make_run(2), _make_run(3)]
+        mock_client.list_runs.return_value = runs
+
+        result = runner.invoke(
+            cli,
+            ["runs", "cache", "download", "--project", "default", "--last", "24h"],
+        )
+
+        assert result.exit_code == 0
+        from langsmith_cli.cache import read_cached_runs
+
+        cached = read_cached_runs("default")
+        assert len(cached) == 3
+
+    def test_cache_download_with_metadata_exact_adds_fql_filter(
+        self, runner, mock_client, tmp_path, monkeypatch
+    ):
+        """INVARIANT: --metadata with exact value adds FQL eq() filter for server-side filtering."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+        mock_client.list_runs.return_value = []
+
+        result = runner.invoke(
+            cli,
+            [
+                "runs",
+                "cache",
+                "download",
+                "--project",
+                "default",
+                "--metadata",
+                "channel_id=Gigaverse_Daily_Standup",
+                "--last",
+                "24h",
+            ],
+        )
+
+        assert result.exit_code == 0
+        call_kwargs = mock_client.list_runs.call_args
+        fql_filter = call_kwargs.kwargs.get("filter", "")
+        assert 'eq(metadata_value, "Gigaverse_Daily_Standup")' in fql_filter
+        assert 'in(metadata_key, ["channel_id"])' in fql_filter
+
+    def test_cache_download_with_metadata_wildcard_filters_client_side(
+        self, runner, mock_client, tmp_path, monkeypatch
+    ):
+        """INVARIANT: --metadata with wildcard applies client-side filter, not FQL."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+
+        matching = Run(
+            id=UUID(make_run_id(1)),
+            name="run-1",
+            run_type="chain",
+            start_time=datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc),
+            extra={"metadata": {"channel_id": "Gigaverse_Daily_Standup"}},
+        )
+        non_matching = Run(
+            id=UUID(make_run_id(2)),
+            name="run-2",
+            run_type="chain",
+            start_time=datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc),
+            extra={"metadata": {"channel_id": "Other_Channel"}},
+        )
+        mock_client.list_runs.return_value = [matching, non_matching]
+
+        result = runner.invoke(
+            cli,
+            [
+                "runs",
+                "cache",
+                "download",
+                "--project",
+                "default",
+                "--metadata",
+                "channel_id=Gigaverse*",
+                "--last",
+                "24h",
+            ],
+        )
+
+        assert result.exit_code == 0
+        # Wildcard must NOT appear in FQL (no server-side FQL for wildcards)
+        call_kwargs = mock_client.list_runs.call_args
+        fql_filter = call_kwargs.kwargs.get("filter", "")
+        assert "channel_id" not in fql_filter
+
+        from langsmith_cli.cache import read_cached_runs
+
+        cached = read_cached_runs("default")
+        assert len(cached) == 1
+        cached_meta = (cached[0].extra or {}).get("metadata", {})
+        assert cached_meta.get("channel_id") == "Gigaverse_Daily_Standup"
+
+    def test_cache_grep_with_metadata_filter(self, runner, tmp_path, monkeypatch):
+        """INVARIANT: cache grep --metadata filters cached runs by metadata key=value."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+
+        runs_to_cache = [
+            Run(
+                id=UUID(make_run_id(1)),
+                name="run-1",
+                run_type="chain",
+                start_time=datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc),
+                extra={"metadata": {"channel_id": "Gigaverse_Daily_Standup"}},
+            ),
+            Run(
+                id=UUID(make_run_id(2)),
+                name="run-2",
+                run_type="chain",
+                start_time=datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc),
+                extra={"metadata": {"channel_id": "Other_Channel"}},
+            ),
+        ]
+        append_runs_to_cache("default", runs_to_cache)
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "cache",
+                "grep",
+                "run",  # matches both by name
+                "--project",
+                "default",
+                "--metadata",
+                "channel_id=Gigaverse_Daily_Standup",
+            ],
+        )
+
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip().split("\n")[-1])
+        assert len(data) == 1
+        assert data[0]["name"] == "run-1"
+
+    def test_cache_grep_with_metadata_wildcard_filter(
+        self, runner, tmp_path, monkeypatch
+    ):
+        """INVARIANT: cache grep --metadata supports wildcard values."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+
+        runs_to_cache = [
+            Run(
+                id=UUID(make_run_id(1)),
+                name="run-1",
+                run_type="chain",
+                start_time=datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc),
+                extra={"metadata": {"channel_id": "Gigaverse_Daily_Standup"}},
+            ),
+            Run(
+                id=UUID(make_run_id(2)),
+                name="run-2",
+                run_type="chain",
+                start_time=datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc),
+                extra={"metadata": {"channel_id": "Gigaverse_Weekly"}},
+            ),
+            Run(
+                id=UUID(make_run_id(3)),
+                name="run-3",
+                run_type="chain",
+                start_time=datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc),
+                extra={"metadata": {"channel_id": "Other_Channel"}},
+            ),
+        ]
+        append_runs_to_cache("default", runs_to_cache)
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "cache",
+                "grep",
+                "run",  # matches all by name
+                "--project",
+                "default",
+                "--metadata",
+                "channel_id=Gigaverse*",
+            ],
+        )
+
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip().split("\n")[-1])
+        assert len(data) == 2
+        names = {r["name"] for r in data}
+        assert names == {"run-1", "run-2"}
+
 
 class TestGetExistingRunIds:
     def test_returns_ids_from_cache(self, tmp_path, monkeypatch):

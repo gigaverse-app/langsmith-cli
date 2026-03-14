@@ -701,3 +701,66 @@ def filter_runs_by_tags(
         return runs
     tag_set = set(tags)
     return [r for r in runs if r.tags and tag_set.issubset(set(r.tags))]
+
+
+def partition_metadata_filters(
+    metadata_filters: tuple[str, ...],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Split metadata filters into server-side (exact) and client-side (wildcard) parts.
+
+    Server-side filters use FQL eq() and are fast.
+    Client-side filters use fnmatch and are applied to the run stream.
+
+    Returns:
+        (server_filters, client_filters) - both in "key=value" format
+    """
+    server: list[str] = []
+    client: list[str] = []
+    for mf in metadata_filters:
+        if "=" not in mf:
+            raise click.BadParameter(
+                f"Invalid metadata filter: {mf}. Use key=value format."
+            )
+        _, value = mf.split("=", 1)
+        if "*" in value or "?" in value:
+            client.append(mf)
+        else:
+            server.append(mf)
+    return tuple(server), tuple(client)
+
+
+def apply_metadata_filter(
+    runs_iter: Any,
+    metadata_filters: tuple[str, ...],
+) -> Any:
+    """Apply client-side metadata wildcard filters to a run iterator/list.
+
+    Accesses run.extra["metadata"] for each run. Filters are in "key=value" or
+    "key=value*" format, where value supports fnmatch wildcards (* and ?).
+
+    Args:
+        runs_iter: Iterable of Run objects
+        metadata_filters: Tuple of "key=value[*]" strings
+
+    Returns:
+        Generator of matching Run objects
+    """
+    import fnmatch
+
+    if not metadata_filters:
+        return runs_iter
+
+    parsed: list[tuple[str, str]] = []
+    for mf in metadata_filters:
+        key, value = mf.split("=", 1)
+        parsed.append((key, value))
+
+    def _matches(run: Any) -> bool:
+        meta: dict[str, Any] = (getattr(run, "extra", None) or {}).get("metadata", {})
+        for key, pattern in parsed:
+            val = str(meta.get(key, ""))
+            if not fnmatch.fnmatch(val, pattern):
+                return False
+        return True
+
+    return (r for r in runs_iter if _matches(r))

@@ -50,7 +50,9 @@ def cache_group():
 )
 @click.option(
     "--name-pattern",
-    help="Only cache runs whose name matches this wildcard pattern (e.g. 'Gigaverse_Daily_Standup', '*standup*'). Client-side filter applied during streaming.",
+    help="Only cache runs whose run name matches this pattern (e.g. 'Gigaverse_Daily_Standup' or '*standup*'). "
+    "Exact names use server-side FQL (fast). Wildcard patterns (* ?) filter client-side. "
+    "Filters by the run's name field — not by metadata, tags, or content.",
 )
 @click.option(
     "--full",
@@ -102,14 +104,17 @@ def cache_download(
         # Cache only LLM runs
         langsmith-cli runs cache download --project-name-pattern "prd/*" --run-type llm
 
-        # Cache only runs matching a name pattern (e.g. a specific channel/standup)
-        langsmith-cli runs cache download --project dev/namedrop_service --name-pattern "Gigaverse_Daily_Standup" --since 2026-01-15 --before 2026-01-29
+        # Cache only runs with a specific run name (exact → server-side FQL)
+        langsmith-cli runs cache download --project dev/namedrop_service --name-pattern "FACTCHECK" --since 2026-01-15 --before 2026-01-29
 
-        # Download only runs from a specific channel (exact match, server-side)
+        # Cache runs whose name matches a wildcard (client-side, downloads all then filters)
+        langsmith-cli runs cache download --project dev/namedrop_service --name-pattern "*CHECK*"
+
+        # Download only runs from a specific channel (metadata, exact → server-side FQL)
         langsmith-cli runs cache download --project dev/namedrop_service --metadata channel_id=Gigaverse_Daily_Standup
 
-        # Download runs from channels matching a wildcard (client-side filter)
-        langsmith-cli runs cache download --project dev/namedrop_service --metadata "channel_id=Gigaverse_Daily_Standup*"
+        # Download runs from channels matching a wildcard (metadata wildcard → client-side)
+        langsmith-cli runs cache download --project dev/namedrop_service --metadata "channel_id=Gigaverse*"
     """
     import time
     from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -149,6 +154,15 @@ def cache_download(
         base_filters.append(additional_filter)
     if run_type:
         base_filters.append(f'eq(run_type, "{run_type}")')
+
+    # Run name filtering: exact name → FQL (server-side); wildcards → client-side
+    # LangSmith FQL has no like()/regex operator for names, only eq() exact match.
+    name_pattern_client: str | None = None
+    if name_pattern:
+        if "*" in name_pattern or "?" in name_pattern:
+            name_pattern_client = name_pattern  # must filter client-side
+        else:
+            base_filters.append(f'eq(name, "{name_pattern}")')  # server-side
 
     # Metadata filtering: exact values → FQL (server-side); wildcards → client-side
     server_meta, client_meta = partition_metadata_filters(metadata_filters)
@@ -228,12 +242,14 @@ def cache_download(
                 limit=None,
             )
 
-            # Apply client-side name filter if requested
-            if name_pattern:
+            # Apply client-side name wildcard filter (only when pattern has * or ?)
+            if name_pattern_client:
                 import fnmatch
 
                 runs_iter = (
-                    r for r in runs_iter if fnmatch.fnmatch(r.name or "", name_pattern)
+                    r
+                    for r in runs_iter
+                    if fnmatch.fnmatch(r.name or "", name_pattern_client)
                 )
 
             # Apply client-side metadata wildcard filter if needed
