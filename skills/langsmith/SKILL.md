@@ -104,6 +104,7 @@ langsmith-cli --json runs get <id> --fields inputs,outputs,error
 | Run stats | `langsmith-cli --json runs stats --project <name>` |
 | List datasets | `langsmith-cli --json datasets list --fields id,name` |
 | List prompts | `langsmith-cli --json prompts list --fields repo_handle,description` |
+| Open run in browser | Construct URL manually — see **LangSmith URLs** section below |
 
 ---
 
@@ -157,6 +158,32 @@ When your task matches one of the sections below, **you MUST load that reference
 ### → Read [references/troubleshooting.md](references/troubleshooting.md) when:
 - CLI commands fail, return unexpected results, or produce authentication errors
 - You see rate limit errors and want strategies to work around them
+
+---
+
+## LangSmith URLs
+
+**`runs open` generates broken URLs.** Build trace URLs manually using the project's `id` and `tenant_id`:
+
+```bash
+# Step 1: Get org ID (tenant_id) and project ID
+langsmith-cli --json projects get "dev/my-project" --fields id,tenant_id
+
+# Step 2: Build the URL
+# https://smith.langchain.com/o/{tenant_id}/projects/p/{project_id}?peek={run_id}&peeked_trace={trace_id}
+```
+
+**Example:**
+```python
+org_id = "b658ea18-0431-42c0-8d03-337d43fed8cf"   # tenant_id from projects get
+proj_id = "730acc6c-ec97-4f08-915e-7d3f7f775300"  # id from projects get
+
+url = f"https://smith.langchain.com/o/{org_id}/projects/p/{proj_id}?peek={run_id}&peeked_trace={trace_id}"
+```
+
+- `peek` = the specific **run** ID to open in the side panel
+- `peeked_trace` = the **trace** (root run) ID it belongs to
+- Both IDs come from your search results (`run.id` and `run.trace_id`)
 
 ---
 
