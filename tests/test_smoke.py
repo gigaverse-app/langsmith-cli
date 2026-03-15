@@ -113,15 +113,21 @@ def shared_test_project():
     return None
 
 
+SHARED_DATASET_NAME = "smoke-test-shared"
+
+
 @pytest.fixture(scope="session")
 def shared_test_dataset():
     """Create one dataset for all smoke tests to share, then clean up.
 
-    This avoids creating multiple datasets and reduces API calls.
-    Uses yield fixture to ensure cleanup even if tests fail.
+    Uses a fixed name (not random) so interrupted runs don't leave orphans —
+    the next run will reuse the same dataset rather than creating a new one.
+    Pre-test cleanup deletes any stale dataset from a previous interrupted run.
     """
-    dataset_name = f"smoke-test-shared-{os.urandom(4).hex()}"
-    exit_code, stdout, _ = run_cli("--json", "datasets", "create", dataset_name)
+    # Delete any existing stale dataset from a previous interrupted run
+    run_cli("--json", "datasets", "delete", SHARED_DATASET_NAME, "--confirm")
+
+    exit_code, stdout, _ = run_cli("--json", "datasets", "create", SHARED_DATASET_NAME)
 
     data = None
     if exit_code == 0:
@@ -129,9 +135,8 @@ def shared_test_dataset():
 
     yield data if data else None
 
-    # Teardown: delete the dataset to prevent orphans
-    if data and data.get("id"):
-        run_cli("--json", "datasets", "delete", data["id"], "--confirm")
+    # Teardown: delete the dataset after all tests finish
+    run_cli("--json", "datasets", "delete", SHARED_DATASET_NAME, "--confirm")
 
 
 @pytest.fixture(scope="session")
