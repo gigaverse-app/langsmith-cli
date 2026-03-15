@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **langsmith-cli** is a context-efficient CLI tool for LangSmith that serves as both a standalone developer tool and a Claude Code plugin. It replaces heavy MCP servers with lightweight, on-demand skills while providing 100% feature parity plus superior features.
 
+**To understand how to use this tool**, read the skill definition at `skills/langsmith/SKILL.md` and its reference files under `skills/langsmith/references/`. The skill teaches agents how to use the CLI efficiently (cache-first workflow, mandatory flags, field pruning, etc.).
+
 **Key Design Philosophy:**
 - **Lazy Loading**: Heavy imports (langsmith, rich) only load when commands execute
 - **Context Efficiency**: Field pruning (`--fields`) reduces token usage by ~90%

@@ -92,6 +92,7 @@ langsmith-cli --json runs get <id> --fields inputs,outputs,error
 |------|---------|
 | List recent runs | `langsmith-cli --json runs list --project <name> --limit 10 --fields id,name,status` |
 | Get a single run | `langsmith-cli --json runs get <id> --fields inputs,outputs,error` |
+| Get run + child outputs | `langsmith-cli --json runs get <id> --follow-children --fields id,name,inputs,outputs` |
 | Get latest run | `langsmith-cli --json runs get-latest --project <name> --fields inputs,outputs` |
 | Get latest error | `langsmith-cli --json runs get-latest --project <name> --failed --fields id,name,error` |
 | Search run content | `langsmith-cli --json runs list --grep "pattern" --grep-in outputs --limit 20` |

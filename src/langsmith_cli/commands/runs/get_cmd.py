@@ -29,14 +29,49 @@ from langsmith_cli.utils import (
     "Comma-separated field names to include (e.g., 'id,name,inputs,error'). Reduces context usage."
 )
 @output_option()
+@click.option(
+    "--follow-children",
+    is_flag=True,
+    help=(
+        "When the run has null outputs (e.g. a RunnableSequence parent), "
+        "also fetch and include child runs from the same trace. "
+        "Useful for LangChain chains where LLM outputs live in child runs."
+    ),
+)
 @click.pass_context
-def get_run(ctx, run_id, fields, output):
-    """Fetch details of a single run."""
+def get_run(ctx, run_id, fields, output, follow_children):
+    """Fetch details of a single run.
+
+    Use --follow-children when the run is a parent chain (e.g. RunnableSequence)
+    whose outputs are null — the actual LLM outputs live in child runs.
+
+    Examples:
+        langsmith-cli --json runs get <id> --fields inputs,outputs
+        langsmith-cli --json runs get <id> --follow-children --fields id,name,inputs,outputs
+    """
     client = get_or_create_client(ctx)
     run = client.read_run(run_id)
 
-    data = filter_fields(run, fields)
-    output_single_item(ctx, data, console, output=output, render_fn=render_run_details)
+    if follow_children:
+        trace_id = run.trace_id or run.id
+        children = list(
+            client.list_runs(
+                trace_id=str(trace_id),
+                execution_order=[2, None],  # skip root (order=1)
+            )
+        )
+        children.sort(key=lambda r: (r.execution_order or 0, r.start_time or ""))
+        child_data = [filter_fields(c, fields) for c in children]
+        data = filter_fields(run, fields)
+        data["_children"] = child_data
+        output_single_item(
+            ctx, data, console, output=output, render_fn=render_run_details
+        )
+    else:
+        data = filter_fields(run, fields)
+        output_single_item(
+            ctx, data, console, output=output, render_fn=render_run_details
+        )
 
 
 @runs.command("get-latest")
