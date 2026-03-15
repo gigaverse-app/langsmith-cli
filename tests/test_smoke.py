@@ -113,21 +113,24 @@ def shared_test_project():
     return None
 
 
-SHARED_DATASET_NAME = "smoke-test-shared"
-
-
 @pytest.fixture(scope="session")
-def shared_test_dataset():
-    """Create one dataset for all smoke tests to share, then clean up.
+def shared_test_dataset(request):
+    """Create one dataset per session (per xdist worker) and clean up after.
 
-    Uses a fixed name (not random) so interrupted runs don't leave orphans —
-    the next run will reuse the same dataset rather than creating a new one.
-    Pre-test cleanup deletes any stale dataset from a previous interrupted run.
+    Uses a deterministic name based on the xdist worker ID so:
+    - Without xdist: name is `smoke-test-shared-main` (one dataset)
+    - With xdist N workers: names are `smoke-test-shared-gw0`, ..., `smoke-test-shared-gwN`
+
+    This bounds orphans to at most N datasets (one per worker), and the
+    pre-test delete ensures stale ones from interrupted runs are cleaned up.
     """
-    # Delete any existing stale dataset from a previous interrupted run
-    run_cli("--json", "datasets", "delete", SHARED_DATASET_NAME, "--confirm")
+    worker_id = getattr(request.config, "workerinput", {}).get("workerid", "main")
+    dataset_name = f"smoke-test-shared-{worker_id}"
 
-    exit_code, stdout, _ = run_cli("--json", "datasets", "create", SHARED_DATASET_NAME)
+    # Delete any stale dataset from a previous interrupted run
+    run_cli("--json", "datasets", "delete", dataset_name, "--confirm")
+
+    exit_code, stdout, _ = run_cli("--json", "datasets", "create", dataset_name)
 
     data = None
     if exit_code == 0:
@@ -135,8 +138,8 @@ def shared_test_dataset():
 
     yield data if data else None
 
-    # Teardown: delete the dataset after all tests finish
-    run_cli("--json", "datasets", "delete", SHARED_DATASET_NAME, "--confirm")
+    # Teardown: delete after all tests in this worker's session finish
+    run_cli("--json", "datasets", "delete", dataset_name, "--confirm")
 
 
 @pytest.fixture(scope="session")
