@@ -23,16 +23,7 @@ def open_run(ctx, run_id):
     client = get_or_create_client(ctx)
 
     run = client.read_run(run_id)
-    project = client.read_project(project_id=run.session_id)
-
-    org_id = project.tenant_id
-    project_id = run.session_id
-    trace_id = run.trace_id or run.id
-
-    url = (
-        f"https://smith.langchain.com/o/{org_id}/projects/p/{project_id}"
-        f"?peek={run_id}&peeked_trace={trace_id}"
-    )
+    url = client.get_run_url(run=run)
 
     if ctx.obj.get("json"):
         click.echo(json_dumps({"run_id": run_id, "url": url}))
