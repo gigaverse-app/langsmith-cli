@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from collections.abc import Sequence
 from typing import Any
 
+from pydantic import BaseModel, Field
+
 # Language detection constants
 LANG_DETECT_SAMPLE_SIZE = 500  # chars per field value
 LANG_DETECT_MIN_LENGTH = 30  # minimum chars to attempt detection
@@ -80,11 +82,12 @@ class FieldStats:
         return result
 
 
-@dataclass
-class SchemaNode:
+class SchemaNode(BaseModel):
     """A node in the inferred schema tree."""
 
-    field_type: str  # "string", "int", "float", "bool", "list", "dict", "null", "mixed"
+    field_type: str = Field(
+        serialization_alias="type"
+    )  # "string", "int", "float", "bool", "list", "dict", "null", "mixed"
     present: int = 0
     sample: str | None = None
     children: dict[str, SchemaNode] | None = None  # for dict fields
@@ -175,22 +178,10 @@ def filter_schema_by_paths(
 
 def schema_to_dict(schema: dict[str, SchemaNode]) -> dict[str, Any]:
     """Convert SchemaNode tree to plain dict for JSON serialization."""
-    result: dict[str, Any] = {}
-    for key, node in schema.items():
-        entry: dict[str, Any] = {
-            "type": node.field_type,
-            "present": node.present,
-        }
-        if node.sample is not None:
-            entry["sample"] = node.sample
-        if node.children:
-            entry["children"] = schema_to_dict(node.children)
-        if node.element_type:
-            entry["element_type"] = node.element_type
-        if node.element_children:
-            entry["element_children"] = schema_to_dict(node.element_children)
-        result[key] = entry
-    return result
+    return {
+        key: node.model_dump(exclude_none=True, by_alias=True)
+        for key, node in schema.items()
+    }
 
 
 def extract_nested_fields(
