@@ -381,6 +381,36 @@ def clear_cache(project_name: str | None = None) -> int:
     return deleted
 
 
+def sample_raw_json_lines(
+    project_name: str,
+    n: int = 20,
+) -> list[dict[str, Any]]:
+    """Read up to N raw JSON lines from a project's JSONL cache file.
+
+    Returns parsed dicts (not Run objects) to preserve all fields and
+    avoid validation overhead.
+
+    Raises:
+        FileNotFoundError: If no cache file exists for the project.
+    """
+    cache_path = get_cache_path(project_name)
+    if not cache_path.exists():
+        raise FileNotFoundError(f"No cache found for {project_name!r}")
+
+    samples: list[dict[str, Any]] = []
+    for line in cache_path.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            samples.append(json.loads(line))
+        except Exception:
+            continue
+        if len(samples) >= n:
+            break
+    return samples
+
+
 def list_cached_projects() -> list[CacheMetadata]:
     """List all cached projects that have a metadata sidecar."""
     cache_dir = get_cache_dir()

@@ -1,5 +1,7 @@
 """Field analysis utilities for runs fields and runs describe commands."""
 
+from __future__ import annotations
+
 from collections import Counter
 from dataclasses import dataclass, field
 from collections.abc import Sequence
@@ -76,6 +78,119 @@ class FieldStats:
             result["sample"] = self.sample
 
         return result
+
+
+@dataclass
+class SchemaNode:
+    """A node in the inferred schema tree."""
+
+    field_type: str  # "string", "int", "float", "bool", "list", "dict", "null", "mixed"
+    present: int = 0
+    sample: str | None = None
+    children: dict[str, SchemaNode] | None = None  # for dict fields
+    element_type: str | None = None  # for list fields
+    element_children: dict[str, SchemaNode] | None = None  # for list[dict] fields
+
+
+def _merge_into_schema(
+    schema: dict[str, SchemaNode],
+    data: dict[str, Any],
+    max_depth: int,
+    _depth: int = 0,
+) -> None:
+    """Merge a single sample dict into the schema tree."""
+    if _depth >= max_depth:
+        return
+
+    for key, value in data.items():
+        vtype = get_value_type(value)
+
+        if key not in schema:
+            schema[key] = SchemaNode(field_type=vtype)
+
+        node = schema[key]
+        node.present += 1
+
+        # Update type if mixed
+        if node.field_type != vtype and vtype != "null":
+            if node.field_type == "null":
+                node.field_type = vtype
+            elif node.field_type != vtype:
+                node.field_type = "mixed"
+
+        # Recurse into dicts
+        if isinstance(value, dict) and value:
+            if node.children is None:
+                node.children = {}
+            node.field_type = "dict"
+            _merge_into_schema(node.children, value, max_depth, _depth + 1)
+
+        # Inspect list elements
+        elif isinstance(value, list) and value:
+            node.field_type = "list"
+            # Determine element type from first non-null element
+            for elem in value:
+                elem_type = get_value_type(elem)
+                if elem_type == "null":
+                    continue
+                if node.element_type is None:
+                    node.element_type = elem_type
+                elif node.element_type != elem_type:
+                    node.element_type = "mixed"
+                # For list[dict], merge element children
+                if isinstance(elem, dict) and elem:
+                    if node.element_children is None:
+                        node.element_children = {}
+                    _merge_into_schema(
+                        node.element_children, elem, max_depth, _depth + 1
+                    )
+
+        # Capture sample for leaf nodes
+        if node.sample is None and vtype not in ("dict", "list", "null"):
+            s = str(value)
+            node.sample = s[:50] + "..." if len(s) > 50 else s
+
+
+def infer_schema(
+    samples: list[dict[str, Any]],
+    max_depth: int = 8,
+) -> dict[str, SchemaNode]:
+    """Infer a hierarchical schema from a list of sample JSON dicts.
+
+    Walks all samples, merging field structures into a unified schema tree.
+    """
+    schema: dict[str, SchemaNode] = {}
+    for sample in samples:
+        _merge_into_schema(schema, sample, max_depth)
+    return schema
+
+
+def filter_schema_by_paths(
+    schema: dict[str, SchemaNode],
+    include_paths: list[str],
+) -> dict[str, SchemaNode]:
+    """Filter schema tree to only include specified top-level paths."""
+    return {k: v for k, v in schema.items() if k in include_paths}
+
+
+def schema_to_dict(schema: dict[str, SchemaNode]) -> dict[str, Any]:
+    """Convert SchemaNode tree to plain dict for JSON serialization."""
+    result: dict[str, Any] = {}
+    for key, node in schema.items():
+        entry: dict[str, Any] = {
+            "type": node.field_type,
+            "present": node.present,
+        }
+        if node.sample is not None:
+            entry["sample"] = node.sample
+        if node.children:
+            entry["children"] = schema_to_dict(node.children)
+        if node.element_type:
+            entry["element_type"] = node.element_type
+        if node.element_children:
+            entry["element_children"] = schema_to_dict(node.element_children)
+        result[key] = entry
+    return result
 
 
 def extract_nested_fields(

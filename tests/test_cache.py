@@ -3,11 +3,12 @@
 import json
 from datetime import datetime, timezone
 from decimal import Decimal
+from typing import Any
 from uuid import UUID
 
 from langsmith.schemas import Run
 
-from conftest import make_run_id, strip_ansi
+from conftest import make_run_id, parse_json_output, strip_ansi
 from langsmith_cli.cache import (
     CacheMetadata,
     append_runs_streaming,
@@ -20,9 +21,16 @@ from langsmith_cli.cache import (
     read_cache_metadata,
     read_cached_runs,
     repair_cache_metadata,
+    sample_raw_json_lines,
     sanitize_project_name,
     strip_binary_data,
     write_cache_metadata,
+)
+from langsmith_cli.field_analysis import (
+    SchemaNode,
+    filter_schema_by_paths,
+    infer_schema,
+    schema_to_dict,
 )
 from langsmith_cli.main import cli
 
@@ -1437,3 +1445,286 @@ class TestCacheGrepOrphanWarning:
         assert result.exit_code == 0
         output = strip_ansi(result.output)
         assert "repair" in output.lower()
+
+
+# Schema inference tests
+
+
+class TestInferSchema:
+    def test_flat_fields_produce_correct_types(self):
+        """INVARIANT: Flat fields produce SchemaNodes with correct types."""
+        samples = [{"name": "run-1", "latency": 1.5, "tokens": 100, "ok": True}]
+        schema = infer_schema(samples)
+        assert schema["name"].field_type == "string"
+        assert schema["latency"].field_type == "float"
+        assert schema["tokens"].field_type == "int"
+        assert schema["ok"].field_type == "bool"
+
+    def test_nested_dict_produces_children(self):
+        """INVARIANT: Nested dicts produce SchemaNodes with children."""
+        samples = [{"outputs": {"result": "hello", "score": 0.95}}]
+        schema = infer_schema(samples)
+        assert schema["outputs"].field_type == "dict"
+        assert schema["outputs"].children is not None
+        assert schema["outputs"].children["result"].field_type == "string"
+        assert schema["outputs"].children["score"].field_type == "float"
+
+    def test_list_of_dicts_shows_element_schema(self):
+        """INVARIANT: Lists of dicts produce element_children with merged schema."""
+        samples = [
+            {"items": [{"name": "a", "val": 1}, {"name": "b", "val": 2}]},
+            {"items": [{"name": "c", "extra": True}]},
+        ]
+        schema = infer_schema(samples)
+        assert schema["items"].field_type == "list"
+        assert schema["items"].element_type == "dict"
+        assert schema["items"].element_children is not None
+        assert "name" in schema["items"].element_children
+        assert "val" in schema["items"].element_children
+        assert "extra" in schema["items"].element_children
+
+    def test_presence_counting(self):
+        """INVARIANT: present count reflects how many samples have the field."""
+        samples = [{"a": 1, "b": 2}, {"a": 3}, {"a": 5, "b": 6}]
+        schema = infer_schema(samples)
+        assert schema["a"].present == 3
+        assert schema["b"].present == 2
+
+    def test_max_depth_limits_recursion(self):
+        """INVARIANT: Recursion stops at max_depth — deeper levels are not explored."""
+        deeply_nested = {"a": {"b": {"c": {"d": {"e": "deep"}}}}}
+        schema = infer_schema([deeply_nested], max_depth=3)
+        assert schema["a"].children is not None
+        assert schema["a"].children["b"].children is not None
+        # At depth 3, "c" is dict but "d" is not explored
+        c_node = schema["a"].children["b"].children["c"]
+        assert c_node.field_type == "dict"
+        assert "d" not in (c_node.children or {})
+
+    def test_sample_value_captured_for_leaves(self):
+        """INVARIANT: Leaf nodes capture a sample value."""
+        samples = [{"text": "hello world"}]
+        schema = infer_schema(samples)
+        assert schema["text"].sample == "hello world"
+
+    def test_long_sample_truncated(self):
+        """INVARIANT: Long sample strings are truncated."""
+        samples = [{"text": "x" * 200}]
+        schema = infer_schema(samples)
+        assert schema["text"].sample is not None
+        assert len(schema["text"].sample) <= 53  # 50 + "..."
+
+    def test_null_field_type(self):
+        """INVARIANT: Fields that are always None show as null type."""
+        samples = [{"error": None}, {"error": None}]
+        schema = infer_schema(samples)
+        assert schema["error"].field_type == "null"
+
+    def test_mixed_types(self):
+        """INVARIANT: Fields with mixed non-null types show as mixed."""
+        samples = [{"val": 42}, {"val": "hello"}]
+        schema = infer_schema(samples)
+        assert schema["val"].field_type == "mixed"
+
+    def test_empty_list_shows_no_element_type(self):
+        """INVARIANT: Empty lists don't set element_type."""
+        samples = [{"items": []}]
+        schema = infer_schema(samples)
+        assert schema["items"].field_type == "list"
+        assert schema["items"].element_type is None
+
+
+class TestFilterSchemaByPaths:
+    def test_filters_to_specified_paths(self):
+        """INVARIANT: Only specified top-level keys are kept."""
+        schema = {
+            "id": SchemaNode(field_type="string", present=1),
+            "name": SchemaNode(field_type="string", present=1),
+            "outputs": SchemaNode(field_type="dict", present=1),
+        }
+        filtered = filter_schema_by_paths(schema, ["outputs"])
+        assert list(filtered.keys()) == ["outputs"]
+
+    def test_empty_include_returns_empty(self):
+        """INVARIANT: Empty include list returns nothing."""
+        schema = {"id": SchemaNode(field_type="string", present=1)}
+        assert filter_schema_by_paths(schema, []) == {}
+
+
+class TestSchemaToDict:
+    def test_converts_flat_schema(self):
+        """INVARIANT: Flat schema converts to plain dict with type and present."""
+        schema = {
+            "id": SchemaNode(field_type="string", present=5, sample="abc-123"),
+        }
+        result = schema_to_dict(schema)
+        assert result["id"]["type"] == "string"
+        assert result["id"]["present"] == 5
+        assert result["id"]["sample"] == "abc-123"
+
+    def test_converts_nested_schema(self):
+        """INVARIANT: Nested children are recursively converted."""
+        schema = {
+            "outputs": SchemaNode(
+                field_type="dict",
+                present=3,
+                children={"result": SchemaNode(field_type="string", present=3)},
+            ),
+        }
+        result = schema_to_dict(schema)
+        assert result["outputs"]["children"]["result"]["type"] == "string"
+
+
+class TestSampleRawJsonLines:
+    def test_reads_n_lines(self, tmp_path, monkeypatch):
+        """INVARIANT: Returns at most N parsed dicts."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+        runs = [_make_run(i) for i in range(1, 11)]
+        append_runs_to_cache("test-project", runs)
+
+        samples = sample_raw_json_lines("test-project", n=3)
+        assert len(samples) == 3
+        assert isinstance(samples[0], dict)
+
+    def test_raises_for_missing_project(self, tmp_path, monkeypatch):
+        """INVARIANT: FileNotFoundError for non-existent cache."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+        import pytest
+
+        with pytest.raises(FileNotFoundError):
+            sample_raw_json_lines("nonexistent")
+
+    def test_returns_empty_for_empty_file(self, tmp_path, monkeypatch):
+        """INVARIANT: Empty JSONL returns empty list."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+        (tmp_path / "empty.jsonl").write_text("")
+        assert sample_raw_json_lines("empty") == []
+
+
+class TestCacheSchemaCommand:
+    def _make_run_with_outputs(
+        self, n: int, outputs: dict[str, Any] | None = None
+    ) -> Run:
+        return Run(
+            id=UUID(make_run_id(n)),
+            name=f"run-{n}",
+            run_type="chain",
+            start_time=datetime(2026, 3, 9, 16, 0, 0, tzinfo=timezone.utc),
+            inputs={"query": f"question-{n}"},
+            outputs=outputs or {"result": f"answer-{n}", "score": 0.95},
+            extra={"metadata": {"ls_model_name": "gpt-4"}},
+        )
+
+    def test_schema_json_output(self, runner, tmp_path, monkeypatch):
+        """INVARIANT: --json outputs valid JSON with schema tree."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+        runs = [self._make_run_with_outputs(i) for i in range(1, 4)]
+        append_runs_to_cache("test-project", runs)
+
+        result = runner.invoke(
+            cli, ["--json", "runs", "cache", "schema", "--project", "test-project"]
+        )
+        assert result.exit_code == 0
+        data = parse_json_output(result.output)
+        assert data["sample_size"] == 3
+        assert "schema" in data
+        assert "outputs" in data["schema"]
+
+    def test_schema_human_output(self, runner, tmp_path, monkeypatch):
+        """INVARIANT: Human output shows a tree with field names."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+        runs = [self._make_run_with_outputs(1)]
+        append_runs_to_cache("test-project", runs)
+
+        result = runner.invoke(
+            cli, ["runs", "cache", "schema", "--project", "test-project"]
+        )
+        assert result.exit_code == 0
+        plain = strip_ansi(result.output)
+        assert "outputs" in plain
+        assert "result" in plain
+
+    def test_schema_include_filter(self, runner, tmp_path, monkeypatch):
+        """INVARIANT: --include filters to only specified top-level paths."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+        runs = [self._make_run_with_outputs(1)]
+        append_runs_to_cache("test-project", runs)
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "cache",
+                "schema",
+                "--project",
+                "test-project",
+                "--include",
+                "outputs",
+            ],
+        )
+        assert result.exit_code == 0
+        data = parse_json_output(result.output)
+        assert "outputs" in data["schema"]
+        assert "id" not in data["schema"]
+        assert "inputs" not in data["schema"]
+
+    def test_schema_no_cache_error(self, runner, tmp_path, monkeypatch):
+        """INVARIANT: Missing cache file produces a friendly error."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+        result = runner.invoke(
+            cli, ["runs", "cache", "schema", "--project", "nonexistent"]
+        )
+        assert result.exit_code != 0
+        assert "no cache" in result.output.lower()
+
+    def test_schema_empty_cache(self, runner, tmp_path, monkeypatch):
+        """INVARIANT: Empty cache file produces an error."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+        (tmp_path / "empty.jsonl").write_text("")
+        result = runner.invoke(cli, ["runs", "cache", "schema", "--project", "empty"])
+        assert result.exit_code != 0
+        assert "empty" in result.output.lower()
+
+    def test_schema_shows_nested_entities(self, runner, tmp_path, monkeypatch):
+        """INVARIANT: Schema reveals nested list[dict] structure like extracted_entities."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+        runs = [
+            self._make_run_with_outputs(
+                1,
+                outputs={
+                    "output": {
+                        "extracted_entities": [
+                            {
+                                "canonical_full_name": "Test Entity",
+                                "entity_type": "Person",
+                                "llm_recognition": True,
+                            }
+                        ]
+                    }
+                },
+            )
+        ]
+        append_runs_to_cache("test-project", runs)
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "cache",
+                "schema",
+                "--project",
+                "test-project",
+                "--include",
+                "outputs",
+            ],
+        )
+        assert result.exit_code == 0
+        data = parse_json_output(result.output)
+        entities = data["schema"]["outputs"]["children"]["output"]["children"][
+            "extracted_entities"
+        ]
+        assert entities["type"] == "list"
+        assert entities["element_type"] == "dict"
+        assert "canonical_full_name" in entities["element_children"]

@@ -99,6 +99,7 @@ langsmith-cli --json runs get <id> --fields inputs,outputs,error
 | Search cached runs | `langsmith-cli runs cache grep "pattern" -E --grep-in outputs --project <name>` |
 | Download cache | `langsmith-cli --json runs cache download --project <name> --last 7d` |
 | List cache | `langsmith-cli runs cache list` |
+| Discover cache schema | `langsmith-cli --json runs cache schema --project <name> --include outputs` |
 | Analyze token costs | `langsmith-cli --json runs usage --from-cache --breakdown model --active-only` |
 | List projects | `langsmith-cli --json projects list --name-pattern "dev/*" --fields name` |
 | Count runs | `langsmith-cli --json runs list --project <name> --count` |
@@ -155,6 +156,12 @@ When your task matches one of the sections below, **you MUST load that reference
 - You want end-to-end workflow examples (debugging, dataset management, production monitoring)
 - You want common patterns without having to piece together flags yourself
 - You need to **search for recognized entities in extraction chain outputs** (e.g. find all runs where "Niklas" was recognized as a known entity in `extracted_entities`) — there's a complete recipe covering cache download, Python JSONL scanning, deduplication of sub-runs, and `llm_recognition` filtering
+
+### → Read [references/cache-recipes.md](references/cache-recipes.md) when:
+- You need to discover the nested structure of cached run data (inputs/outputs schema)
+- You want to query cached JSONL data with Python one-liners or DuckDB SQL
+- You need to extract, sort, or aggregate structured outputs from cached runs
+- You need to find specific entities, values, or patterns in nested output fields
 
 ### → Read [references/troubleshooting.md](references/troubleshooting.md) when:
 - CLI commands fail, return unexpected results, or produce authentication errors

@@ -595,6 +595,137 @@ def cache_repair(ctx: click.Context, project: str | None) -> None:
             logger.warning(f"Failed to repair '{stem}': {e}")
 
 
+@cache_group.command("schema")
+@click.option("--project", required=True, help="Cached project name.")
+@click.option(
+    "--sample-size",
+    default=20,
+    type=int,
+    help="Number of runs to sample (default: 20).",
+)
+@click.option(
+    "--include",
+    type=str,
+    help="Only show fields starting with these paths (comma-separated, e.g., 'inputs,outputs').",
+)
+@click.option(
+    "--max-depth",
+    default=8,
+    type=int,
+    help="Maximum nesting depth to display (default: 8).",
+)
+@click.pass_context
+def cache_schema(
+    ctx: click.Context,
+    project: str,
+    sample_size: int,
+    include: str | None,
+    max_depth: int,
+) -> None:
+    """Discover the nested structure of cached run data.
+
+    Samples N runs from the cache and infers the schema of all fields,
+    showing types, presence counts, and sample values. Useful for
+    understanding the structure of inputs/outputs before writing queries.
+
+    Examples:
+        # Show full schema
+        langsmith-cli runs cache schema --project dev/namedrop_service
+
+        # Show only inputs and outputs structure
+        langsmith-cli runs cache schema --project dev/namedrop_service --include inputs,outputs
+
+        # JSON output for agents
+        langsmith-cli --json runs cache schema --project dev/namedrop_service --include outputs
+    """
+    from langsmith_cli.cache import sample_raw_json_lines
+    from langsmith_cli.field_analysis import (
+        SchemaNode,
+        filter_schema_by_paths,
+        infer_schema,
+        schema_to_dict,
+    )
+
+    logger = ctx.obj["logger"]
+    is_json = ctx.obj.get("json", False)
+    logger.use_stderr = is_json
+
+    try:
+        samples = sample_raw_json_lines(project, n=sample_size)
+    except FileNotFoundError:
+        raise click.ClickException(
+            f"No cache found for '{project}'. Run 'runs cache download' first."
+        )
+
+    if not samples:
+        raise click.ClickException(
+            f"Cache for '{project}' is empty. Run 'runs cache download' first."
+        )
+
+    schema = infer_schema(samples, max_depth=max_depth)
+
+    if include:
+        include_paths = [p.strip() for p in include.split(",") if p.strip()]
+        schema = filter_schema_by_paths(schema, include_paths)
+
+    actual_sample_size = len(samples)
+
+    if is_json:
+        data = {
+            "project": project,
+            "sample_size": actual_sample_size,
+            "schema": schema_to_dict(schema),
+        }
+        click.echo(json.dumps(data, default=str))
+        return
+
+    # Human-readable: Rich Tree
+    from rich.tree import Tree
+
+    tree = Tree(
+        f"[bold cyan]Schema for {project}[/bold cyan] "
+        f"({actual_sample_size} runs sampled)"
+    )
+
+    def _add_node(parent: Tree, name: str, node: SchemaNode, total: int) -> None:
+        """Recursively add schema nodes to the tree."""
+        presence = f"{node.present}/{total}"
+        sample_str = f'  "{node.sample}"' if node.sample else ""
+
+        if node.field_type == "dict" and node.children:
+            branch = parent.add(f"[cyan]{name}[/cyan]: [dim]dict[/dim] ({presence})")
+            for child_name in sorted(node.children):
+                _add_node(branch, child_name, node.children[child_name], total)
+        elif node.field_type == "list" and node.element_children:
+            elem_type = node.element_type or "?"
+            branch = parent.add(
+                f"[cyan]{name}[/cyan]: [dim]list[{elem_type}][/dim] ({presence})"
+            )
+            for child_name in sorted(node.element_children):
+                _add_node(
+                    branch,
+                    f"[].{child_name}",
+                    node.element_children[child_name],
+                    total,
+                )
+        elif node.field_type == "list":
+            elem_type = node.element_type or "?"
+            parent.add(
+                f"[cyan]{name}[/cyan]: [dim]list[{elem_type}][/dim] "
+                f"({presence}){sample_str}"
+            )
+        else:
+            parent.add(
+                f"[cyan]{name}[/cyan]: [dim]{node.field_type}[/dim] "
+                f"({presence}){sample_str}"
+            )
+
+    for field_name in sorted(schema):
+        _add_node(tree, field_name, schema[field_name], actual_sample_size)
+
+    console.print(tree)
+
+
 @cache_group.command("grep")
 @click.argument("pattern")
 @click.option("--project", help="Search only a specific project's cache.")
