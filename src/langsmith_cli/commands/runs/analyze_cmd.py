@@ -263,11 +263,7 @@ def compute_metrics(
 
     # Cost metrics (if available in SDK)
     if "avg_cost" in requested_metrics:
-        costs = [
-            r.total_cost
-            for r in runs
-            if hasattr(r, "total_cost") and r.total_cost is not None
-        ]
+        costs = [r.total_cost for r in runs if r.total_cost is not None]
         result["avg_cost"] = float(statistics.mean(costs)) if costs else 0.0
 
     return result
