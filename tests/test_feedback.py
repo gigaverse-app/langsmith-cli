@@ -7,6 +7,8 @@ and produce valid output (table or JSON) backed by real Pydantic Feedback models
 
 from unittest.mock import patch
 
+from langsmith.utils import LangSmithNotFoundError
+
 from langsmith_cli.main import cli
 from conftest import create_feedback, strip_ansi, parse_json_output
 
@@ -192,3 +194,31 @@ def test_feedback_delete_with_confirm(runner):
         )
         assert result.exit_code == 0
         mock_client.delete_feedback.assert_called_once()
+
+
+def test_feedback_get_not_found(runner):
+    """INVARIANT: feedback get exits non-zero with ClickException when ID not found."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.read_feedback.side_effect = LangSmithNotFoundError("not found")
+        result = runner.invoke(
+            cli, ["feedback", "get", "11111111-1111-1111-1111-111111111111"]
+        )
+        assert result.exit_code != 0
+
+
+def test_feedback_delete_not_found(runner):
+    """INVARIANT: feedback delete exits non-zero with ClickException when ID not found."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.delete_feedback.side_effect = LangSmithNotFoundError("not found")
+        result = runner.invoke(
+            cli,
+            [
+                "feedback",
+                "delete",
+                "11111111-1111-1111-1111-111111111111",
+                "--confirm",
+            ],
+        )
+        assert result.exit_code != 0

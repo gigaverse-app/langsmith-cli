@@ -12,6 +12,8 @@ from datetime import timedelta
 from decimal import Decimal
 from unittest.mock import patch
 
+from langsmith.utils import LangSmithNotFoundError
+
 from langsmith_cli.main import cli
 from conftest import strip_ansi, parse_json_output
 
@@ -65,7 +67,8 @@ def test_experiments_results_shows_stats(runner):
         result = runner.invoke(cli, ["experiments", "results", "my-experiment"])
         assert result.exit_code == 0
         output = strip_ansi(result.output)
-        assert "42" in output or "correctness" in output
+        assert "42" in output
+        assert "correctness" in output
 
 
 def test_experiments_results_json(runner):
@@ -81,7 +84,8 @@ def test_experiments_results_json(runner):
         )
         assert result.exit_code == 0
         data = parse_json_output(result.output)
-        assert "run_stats" in data or "feedback_stats" in data
+        assert "run_stats" in data
+        assert "feedback_stats" in data
 
 
 def test_experiments_results_passes_name_to_sdk(runner):
@@ -96,3 +100,16 @@ def test_experiments_results_passes_name_to_sdk(runner):
         mock_client.get_experiment_results.assert_called_once()
         call_kwargs = mock_client.get_experiment_results.call_args[1]
         assert call_kwargs.get("name") == "my-specific-experiment"
+
+
+def test_experiments_results_not_found(runner):
+    """INVARIANT: experiments results exits non-zero when experiment name not found."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.get_experiment_results.side_effect = LangSmithNotFoundError(
+            "not found"
+        )
+        result = runner.invoke(
+            cli, ["experiments", "results", "nonexistent-experiment"]
+        )
+        assert result.exit_code != 0

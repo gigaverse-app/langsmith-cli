@@ -1,3 +1,6 @@
+from datetime import timedelta
+from decimal import Decimal
+
 import click
 from rich.console import Console
 from rich.table import Table
@@ -46,15 +49,14 @@ def results(ctx, name):
         # Serialize timedeltas and Decimals to JSON-safe values
         run_stats_json: dict = {}
         for k, v in run_stats.items():
-            if hasattr(v, "total_seconds"):
+            if isinstance(v, timedelta):
                 run_stats_json[k] = v.total_seconds()
             elif v is None:
                 run_stats_json[k] = None
+            elif isinstance(v, Decimal):
+                run_stats_json[k] = float(v)
             else:
-                try:
-                    run_stats_json[k] = float(v)
-                except (TypeError, ValueError):
-                    run_stats_json[k] = str(v)
+                run_stats_json[k] = v
         click.echo(
             json_dumps(
                 {

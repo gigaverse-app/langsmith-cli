@@ -1,9 +1,11 @@
 import click
 from rich.console import Console
 from rich.table import Table
+from langsmith.utils import LangSmithNotFoundError
 from langsmith_cli.utils import (
     configure_logger_streams,
     fields_option,
+    filter_fields,
     get_or_create_client,
     json_dumps,
     output_single_item,
@@ -80,14 +82,10 @@ def get_queue(ctx, queue_id, fields):
 
     client = get_or_create_client(ctx)
 
-    from langsmith.utils import LangSmithNotFoundError
-
     try:
         queue = client.read_annotation_queue(queue_id)
     except LangSmithNotFoundError:
         raise click.ClickException(f"Annotation queue '{queue_id}' not found.")
-
-    from langsmith_cli.utils import filter_fields
 
     data = filter_fields(queue, fields)
 
@@ -146,8 +144,6 @@ def update_queue(ctx, queue_id, name, description):
 
     client = get_or_create_client(ctx)
 
-    from langsmith.utils import LangSmithNotFoundError
-
     try:
         client.read_annotation_queue(queue_id)
     except LangSmithNotFoundError:
@@ -174,8 +170,6 @@ def delete_queue(ctx, queue_id, confirm):
     logger = ctx.obj["logger"]
     is_machine_readable = ctx.obj.get("json")
     logger.use_stderr = is_machine_readable
-
-    from langsmith.utils import LangSmithNotFoundError
 
     client = get_or_create_client(ctx)
 

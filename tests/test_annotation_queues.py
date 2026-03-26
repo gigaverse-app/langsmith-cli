@@ -7,6 +7,8 @@ reachable and produce valid output backed by real Pydantic AnnotationQueue model
 
 from unittest.mock import patch
 
+from langsmith.utils import LangSmithNotFoundError
+
 from langsmith_cli.main import cli
 from conftest import create_annotation_queue, strip_ansi, parse_json_output
 
@@ -180,3 +182,37 @@ def test_annotation_queues_delete_with_confirm(runner):
         )
         assert result.exit_code == 0
         mock_client.delete_annotation_queue.assert_called_once()
+
+
+def test_annotation_queues_get_not_found(runner):
+    """INVARIANT: annotation-queues get exits non-zero when queue ID not found."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.read_annotation_queue.side_effect = LangSmithNotFoundError(
+            "not found"
+        )
+        result = runner.invoke(
+            cli,
+            ["annotation-queues", "get", "33333333-3333-3333-3333-333333333333"],
+        )
+        assert result.exit_code != 0
+
+
+def test_annotation_queues_update_not_found(runner):
+    """INVARIANT: annotation-queues update exits non-zero when queue ID not found."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.read_annotation_queue.side_effect = LangSmithNotFoundError(
+            "not found"
+        )
+        result = runner.invoke(
+            cli,
+            [
+                "annotation-queues",
+                "update",
+                "33333333-3333-3333-3333-333333333333",
+                "--name",
+                "new-name",
+            ],
+        )
+        assert result.exit_code != 0
