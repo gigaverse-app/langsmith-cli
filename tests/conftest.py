@@ -12,8 +12,10 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from uuid import UUID, uuid4
 from langsmith.schemas import (
+    AnnotationQueue,
     Dataset,
     Example,
+    Feedback,
     ListedPromptCommit,
     Prompt,
     PromptCommit,
@@ -56,7 +58,7 @@ def strip_ansi(text: str) -> str:
     return unstyle(text)
 
 
-def parse_json_output(output: str) -> dict[str, Any]:
+def parse_json_output(output: str) -> Any:
     """Extract JSON from mixed stdout/stderr output.
 
     Click's CliRunner mixes stdout and stderr, so logger messages
@@ -336,6 +338,42 @@ def create_listed_prompt_commit(
         commit_hash=commit_hash,
         parent_commit_hash=parent_commit_hash,
         created_at=created_at,
+    )
+
+
+def create_feedback(
+    id_str: str = "11111111-1111-1111-1111-111111111111",
+    run_id: str = "22222222-2222-2222-2222-222222222222",
+    key: str = "correctness",
+    score: float | None = 0.9,
+    comment: str | None = "Great answer",
+) -> Feedback:
+    """Create a real Feedback Pydantic model instance."""
+    return Feedback(
+        id=UUID(id_str),
+        created_at=datetime(2024, 7, 3, tzinfo=timezone.utc),
+        modified_at=datetime(2024, 7, 3, tzinfo=timezone.utc),
+        run_id=UUID(run_id),
+        trace_id=None,
+        key=key,
+        score=score,
+        comment=comment,
+    )
+
+
+def create_annotation_queue(
+    id_str: str = "33333333-3333-3333-3333-333333333333",
+    name: str = "test-queue",
+    description: str | None = "Test annotation queue",
+) -> AnnotationQueue:
+    """Create a real AnnotationQueue Pydantic model instance."""
+    return AnnotationQueue(
+        id=UUID(id_str),
+        name=name,
+        description=description,
+        created_at=datetime(2024, 7, 3, tzinfo=timezone.utc),
+        updated_at=datetime(2024, 7, 3, tzinfo=timezone.utc),
+        tenant_id=UUID("00000000-0000-0000-0000-000000000000"),
     )
 
 

@@ -5,12 +5,15 @@ from typing import Any
 import click
 from rich.console import Console
 from dotenv import load_dotenv
+from langsmith_cli.commands.annotation_queues import annotation_queues
 from langsmith_cli.commands.auth import login
-from langsmith_cli.commands.projects import projects
-from langsmith_cli.commands.runs import runs
 from langsmith_cli.commands.datasets import datasets
 from langsmith_cli.commands.examples import examples
+from langsmith_cli.commands.experiments import experiments
+from langsmith_cli.commands.feedback import feedback
+from langsmith_cli.commands.projects import projects
 from langsmith_cli.commands.prompts import prompts
+from langsmith_cli.commands.runs import runs
 from langsmith_cli.commands.self_cmd import self_group
 from langsmith_cli.config import get_credentials_file
 
@@ -269,11 +272,14 @@ def auth():
 
 auth.add_command(login)
 cli_main.add_command(auth)
-cli_main.add_command(projects)
-cli_main.add_command(runs)
+cli_main.add_command(annotation_queues)
 cli_main.add_command(datasets)
 cli_main.add_command(examples)
+cli_main.add_command(experiments)
+cli_main.add_command(feedback)
+cli_main.add_command(projects)
 cli_main.add_command(prompts)
+cli_main.add_command(runs)
 cli_main.add_command(self_group, "self")
 
 # Backwards compatibility alias
