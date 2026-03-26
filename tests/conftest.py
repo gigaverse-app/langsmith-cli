@@ -58,7 +58,7 @@ def strip_ansi(text: str) -> str:
     return unstyle(text)
 
 
-def parse_json_output(output: str) -> dict[str, Any]:
+def parse_json_output(output: str) -> Any:
     """Extract JSON from mixed stdout/stderr output.
 
     Click's CliRunner mixes stdout and stderr, so logger messages
