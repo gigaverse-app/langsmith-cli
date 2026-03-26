@@ -205,6 +205,7 @@ def test_feedback_get_not_found(runner):
             cli, ["feedback", "get", "11111111-1111-1111-1111-111111111111"]
         )
         assert result.exit_code != 0
+        assert "not found" in result.output.lower()
 
 
 def test_feedback_delete_not_found(runner):
@@ -222,3 +223,4 @@ def test_feedback_delete_not_found(runner):
             ],
         )
         assert result.exit_code != 0
+        assert "not found" in result.output.lower()

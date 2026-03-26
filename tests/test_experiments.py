@@ -113,3 +113,4 @@ def test_experiments_results_not_found(runner):
             cli, ["experiments", "results", "nonexistent-experiment"]
         )
         assert result.exit_code != 0
+        assert "not found" in result.output.lower()

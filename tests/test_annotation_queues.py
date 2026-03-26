@@ -196,6 +196,7 @@ def test_annotation_queues_get_not_found(runner):
             ["annotation-queues", "get", "33333333-3333-3333-3333-333333333333"],
         )
         assert result.exit_code != 0
+        assert "not found" in result.output.lower()
 
 
 def test_annotation_queues_update_not_found(runner):
@@ -216,3 +217,4 @@ def test_annotation_queues_update_not_found(runner):
             ],
         )
         assert result.exit_code != 0
+        assert "not found" in result.output.lower()
