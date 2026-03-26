@@ -106,6 +106,11 @@ langsmith-cli --json runs get <id> --fields inputs,outputs,error
 | Run stats | `langsmith-cli --json runs stats --project <name>` |
 | List datasets | `langsmith-cli --json datasets list --fields id,name` |
 | List prompts | `langsmith-cli --json prompts list --fields repo_handle,description` |
+| List feedback for a run | `langsmith-cli --json feedback list --run-id <run-id>` |
+| Create feedback | `langsmith-cli --json feedback create <run-id> --key correctness --score 0.9` |
+| List annotation queues | `langsmith-cli --json annotation-queues list` |
+| Get annotation queue | `langsmith-cli --json annotation-queues get <queue-id>` |
+| View experiment results | `langsmith-cli --json experiments results <experiment-name>` |
 | Open run in browser | Construct URL manually — see **LangSmith URLs** section below |
 
 ---
@@ -147,6 +152,18 @@ When your task matches one of the sections below, **you MUST load that reference
 ### → Read [references/prompts.md](references/prompts.md) when:
 - You need to pull, push, or version prompt templates
 - You need to list prompt commits or compare versions
+
+### → Use `feedback` commands when:
+- You need to list, get, create, or delete feedback scores on runs
+- Commands: `feedback list [--run-id <id>] [--key <key>] [--limit N]`, `feedback get <id>`, `feedback create <run-id> --key <key> [--score N] [--comment <str>]`, `feedback delete <id> [--confirm]`
+
+### → Use `annotation-queues` commands when:
+- You need to manage human review queues (list, create, update, delete)
+- Commands: `annotation-queues list`, `annotation-queues get <id>`, `annotation-queues create <name> [--description <str>]`, `annotation-queues update <id> [--name <str>] [--description <str>]`, `annotation-queues delete <id> [--confirm]`
+
+### → Use `experiments` commands when:
+- You need to view run stats and feedback scores for a named experiment (project)
+- Commands: `experiments results <experiment-name>`
 
 ### → Read [references/fql.md](references/fql.md) when:
 - You need to write a complex `--filter` expression and want operator reference
