@@ -108,6 +108,9 @@ def get_run(ctx, run_id, fields, output, follow_children):
 )
 @click.option("--last", help="Show runs from last duration (e.g., '24h', '7d', '30m').")
 @click.option("--filter", "filter_", help="Custom FQL filter string.")
+@click.option(
+    "--run-type", help="Filter by run type (llm, chain, tool, retriever, etc)."
+)
 @fields_option(
     "Comma-separated field names (e.g., 'id,name,inputs,outputs'). Reduces context."
 )
@@ -136,6 +139,7 @@ def get_latest_run(
     before,
     last,
     filter_,
+    run_type,
     fields,
     output,
 ):
@@ -204,6 +208,7 @@ def get_latest_run(
         error=error_filter,
         filter=combined_filter,
         is_root=roots,
+        run_type=run_type,
     )
 
     if pq.use_id:

@@ -1744,3 +1744,60 @@ class TestUsageApplyPricingWithTiers:
         # flex pricing: 700 * 0.55/1M = 0.000385; 300 * 2.20/1M = 0.00066
         assert bucket["prompt_cost"] == pytest.approx(0.000385, rel=0.01)
         assert bucket["completion_cost"] == pytest.approx(0.00066, rel=0.01)
+
+
+class TestUsageOutputOption:
+    """Tests for runs usage --output file writing."""
+
+    def test_usage_output_writes_jsonl_to_file(self, runner, mock_client, tmp_path):
+        """INVARIANT: --output writes usage bucket results as JSONL to the specified file."""
+        runs = [_create_llm_run(1, model="gpt-4", total_tokens=500)]
+        mock_client.list_runs.return_value = runs
+        output_file = tmp_path / "usage.jsonl"
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "usage",
+                "--project",
+                "test-proj",
+                "--last",
+                "24h",
+                "--output",
+                str(output_file),
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert output_file.exists(), "--output file was not created"
+        lines = [ln for ln in output_file.read_text().splitlines() if ln.strip()]
+        assert len(lines) >= 1
+        bucket = json.loads(lines[0])
+        assert "total_tokens" in bucket
+
+    def test_usage_output_option_accepted_without_error(
+        self, runner, mock_client, tmp_path
+    ):
+        """INVARIANT: --output is a recognized option for runs usage (no NoSuchOption error)."""
+        mock_client.list_runs.return_value = []
+        output_file = tmp_path / "out.jsonl"
+
+        result = runner.invoke(
+            cli,
+            [
+                "runs",
+                "usage",
+                "--project",
+                "test",
+                "--last",
+                "1h",
+                "--output",
+                str(output_file),
+            ],
+        )
+
+        assert result.exit_code == 0, (
+            f"--output should be accepted. Got exit_code={result.exit_code}, output={result.output!r}"
+        )

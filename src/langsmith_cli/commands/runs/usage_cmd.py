@@ -24,7 +24,9 @@ from langsmith_cli.utils import (
     filter_runs_by_tags,
     get_or_create_client,
     output_formatted_data,
+    output_option,
     resolve_project_filters,
+    write_output_to_file,
 )
 
 
@@ -350,6 +352,7 @@ def _truncate_hour(dt: Any) -> str:
     type=click.Choice(["table", "json", "csv", "yaml"]),
     help="Output format (default: table, or json if --json flag used).",
 )
+@output_option()
 @click.pass_context
 def usage_runs(
     ctx: click.Context,
@@ -377,6 +380,7 @@ def usage_runs(
     from_cache: bool,
     apply_pricing: str | None,
     output_format: str | None,
+    output: str | None,
 ) -> None:
     """Analyze token usage over time with flexible grouping and breakdowns.
 
@@ -772,6 +776,11 @@ def usage_runs(
 
     # Determine output format
     format_type = determine_output_format(output_format, ctx.obj.get("json"))
+
+    # Handle file output — write results to file and return
+    if output:
+        write_output_to_file(results, output, console, format_type="jsonl")
+        return
 
     if format_type != "table":
         # CSV/YAML need a flat list; JSON gets the full nested structure

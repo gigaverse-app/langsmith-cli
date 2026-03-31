@@ -431,6 +431,21 @@ class TestRunsGetLatest:
         assert 'has(tags, "prod")' in call_kwargs["filter"]
         assert 'has(tags, "critical")' in call_kwargs["filter"]
 
+    def test_get_latest_run_type_accepted_and_forwarded(self, runner, mock_client):
+        """INVARIANT: --run-type is a valid option on get-latest and is forwarded to client.list_runs."""
+        mock_client.list_runs.return_value = iter([create_run(name="LLM Run")])
+
+        result = runner.invoke(
+            cli,
+            ["--json", "runs", "get-latest", "--project", "test", "--run-type", "llm"],
+        )
+
+        assert result.exit_code == 0, (
+            f"--run-type should be accepted. Got exit_code={result.exit_code}, output={result.output!r}"
+        )
+        call_kwargs = mock_client.list_runs.call_args[1]
+        assert call_kwargs.get("run_type") == "llm"
+
 
 class TestRunsStats:
     """Tests for runs stats command."""
