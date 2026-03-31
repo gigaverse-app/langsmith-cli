@@ -1,5 +1,6 @@
 """Usage analysis command for runs."""
 
+from datetime import datetime as _datetime
 from typing import Any
 
 import click
@@ -282,14 +283,12 @@ def _metadata_value_matches(candidate: str | None, pattern: str) -> bool:
     return candidate == pattern
 
 
-def _truncate_hour(dt: Any) -> str:
+def _truncate_hour(dt: _datetime | str) -> str:
     """Truncate a datetime to the hour, return as ISO string."""
-    from datetime import datetime
-
     if isinstance(dt, str):
-        dt = datetime.fromisoformat(dt)
-    dt = ensure_aware_datetime(dt)
-    return dt.strftime("%Y-%m-%dT%H:00Z")
+        dt = _datetime.fromisoformat(dt)
+    aware = ensure_aware_datetime(dt)
+    return aware.strftime("%Y-%m-%dT%H:00Z")
 
 
 @runs.command("usage")
@@ -662,7 +661,11 @@ def usage_runs(
     def _bucket_key(run: Run) -> str:
         if interval == "day":
             dt = ensure_aware_datetime(run.start_time)
+            if dt is None:
+                return "unknown"
             return dt.strftime("%Y-%m-%d")
+        if run.start_time is None:
+            return "unknown"
         return _truncate_hour(run.start_time)
 
     # Aggregate into buckets
