@@ -217,7 +217,7 @@ def get_existing_run_ids(project_name: str) -> set[str]:
 
 def _update_meta_times(meta: CacheMetadata, t: datetime) -> None:
     """Update oldest/newest run time bounds in metadata in-place."""
-    t = ensure_aware_datetime(t) or t
+    t = ensure_aware_datetime(t)
     if meta.oldest_run_start_time is None or t < meta.oldest_run_start_time:
         meta.oldest_run_start_time = t
     if meta.newest_run_start_time is None or t > meta.newest_run_start_time:

@@ -1,5 +1,6 @@
 """Runs get, get-latest, and view-file commands."""
 
+from datetime import datetime as _datetime, timezone as _timezone
 from typing import Any
 import json
 
@@ -60,7 +61,8 @@ def get_run(ctx, run_id, fields, output, follow_children):
         children = [
             c for c in client.list_runs(trace_id=str(trace_id)) if str(c.id) != run_id
         ]
-        children.sort(key=lambda r: r.start_time or "")
+        _epoch = _datetime.min.replace(tzinfo=_timezone.utc)
+        children.sort(key=lambda r: r.start_time or _epoch)
         child_data = [filter_fields(c, fields) for c in children]
         data = filter_fields(run, fields)
         data["_children"] = child_data

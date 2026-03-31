@@ -286,7 +286,7 @@ def _truncate_hour(dt: Any) -> str:
 
     if isinstance(dt, str):
         dt = datetime.fromisoformat(dt)
-    dt = ensure_aware_datetime(dt) or dt
+    dt = ensure_aware_datetime(dt)
     return dt.strftime("%Y-%m-%dT%H:00Z")
 
 
@@ -657,7 +657,7 @@ def usage_runs(
     # Build bucket key function
     def _bucket_key(run: Run) -> str:
         if interval == "day":
-            dt = ensure_aware_datetime(run.start_time) or run.start_time
+            dt = ensure_aware_datetime(run.start_time)
             return dt.strftime("%Y-%m-%d")
         return _truncate_hour(run.start_time)
 

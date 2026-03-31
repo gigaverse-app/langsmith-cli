@@ -769,6 +769,33 @@ class TestRunsWatch:
         output = strip_ansi(result.output)
         assert "failed" in output.lower()
 
+    def test_watch_does_not_crash_when_run_start_time_is_none(
+        self, runner, mock_client
+    ):
+        """INVARIANT: sorting runs by start_time in watch must not crash when start_time is None.
+
+        Regression guard: the sort key previously used `item[1].start_time or ""` which
+        returns "" (a string) for None, then comparing str and datetime raises TypeError.
+        """
+        run_with_time = create_run(id_str="aaaaaaaa-0000-0000-0000-000000000010")
+        run_no_time = create_run(
+            id_str="aaaaaaaa-0000-0000-0000-000000000011"
+        ).model_copy(update={"start_time": None})
+
+        mock_client.list_projects.return_value = [create_project(name="test-proj")]
+        mock_client.list_runs.return_value = [run_with_time, run_no_time]
+
+        with patch("time.sleep") as mock_sleep:
+            mock_sleep.side_effect = KeyboardInterrupt()
+            result = runner.invoke(
+                cli,
+                ["runs", "watch", "--project", "test-proj"],
+            )
+
+        assert result.exit_code == 0, (
+            f"Watch crashed on None start_time: {result.output}"
+        )
+
 
 PARENT_RUN_ID = "aaaaaaaa-0000-0000-0000-000000000001"
 TRACE_ID_FC = "bbbbbbbb-0000-0000-0000-000000000001"
@@ -866,3 +893,36 @@ class TestFollowChildren:
         assert "_children" in data
         assert isinstance(data["_children"], list)
         assert len(data["_children"]) == 2  # parent excluded, 2 children remain
+
+    def test_follow_children_does_not_crash_when_start_time_is_none(
+        self, runner, mock_client
+    ):
+        """INVARIANT: sorting children by start_time must not crash when start_time is None.
+
+        Regression guard: the sort key previously used `r.start_time or ""` which returns ""
+        (a string) for None start_times, then mixing str and datetime in sort raises TypeError.
+        The fix uses a datetime sentinel so all keys are comparable datetime objects.
+        """
+        parent = create_run(id_str=PARENT_RUN_ID, trace_id=TRACE_ID_FC)
+        child_with_time = create_run(
+            id_str=CHILD_RUN_ID_1,
+            trace_id=TRACE_ID_FC,
+            parent_run_id=PARENT_RUN_ID,
+        )
+        child_no_time = create_run(
+            id_str=CHILD_RUN_ID_2,
+            trace_id=TRACE_ID_FC,
+            parent_run_id=PARENT_RUN_ID,
+        ).model_copy(update={"start_time": None})
+        mock_client.read_run.return_value = parent
+        mock_client.list_runs.return_value = iter(
+            [parent, child_with_time, child_no_time]
+        )
+
+        result = runner.invoke(
+            cli, ["--json", "runs", "get", PARENT_RUN_ID, "--follow-children"]
+        )
+
+        assert result.exit_code == 0, f"Command crashed: {result.output}"
+        data = json.loads(result.output)
+        assert len(data["_children"]) == 2
