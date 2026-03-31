@@ -13,8 +13,9 @@ from typing import Any, overload
 
 from langsmith.schemas import Run
 from platformdirs import user_cache_dir
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
+from langsmith_cli.time_parsing import ensure_aware_datetime
 from langsmith_cli.utils import FetchResult
 
 
@@ -106,6 +107,19 @@ class CacheMetadata(BaseModel):
     last_updated: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     filters_used: str | None = None
 
+    @model_validator(mode="after")
+    def _normalize_datetimes(self) -> "CacheMetadata":
+        """Normalize naive datetimes to UTC-aware on load.
+
+        Old cache files may contain naive datetime strings (no timezone offset).
+        Without normalization, comparing them against newly-fetched UTC-aware
+        datetimes raises TypeError. This validator fixes all such values at
+        deserialization time, making the model safe to use regardless of cache age.
+        """
+        self.oldest_run_start_time = ensure_aware_datetime(self.oldest_run_start_time)
+        self.newest_run_start_time = ensure_aware_datetime(self.newest_run_start_time)
+        return self
+
 
 def get_cache_dir() -> Path:
     """Get the cache directory for langsmith-cli runs."""
@@ -173,9 +187,7 @@ def read_cached_runs(
         except Exception as e:
             logger.warning("Skipping corrupt cache line in %s: %s", cache_path, e)
             continue
-        start = run.start_time
-        if start.tzinfo is None:
-            start = start.replace(tzinfo=timezone.utc)
+        start = ensure_aware_datetime(run.start_time)
         if since and start < since:
             continue
         if until and start > until:
@@ -205,8 +217,7 @@ def get_existing_run_ids(project_name: str) -> set[str]:
 
 def _update_meta_times(meta: CacheMetadata, t: datetime) -> None:
     """Update oldest/newest run time bounds in metadata in-place."""
-    if t.tzinfo is None:
-        t = t.replace(tzinfo=timezone.utc)
+    t = ensure_aware_datetime(t)
     if meta.oldest_run_start_time is None or t < meta.oldest_run_start_time:
         meta.oldest_run_start_time = t
     if meta.newest_run_start_time is None or t > meta.newest_run_start_time:

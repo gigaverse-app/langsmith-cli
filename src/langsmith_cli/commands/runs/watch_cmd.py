@@ -1,5 +1,7 @@
 """Open and watch commands for runs."""
 
+from datetime import datetime as _datetime, timezone as _timezone
+
 import click
 from rich.table import Table
 from langsmith.schemas import Run
@@ -130,7 +132,8 @@ def watch_runs(
                     failed_count += 1
 
         # Sort by start time (most recent first) and limit to 10
-        all_runs.sort(key=lambda item: item[1].start_time or "", reverse=True)
+        _epoch = _datetime.min.replace(tzinfo=_timezone.utc)
+        all_runs.sort(key=lambda item: item[1].start_time or _epoch, reverse=True)
         all_runs = all_runs[:10]
 
         # Add failure count to title if any projects failed

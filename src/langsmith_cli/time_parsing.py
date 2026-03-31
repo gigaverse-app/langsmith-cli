@@ -3,9 +3,34 @@
 import datetime
 import re
 from datetime import datetime as datetime_type
-from typing import Any, Callable
+from typing import Any, Callable, overload
 
 import click
+
+
+@overload
+def ensure_aware_datetime(dt: datetime_type) -> datetime_type: ...
+
+
+@overload
+def ensure_aware_datetime(dt: None) -> None: ...
+
+
+@overload
+def ensure_aware_datetime(dt: datetime_type | None) -> datetime_type | None: ...
+
+
+def ensure_aware_datetime(dt: datetime_type | None) -> datetime_type | None:
+    """Return dt with UTC tzinfo attached if naive, unchanged if already aware or None.
+
+    Use this whenever comparing datetimes that may come from external sources
+    (SDK, cached JSON) where timezone info is not guaranteed.
+    """
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=datetime.timezone.utc)
+    return dt
 
 
 def parse_duration_to_seconds(duration_str: str) -> str:

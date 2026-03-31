@@ -1,5 +1,6 @@
 """Usage analysis command for runs."""
 
+from datetime import datetime as _datetime
 from typing import Any
 
 import click
@@ -8,6 +9,7 @@ from pydantic import BaseModel
 from rich.table import Table
 
 from langsmith_cli.commands.runs._group import console, runs
+from langsmith_cli.time_parsing import ensure_aware_datetime
 from langsmith_cli.output import json_dumps
 from langsmith_cli.utils import (
     add_grep_options,
@@ -23,7 +25,9 @@ from langsmith_cli.utils import (
     filter_runs_by_tags,
     get_or_create_client,
     output_formatted_data,
+    output_option,
     resolve_project_filters,
+    write_output_to_file,
 )
 
 
@@ -279,15 +283,12 @@ def _metadata_value_matches(candidate: str | None, pattern: str) -> bool:
     return candidate == pattern
 
 
-def _truncate_hour(dt: Any) -> str:
+def _truncate_hour(dt: _datetime | str) -> str:
     """Truncate a datetime to the hour, return as ISO string."""
-    from datetime import datetime, timezone
-
     if isinstance(dt, str):
-        dt = datetime.fromisoformat(dt)
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.strftime("%Y-%m-%dT%H:00Z")
+        dt = _datetime.fromisoformat(dt)
+    aware = ensure_aware_datetime(dt)
+    return aware.strftime("%Y-%m-%dT%H:00Z")
 
 
 @runs.command("usage")
@@ -350,6 +351,7 @@ def _truncate_hour(dt: Any) -> str:
     type=click.Choice(["table", "json", "csv", "yaml"]),
     help="Output format (default: table, or json if --json flag used).",
 )
+@output_option()
 @click.pass_context
 def usage_runs(
     ctx: click.Context,
@@ -377,6 +379,7 @@ def usage_runs(
     from_cache: bool,
     apply_pricing: str | None,
     output_format: str | None,
+    output: str | None,
 ) -> None:
     """Analyze token usage over time with flexible grouping and breakdowns.
 
@@ -417,7 +420,6 @@ def usage_runs(
           --last 7d --active-only
     """
     from collections import defaultdict
-    from datetime import timezone
 
     from langsmith_cli.commands.runs import extract_group_value, parse_grouping_field
 
@@ -658,10 +660,12 @@ def usage_runs(
     # Build bucket key function
     def _bucket_key(run: Run) -> str:
         if interval == "day":
-            dt = run.start_time
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
+            dt = ensure_aware_datetime(run.start_time)
+            if dt is None:
+                return "unknown"
             return dt.strftime("%Y-%m-%d")
+        if run.start_time is None:
+            return "unknown"
         return _truncate_hour(run.start_time)
 
     # Aggregate into buckets
@@ -775,6 +779,11 @@ def usage_runs(
 
     # Determine output format
     format_type = determine_output_format(output_format, ctx.obj.get("json"))
+
+    # Handle file output — write results to file and return
+    if output:
+        write_output_to_file(results, output, console, format_type="jsonl")
+        return
 
     if format_type != "table":
         # CSV/YAML need a flat list; JSON gets the full nested structure

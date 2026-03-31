@@ -1,5 +1,6 @@
 """Runs get, get-latest, and view-file commands."""
 
+from datetime import datetime as _datetime, timezone as _timezone
 from typing import Any
 import json
 
@@ -54,13 +55,14 @@ def get_run(ctx, run_id, fields, output, follow_children):
 
     if follow_children:
         trace_id = run.trace_id or run.id
-        children = list(
-            client.list_runs(
-                trace_id=str(trace_id),
-                execution_order=[2, None],  # skip root (order=1)
-            )
-        )
-        children.sort(key=lambda r: (r.execution_order or 0, r.start_time or ""))
+        # Fetch all runs in the trace then exclude the root run by ID.
+        # Do NOT pass execution_order as a kwarg — the API requires an integer,
+        # not a list, and rejects the request with 422.
+        children = [
+            c for c in client.list_runs(trace_id=str(trace_id)) if str(c.id) != run_id
+        ]
+        _epoch = _datetime.min.replace(tzinfo=_timezone.utc)
+        children.sort(key=lambda r: r.start_time or _epoch)
         child_data = [filter_fields(c, fields) for c in children]
         data = filter_fields(run, fields)
         data["_children"] = child_data
@@ -106,6 +108,9 @@ def get_run(ctx, run_id, fields, output, follow_children):
 )
 @click.option("--last", help="Show runs from last duration (e.g., '24h', '7d', '30m').")
 @click.option("--filter", "filter_", help="Custom FQL filter string.")
+@click.option(
+    "--run-type", help="Filter by run type (llm, chain, tool, retriever, etc)."
+)
 @fields_option(
     "Comma-separated field names (e.g., 'id,name,inputs,outputs'). Reduces context."
 )
@@ -134,6 +139,7 @@ def get_latest_run(
     before,
     last,
     filter_,
+    run_type,
     fields,
     output,
 ):
@@ -202,6 +208,7 @@ def get_latest_run(
         error=error_filter,
         filter=combined_filter,
         is_root=roots,
+        run_type=run_type,
     )
 
     if pq.use_id:
