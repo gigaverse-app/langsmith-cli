@@ -44,7 +44,7 @@ from langsmith_cli.utils import (
     "filter_",
     help='LangSmith FQL filter. Examples: eq(name, "extractor"), gt(latency, "5s"), has(tags, "prod"). See --help for full examples.',
 )
-@click.option("--trace-id", help="Get all runs in a specific trace.")
+@click.option("--trace-id", "--trace", help="Get all runs in a specific trace.")
 @click.option(
     "--run-type", help="Filter by run type (llm, chain, tool, retriever, etc)."
 )

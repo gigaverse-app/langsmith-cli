@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from rich.table import Table
 
 from langsmith_cli.commands.runs._group import console, runs
+from langsmith_cli.time_parsing import ensure_aware_datetime
 from langsmith_cli.output import json_dumps
 from langsmith_cli.utils import (
     add_grep_options,
@@ -281,12 +282,11 @@ def _metadata_value_matches(candidate: str | None, pattern: str) -> bool:
 
 def _truncate_hour(dt: Any) -> str:
     """Truncate a datetime to the hour, return as ISO string."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     if isinstance(dt, str):
         dt = datetime.fromisoformat(dt)
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+    dt = ensure_aware_datetime(dt) or dt
     return dt.strftime("%Y-%m-%dT%H:00Z")
 
 
@@ -417,7 +417,6 @@ def usage_runs(
           --last 7d --active-only
     """
     from collections import defaultdict
-    from datetime import timezone
 
     from langsmith_cli.commands.runs import extract_group_value, parse_grouping_field
 
@@ -658,9 +657,7 @@ def usage_runs(
     # Build bucket key function
     def _bucket_key(run: Run) -> str:
         if interval == "day":
-            dt = run.start_time
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
+            dt = ensure_aware_datetime(run.start_time) or run.start_time
             return dt.strftime("%Y-%m-%d")
         return _truncate_hour(run.start_time)
 

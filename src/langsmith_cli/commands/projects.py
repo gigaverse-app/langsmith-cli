@@ -199,6 +199,7 @@ def list_projects(
     # Define table builder function
     def build_projects_table(projects):
         from datetime import datetime, timezone
+        from langsmith_cli.time_parsing import ensure_aware_datetime
 
         table = Table(title="Projects")
         table.add_column("Name", style="cyan")
@@ -214,11 +215,7 @@ def list_projects(
             # Last run time (human-readable relative time)
             if p.last_run_start_time:
                 now = datetime.now(timezone.utc)
-                # Handle timezone-aware and timezone-naive datetimes
-                last_run = p.last_run_start_time
-                if last_run.tzinfo is None:
-                    # Make naive datetime timezone-aware (assume UTC)
-                    last_run = last_run.replace(tzinfo=timezone.utc)
+                last_run = ensure_aware_datetime(p.last_run_start_time)
                 delta = now - last_run
                 if delta.days > 0:
                     last_run_str = f"{delta.days}d ago"

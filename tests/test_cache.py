@@ -100,6 +100,73 @@ class TestCacheMetadata:
         monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
         assert read_cache_metadata("nonexistent") is None
 
+    def test_model_validator_normalizes_naive_datetimes(self):
+        """INVARIANT: CacheMetadata loaded from JSON with naive datetimes produces aware fields."""
+        raw_json = json.dumps(
+            {
+                "project_name": "legacy-project",
+                "oldest_run_start_time": "2026-01-01T10:00:00",  # naive — no offset
+                "newest_run_start_time": "2026-03-09T16:00:00",  # naive — no offset
+                "run_count": 5,
+                "last_updated": "2026-03-09T16:05:00+00:00",
+            }
+        )
+        meta = CacheMetadata.model_validate_json(raw_json)
+        assert meta.oldest_run_start_time is not None
+        assert meta.oldest_run_start_time.tzinfo is not None
+        assert meta.newest_run_start_time is not None
+        assert meta.newest_run_start_time.tzinfo is not None
+
+    def test_model_validator_preserves_aware_times(self):
+        """INVARIANT: already-aware datetimes are not changed by the validator."""
+        raw_json = json.dumps(
+            {
+                "project_name": "aware-project",
+                "oldest_run_start_time": "2026-01-01T10:00:00+00:00",
+                "newest_run_start_time": "2026-03-09T16:00:00+00:00",
+                "run_count": 3,
+                "last_updated": "2026-03-09T16:05:00+00:00",
+            }
+        )
+        meta = CacheMetadata.model_validate_json(raw_json)
+        assert meta.oldest_run_start_time is not None
+        assert meta.oldest_run_start_time.tzinfo is not None
+        assert meta.newest_run_start_time is not None
+        assert meta.newest_run_start_time.tzinfo is not None
+
+    def test_appending_to_legacy_cache_with_naive_metadata_does_not_crash(
+        self, tmp_path, monkeypatch
+    ):
+        """INVARIANT: appending runs to a legacy cache (naive metadata on disk) must not raise TypeError.
+
+        Regression test for: 'can't compare offset-naive and offset-aware datetimes'
+        This crash happened when _update_meta_times compared a newly normalized
+        UTC-aware datetime against a naive datetime loaded from old cached metadata.
+        """
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+
+        # Simulate old cache: metadata written with naive datetimes (no UTC offset)
+        meta_path = tmp_path / "legacy-project.meta.json"
+        meta_path.write_text(
+            json.dumps(
+                {
+                    "project_name": "legacy-project",
+                    "oldest_run_start_time": "2026-01-01T10:00:00",  # naive
+                    "newest_run_start_time": "2026-03-09T16:00:00",  # naive
+                    "run_count": 2,
+                    "last_updated": "2026-03-09T16:00:00+00:00",
+                }
+            )
+        )
+        (tmp_path / "legacy-project.jsonl").touch()
+
+        # Appending a new run must not raise TypeError on datetime comparison
+        meta = append_runs_to_cache("legacy-project", [_make_run(99)])
+        assert meta.oldest_run_start_time is not None
+        assert meta.oldest_run_start_time.tzinfo is not None
+        assert meta.newest_run_start_time is not None
+        assert meta.newest_run_start_time.tzinfo is not None
+
 
 class TestCacheReadWrite:
     def test_append_and_read(self, tmp_path, monkeypatch):

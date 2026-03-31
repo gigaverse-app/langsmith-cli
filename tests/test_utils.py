@@ -42,6 +42,7 @@ from langsmith_cli.utils import (
     parse_time_range,
     write_output_to_file,
 )
+from langsmith_cli.time_parsing import ensure_aware_datetime
 
 
 @dataclass
@@ -2031,3 +2032,33 @@ class TestApplyMetadataFilter:
 
         result = list(apply_metadata_filter([r1, r2], ("channel_id=Gigaverse*",)))
         assert result == [r2]
+
+
+class TestEnsureAwareDatetime:
+    """INVARIANT: ensure_aware_datetime always returns None or a timezone-aware datetime."""
+
+    def test_none_returns_none(self):
+        assert ensure_aware_datetime(None) is None
+
+    def test_aware_datetime_unchanged(self):
+        dt = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        result = ensure_aware_datetime(dt)
+        assert result == dt
+        assert result is not None and result.tzinfo is not None
+
+    def test_naive_datetime_gets_utc(self):
+        dt = datetime(2026, 1, 1, 12, 0, 0)  # no tzinfo
+        result = ensure_aware_datetime(dt)
+        assert result is not None
+        assert result.tzinfo == timezone.utc
+        assert result.year == 2026
+        assert result.hour == 12
+
+    def test_naive_and_aware_are_now_comparable(self):
+        """INVARIANT: after normalization, naive and aware datetimes must be comparable."""
+        naive = datetime(2026, 3, 9, 10, 0, 0)
+        aware = datetime(2026, 3, 9, 12, 0, 0, tzinfo=timezone.utc)
+        a = ensure_aware_datetime(naive)
+        b = ensure_aware_datetime(aware)
+        assert a is not None and b is not None
+        assert a < b  # must not raise TypeError

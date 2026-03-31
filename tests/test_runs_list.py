@@ -716,3 +716,40 @@ class TestRunsListMetadataFilter:
         fql = call_kwargs.get("filter") or ""
         assert "env" in fql
         assert "team" in fql
+
+
+SOME_TRACE = "11111111-2222-3333-4444-555555555555"
+
+
+class TestTraceAlias:
+    """Tests for --trace as alias for --trace-id on runs list."""
+
+    def test_trace_alias_accepted_without_error(self, runner, mock_client):
+        """INVARIANT: --trace is a valid alias for --trace-id; must not produce NoSuchOption."""
+        mock_client.list_runs.return_value = iter([])
+
+        result = runner.invoke(cli, ["runs", "list", "--trace", SOME_TRACE])
+
+        assert result.exit_code == 0, (
+            f"--trace should be accepted as alias for --trace-id. "
+            f"Got exit_code={result.exit_code}, output={result.output!r}"
+        )
+
+    def test_trace_alias_passes_trace_id_to_api(self, runner, mock_client):
+        """INVARIANT: --trace value is forwarded as trace_id to client.list_runs."""
+        mock_client.list_runs.return_value = iter([create_run(name="Traced Run")])
+
+        runner.invoke(cli, ["runs", "list", "--trace", SOME_TRACE])
+
+        call_kwargs = mock_client.list_runs.call_args[1]
+        assert call_kwargs.get("trace_id") == SOME_TRACE
+
+    def test_trace_id_flag_still_works_after_alias(self, runner, mock_client):
+        """INVARIANT: --trace-id continues to work after --trace alias is added."""
+        mock_client.list_runs.return_value = iter([])
+
+        result = runner.invoke(cli, ["runs", "list", "--trace-id", SOME_TRACE])
+
+        assert result.exit_code == 0
+        call_kwargs = mock_client.list_runs.call_args[1]
+        assert call_kwargs.get("trace_id") == SOME_TRACE

@@ -768,3 +768,101 @@ class TestRunsWatch:
         assert result.exit_code == 0
         output = strip_ansi(result.output)
         assert "failed" in output.lower()
+
+
+PARENT_RUN_ID = "aaaaaaaa-0000-0000-0000-000000000001"
+TRACE_ID_FC = "bbbbbbbb-0000-0000-0000-000000000001"
+CHILD_RUN_ID_1 = "cccccccc-0000-0000-0000-000000000001"
+CHILD_RUN_ID_2 = "dddddddd-0000-0000-0000-000000000001"
+
+
+class TestFollowChildren:
+    """Tests for runs get --follow-children flag."""
+
+    def test_follow_children_does_not_pass_execution_order_to_api(
+        self, runner, mock_client
+    ):
+        """INVARIANT: execution_order must NOT be forwarded to client.list_runs — API rejects it with 422."""
+        parent = create_run(id_str=PARENT_RUN_ID, trace_id=TRACE_ID_FC)
+        child = create_run(
+            id_str=CHILD_RUN_ID_1,
+            trace_id=TRACE_ID_FC,
+            parent_run_id=PARENT_RUN_ID,
+            name="child-llm",
+        )
+        mock_client.read_run.return_value = parent
+        mock_client.list_runs.return_value = iter([parent, child])
+
+        result = runner.invoke(
+            cli, ["--json", "runs", "get", PARENT_RUN_ID, "--follow-children"]
+        )
+
+        assert result.exit_code == 0
+        call_kwargs = mock_client.list_runs.call_args[1]
+        assert "execution_order" not in call_kwargs, (
+            "execution_order must not be passed to list_runs — LangSmith API rejects it with 422"
+        )
+
+    def test_follow_children_excludes_root_run_from_children(self, runner, mock_client):
+        """INVARIANT: the root run itself must not appear in _children."""
+        parent = create_run(id_str=PARENT_RUN_ID, trace_id=TRACE_ID_FC)
+        child = create_run(
+            id_str=CHILD_RUN_ID_1,
+            trace_id=TRACE_ID_FC,
+            parent_run_id=PARENT_RUN_ID,
+            name="llm-child",
+        )
+        mock_client.read_run.return_value = parent
+        mock_client.list_runs.return_value = iter([parent, child])
+
+        result = runner.invoke(
+            cli, ["--json", "runs", "get", PARENT_RUN_ID, "--follow-children"]
+        )
+
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        child_ids = [c["id"] for c in data["_children"]]
+        assert PARENT_RUN_ID not in child_ids
+        assert CHILD_RUN_ID_1 in child_ids
+
+    def test_follow_children_fetches_by_trace_id(self, runner, mock_client):
+        """INVARIANT: list_runs is called with the run's trace_id."""
+        parent = create_run(id_str=PARENT_RUN_ID, trace_id=TRACE_ID_FC)
+        mock_client.read_run.return_value = parent
+        mock_client.list_runs.return_value = iter([])
+
+        runner.invoke(
+            cli, ["--json", "runs", "get", PARENT_RUN_ID, "--follow-children"]
+        )
+
+        call_kwargs = mock_client.list_runs.call_args[1]
+        assert call_kwargs["trace_id"] == TRACE_ID_FC
+
+    def test_follow_children_json_output_has_children_list(self, runner, mock_client):
+        """INVARIANT: JSON output with --follow-children always has a _children list with correct count."""
+        parent = create_run(id_str=PARENT_RUN_ID, trace_id=TRACE_ID_FC)
+        child1 = create_run(
+            id_str=CHILD_RUN_ID_1,
+            trace_id=TRACE_ID_FC,
+            parent_run_id=PARENT_RUN_ID,
+            name="llm-child",
+        )
+        child2 = create_run(
+            id_str=CHILD_RUN_ID_2,
+            trace_id=TRACE_ID_FC,
+            parent_run_id=PARENT_RUN_ID,
+            name="tool-child",
+        )
+        mock_client.read_run.return_value = parent
+        # SDK returns all 3 runs in trace (including root)
+        mock_client.list_runs.return_value = iter([parent, child1, child2])
+
+        result = runner.invoke(
+            cli, ["--json", "runs", "get", PARENT_RUN_ID, "--follow-children"]
+        )
+
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert "_children" in data
+        assert isinstance(data["_children"], list)
+        assert len(data["_children"]) == 2  # parent excluded, 2 children remain

@@ -54,13 +54,13 @@ def get_run(ctx, run_id, fields, output, follow_children):
 
     if follow_children:
         trace_id = run.trace_id or run.id
-        children = list(
-            client.list_runs(
-                trace_id=str(trace_id),
-                execution_order=[2, None],  # skip root (order=1)
-            )
-        )
-        children.sort(key=lambda r: (r.execution_order or 0, r.start_time or ""))
+        # Fetch all runs in the trace then exclude the root run by ID.
+        # Do NOT pass execution_order as a kwarg — the API requires an integer,
+        # not a list, and rejects the request with 422.
+        children = [
+            c for c in client.list_runs(trace_id=str(trace_id)) if str(c.id) != run_id
+        ]
+        children.sort(key=lambda r: r.start_time or "")
         child_data = [filter_fields(c, fields) for c in children]
         data = filter_fields(run, fields)
         data["_children"] = child_data
