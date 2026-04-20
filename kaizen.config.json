@@ -1,0 +1,29 @@
+{
+  "host": {
+    "name": "langsmith-cli",
+    "repo": "gigaverse-app/langsmith-cli",
+    "description": "Context-efficient CLI for LangSmith; also a Claude Code plugin"
+  },
+  "kaizen": {
+    "repo": "Garsson-io/kaizen",
+    "issueLabel": "kaizen"
+  },
+  "taxonomy": {
+    "levels": [
+      "level-1",
+      "level-2",
+      "level-3"
+    ],
+    "areas": [],
+    "areaPrefix": "area/",
+    "epicPrefix": "epic/",
+    "horizonPrefix": "horizon/"
+  },
+  "issues": {
+    "repo": "gigaverse-app/langsmith-cli",
+    "label": "kaizen"
+  },
+  "notifications": {
+    "channel": "none"
+  }
+}

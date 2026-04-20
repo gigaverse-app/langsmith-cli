@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# Kaizen host-project pre-push entry (installed by /kaizen-setup, epic #1059).
+#
+# This script is written to the host project at .kaizen-hooks/pre-push
+# and invoked by whichever hook framework the host uses (pre-commit, husky,
+# lefthook, raw .git/hooks/pre-push, or kaizen's standalone .githooks/).
+#
+# At install time, ${CLAUDE_PLUGIN_ROOT} is substituted for the captured
+# plugin path. If that path becomes invalid (kaizen updated or removed),
+# the fallback searches the Claude plugin cache.
+
+set -eu
+
+# ── Agent-env gate ─────────────────────────────────────────────────────
+# Exit silently for human-driven git operations. Only AI-agent sessions
+# invoke kaizen's review gate. See epic #1059 "agent-only gating".
+if [ -z "${CLAUDECODE:-}" ] && [ -z "${CLAUDE_PROJECT_DIR:-}" ] \
+   && [ -z "${CODEX_SESSION:-}" ] && [ -z "${KAIZEN_SESSION:-}" ]; then
+  exit 0
+fi
+
+# ── Resolve kaizen plugin root ─────────────────────────────────────────
+# Primary: env var at invocation time (Claude Code sets this).
+KAIZEN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
+
+# Secondary: baked-in path from install time.
+# kaizen-setup.ts substitutes /home/aviadr1/.claude/plugins/cache/kaizen/kaizen/1.0.99 with the absolute path.
+if [ ! -d "$KAIZEN_ROOT" ]; then
+  KAIZEN_ROOT="/home/aviadr1/.claude/plugins/cache/kaizen/kaizen/1.0.99"
+fi
+
+# Fallback 2: search the Claude plugin cache for kaizen.
+if [ ! -d "$KAIZEN_ROOT" ]; then
+  CACHE_ROOT="${HOME}/.claude/plugins/cache"
+  if [ -d "$CACHE_ROOT" ]; then
+    CANDIDATE=$(find "$CACHE_ROOT" -maxdepth 5 -name "plugin.json" -path "*kaizen*" 2>/dev/null | head -1 || true)
+    if [ -n "$CANDIDATE" ]; then
+      KAIZEN_ROOT=$(dirname "$(dirname "$CANDIDATE")")
+    fi
+  fi
+fi
+
+# If still not found, fail-open (do not block the push).
+if [ ! -d "$KAIZEN_ROOT" ]; then
+  echo "kaizen: plugin root not found; pre-push gate skipped" >&2
+  exit 0
+fi
+
+HOOK_TS="$KAIZEN_ROOT/src/hooks/pre-push.ts"
+if [ ! -f "$HOOK_TS" ]; then
+  echo "kaizen: hook source missing at $HOOK_TS; pre-push gate skipped" >&2
+  exit 0
+fi
+
+# ── Dispatch ───────────────────────────────────────────────────────────
+if [ -x "$KAIZEN_ROOT/node_modules/.bin/tsx" ]; then
+  exec "$KAIZEN_ROOT/node_modules/.bin/tsx" "$HOOK_TS" "$@"
+fi
+
+if command -v npx >/dev/null 2>&1; then
+  exec npx --no-install tsx "$HOOK_TS" "$@"
+fi
+
+# No tsx available — fail-open.
+echo "kaizen: tsx not found; pre-push gate skipped" >&2
+exit 0
