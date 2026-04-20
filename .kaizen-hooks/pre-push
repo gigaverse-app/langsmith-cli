@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Kaizen pre-push dispatcher — thin wrapper around the kaizen plugin's entry.
+#
+# Intentionally minimal: hook logic lives in the plugin at
+#   $CLAUDE_PLUGIN_ROOT/src/hooks/kaizen-host-entry.sh
+# so bug fixes and feature updates apply on every plugin update without
+# re-running /kaizen-setup. This file only resolves the plugin root and
+# delegates — it should almost never need to change.
+#
+# Discussion: https://github.com/Garsson-io/kaizen/issues/1086
+
+set -eu
+
+# Resolve the kaizen plugin root.
+# Primary: env var set by Claude Code at hook invocation.
+# Fallback: search the plugin cache for any installed kaizen version.
+KAIZEN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
+if [ ! -d "$KAIZEN_ROOT" ]; then
+  CANDIDATE=$(find "${HOME}/.claude/plugins/cache" -maxdepth 5 -name plugin.json -path '*kaizen*' 2>/dev/null | head -1 || true)
+  [ -n "$CANDIDATE" ] && KAIZEN_ROOT=$(dirname "$(dirname "$CANDIDATE")")
+fi
+
+# No kaizen installed — fail-open so unrelated pushes still work.
+[ -d "$KAIZEN_ROOT" ] || exit 0
+
+ENTRY="$KAIZEN_ROOT/src/hooks/kaizen-host-entry.sh"
+[ -f "$ENTRY" ] || exit 0
+
+exec bash "$ENTRY" "$@"
