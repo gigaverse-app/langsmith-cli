@@ -213,8 +213,7 @@ def get_prompt(ctx, name, commit, fields, output):
 def push_prompt(ctx, name, file_path, description, tags, is_public, public, private):
     """Push a local prompt file to LangSmith."""
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json")
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger)
 
     logger.debug(f"Pushing prompt: name={name}, file={file_path}")
 
@@ -350,8 +349,7 @@ def create_prompt_cmd(ctx, name, description, tags, is_public, public, private):
     from langsmith.utils import LangSmithConflictError
 
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json")
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger)
 
     logger.debug(f"Creating prompt: {name}")
 

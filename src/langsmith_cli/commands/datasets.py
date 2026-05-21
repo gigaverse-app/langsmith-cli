@@ -228,8 +228,7 @@ def create_dataset(ctx, name, description, dataset_type):
     from langsmith.schemas import DataType
 
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json")
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger)
 
     logger.debug(f"Creating dataset: name={name}, type={dataset_type}")
 
@@ -259,8 +258,7 @@ def push_dataset(ctx, file_path, dataset):
     import json
 
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json")
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger)
 
     logger.debug(f"Pushing dataset from file: {file_path}")
 

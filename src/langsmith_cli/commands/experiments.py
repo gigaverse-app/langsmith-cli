@@ -29,8 +29,7 @@ def results(ctx, name):
     NAME is the experiment (project) name in LangSmith.
     """
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json")
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger)
 
     logger.debug(f"Fetching experiment results: {name}")
 

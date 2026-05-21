@@ -12,6 +12,7 @@ from langsmith_cli.utils import (
     add_time_filter_options,
     build_time_fql_filters,
     combine_fql_filters,
+    configure_logger_streams,
     fetch_from_projects,
     get_or_create_client,
     json_dumps,
@@ -70,8 +71,7 @@ def _fetch_runs_for_discovery(
     logger = ctx.obj["logger"]
 
     # Determine if output is machine-readable (use stderr for diagnostics)
-    is_machine_readable = ctx.obj.get("json")
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger)
 
     client = get_or_create_client(ctx)
     logger.debug(f"Running {cmd_name} with sample_size={sample_size}")

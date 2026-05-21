@@ -12,6 +12,7 @@ from langsmith_cli.utils import (
     add_project_filter_options,
     build_runs_list_filter,
     build_runs_table,
+    configure_logger_streams,
     fields_option,
     filter_fields,
     get_or_create_client,
@@ -162,10 +163,7 @@ def get_latest_run(
         langsmith-cli --json runs get-latest --project my-project --slow --recent --fields name,latency
     """
     logger = ctx.obj["logger"]
-
-    # Determine if output is machine-readable (use stderr for diagnostics)
-    is_machine_readable = ctx.obj.get("json") or fields or output
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger, output=output, fields=fields)
 
     client = get_or_create_client(ctx)
     logger.debug(f"Getting latest run with filters: project={project}, status={status}")
@@ -285,10 +283,7 @@ def view_file(ctx, pattern, no_truncate, fields):
         langsmith-cli --json runs view-file samples.jsonl
     """
     logger = ctx.obj["logger"]
-
-    # Determine if output is machine-readable
-    is_machine_readable = ctx.obj.get("json") or fields
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger, fields=fields)
 
     import glob
 

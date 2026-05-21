@@ -132,8 +132,7 @@ def get_queue(ctx, queue_id, fields, output):
 def create_queue(ctx, name, description):
     """Create a new annotation queue."""
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json")
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger)
 
     logger.debug(f"Creating annotation queue: {name}")
 
@@ -158,8 +157,7 @@ def create_queue(ctx, name, description):
 def update_queue(ctx, queue_id, name, description):
     """Update an annotation queue's name or description."""
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json")
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger)
 
     if not any([name, description]):
         raise click.UsageError("At least one of --name or --description is required.")

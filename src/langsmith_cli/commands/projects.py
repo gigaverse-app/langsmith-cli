@@ -286,8 +286,7 @@ def create_project(ctx, name, description):
     from langsmith.utils import LangSmithConflictError
 
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json")
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger)
 
     logger.debug(f"Creating project: name={name}")
 
@@ -319,8 +318,7 @@ def create_project(ctx, name, description):
 def get_project(ctx, name_or_id, include_stats, fields, output):
     """Get details of a single project by name or ID."""
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json") or bool(fields) or bool(output)
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger, output=output, fields=fields)
 
     logger.debug(f"Fetching project: {name_or_id}")
 
@@ -358,8 +356,7 @@ def get_project(ctx, name_or_id, include_stats, fields, output):
 def update_project(ctx, name_or_id, new_name, description):
     """Update a project's name or description."""
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json")
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger)
 
     if not new_name and not description:
         raise click.UsageError("At least one of --name or --description is required.")

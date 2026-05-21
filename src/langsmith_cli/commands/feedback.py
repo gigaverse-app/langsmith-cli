@@ -179,8 +179,7 @@ def get_feedback(ctx, feedback_id, fields, output):
 def create_feedback_cmd(ctx, run_id, key, score, value, comment, feedback_source_type):
     """Create a feedback entry for a run."""
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json")
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger)
 
     logger.debug(f"Creating feedback for run {run_id}: key={key}, score={score}")
 

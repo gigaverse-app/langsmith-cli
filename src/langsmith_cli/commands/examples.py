@@ -206,8 +206,7 @@ def get_example(ctx, example_id, as_of, fields, output):
 def create_example(ctx, dataset, inputs, outputs, metadata, split):
     """Create a new example in a dataset."""
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json")
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger)
 
     logger.debug(f"Creating example in dataset: {dataset}")
 
@@ -243,8 +242,7 @@ def create_example(ctx, dataset, inputs, outputs, metadata, split):
 def update_example(ctx, example_id, inputs, outputs, metadata, split):
     """Update an existing example's inputs, outputs, or metadata."""
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json")
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger)
 
     if not any([inputs, outputs, metadata, split]):
         raise click.UsageError(
@@ -321,8 +319,7 @@ def delete_examples(ctx, example_ids, confirm):
 def example_from_run(ctx, run_id, dataset):
     """Create an example from a run's inputs/outputs."""
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json")
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger)
 
     logger.debug(f"Creating example from run {run_id} in dataset {dataset}")
 
