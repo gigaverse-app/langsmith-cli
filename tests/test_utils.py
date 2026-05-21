@@ -169,18 +169,13 @@ class TestSortItems:
         assert result[2].value == 10
 
     def test_sort_unknown_field_warning(self):
-        """Test warning for unknown sort field."""
+        """Test fail-fast error for unknown sort field."""
         items = [MockItem(name="test")]
         sort_key_map = {"name": lambda x: x.name}
         console = MagicMock()
 
-        result = sort_items(items, "unknown_field", sort_key_map, console)
-
-        # Should return original list unchanged
-        assert result == items
-        # Should print warning
-        console.print.assert_called_once()
-        assert "Unknown sort field" in str(console.print.call_args)
+        with pytest.raises(click.BadParameter, match="Unknown sort field"):
+            sort_items(items, "unknown_field", sort_key_map, console)
 
     def test_sort_empty_list(self):
         """Test sorting empty list."""
@@ -192,22 +187,24 @@ class TestSortItems:
         assert result == []
 
     def test_sort_error_handling(self):
-        """Test error handling during sort."""
+        """Test typed sort failures become CLI errors."""
         items = [
             MockItem(name="test1"),
             MockItem(name=None),  # Will cause error in comparison
         ]
         # Key function that will raise error
-        sort_key_map = {"name": lambda x: x.name.lower()}
+        sort_key_map = {"name": lambda x: x.name}
         console = MagicMock()
 
-        result = sort_items(items, "name", sort_key_map, console)
+        with pytest.raises(click.ClickException, match="Could not sort"):
+            sort_items(items, "name", sort_key_map, console)
 
-        # Should return original list on error
-        assert result == items
-        # Should print warning
-        console.print.assert_called_once()
-        assert "Could not sort" in str(console.print.call_args)
+    def test_sort_requires_explicit_key_map(self):
+        """Test non-empty sort requests must define typed key maps."""
+        items = [MockItem(name="test")]
+
+        with pytest.raises(RuntimeError, match="explicit sort_key_map"):
+            sort_items(items, "name")
 
     def test_sort_no_sort_by(self):
         """Test that None or empty sort_by returns original list."""

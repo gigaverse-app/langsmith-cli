@@ -126,7 +126,15 @@ def list_prompts(
 
     # Client-side sorting
     if sort_by:
-        prompts_list = sort_items(prompts_list, sort_by)
+        prompts_list = sort_items(
+            prompts_list,
+            sort_by,
+            {
+                "full_name": lambda p: p.full_name,
+                "created_at": lambda p: p.created_at,
+                "updated_at": lambda p: p.updated_at,
+            },
+        )
 
     # Define table builder function
     def build_prompts_table(prompts):

@@ -442,10 +442,11 @@ def sort_items(
     Args:
         items: List of items to sort
         sort_by: Sort specification (e.g., "name" or "-name" for descending)
-        sort_key_map: Dictionary mapping field names to key functions.
-                      If None, uses getattr to look up the field directly.
+        sort_key_map: Dictionary mapping field names to key functions. Required
+                      when ``sort_by`` is provided so sorting stays typed and
+                      explicit at command boundaries.
                       Any is acceptable for key return type - can be str, int, datetime, etc.
-        console: Rich console for printing warnings. If None, warnings are skipped.
+        console: Deprecated compatibility argument. Sorting errors are raised.
 
     Returns:
         Sorted list of items
@@ -455,31 +456,23 @@ def sort_items(
 
     reverse = sort_by.startswith("-")
     sort_field = sort_by.lstrip("-")
+    _ = console
 
-    if sort_key_map is not None:
-        if sort_field not in sort_key_map:
-            if console is not None:
-                console.print(
-                    f"[yellow]Warning: Unknown sort field '{sort_field}'. "
-                    f"Available: {', '.join(sort_key_map.keys())}[/yellow]"
-                )
-            return items
-        key_func: Callable[[T], Any] = sort_key_map[sort_field]
-    else:
-
-        def _attr_key(item: T) -> Any:
-            return getattr(item, sort_field, None)
-
-        key_func = _attr_key
+    if sort_key_map is None:
+        raise RuntimeError(
+            "sort_items requires an explicit sort_key_map when sort_by is provided."
+        )
+    if sort_field not in sort_key_map:
+        available = ", ".join(sort_key_map.keys())
+        raise click.BadParameter(
+            f"Unknown sort field '{sort_field}'. Available: {available}"
+        )
+    key_func: Callable[[T], Any] = sort_key_map[sort_field]
 
     try:
         return sorted(items, key=key_func, reverse=reverse)
-    except Exception as e:
-        if console is not None:
-            console.print(
-                f"[yellow]Warning: Could not sort by {sort_field}: {e}[/yellow]"
-            )
-        return items
+    except TypeError as e:
+        raise click.ClickException(f"Could not sort by '{sort_field}': {e}") from e
 
 
 def apply_regex_filter(

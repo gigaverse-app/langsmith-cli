@@ -159,7 +159,15 @@ def list_datasets(
 
     # Client-side sorting
     if sort_by:
-        datasets_list = sort_items(datasets_list, sort_by)
+        datasets_list = sort_items(
+            datasets_list,
+            sort_by,
+            {
+                "name": lambda d: d.name,
+                "created_at": lambda d: d.created_at,
+                "example_count": lambda d: d.example_count,
+            },
+        )
 
     # Define table builder function
     def build_datasets_table(datasets):

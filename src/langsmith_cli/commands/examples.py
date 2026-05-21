@@ -129,7 +129,14 @@ def list_examples(
 
     # Client-side sorting
     if sort_by:
-        examples_list = sort_items(examples_list, sort_by)
+        examples_list = sort_items(
+            examples_list,
+            sort_by,
+            {
+                "created_at": lambda e: e.created_at,
+                "modified_at": lambda e: e.modified_at,
+            },
+        )
 
     # Define table builder function
     def build_examples_table(examples):
