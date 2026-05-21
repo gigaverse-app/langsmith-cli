@@ -106,18 +106,27 @@ def pricing_check(
     The lookup provides input/output prices per million tokens that can be
     configured in LangSmith Settings > Model Pricing.
 
+    \b
     Examples:
-        # Check pricing for all prd/* projects from cache
-        langsmith-cli runs pricing --project-name-pattern "prd/*" --from-cache
+      # Check pricing for all prd/* projects from cache
+      langsmith-cli runs pricing --project-name-pattern "prd/*" --from-cache
 
-        # Check without OpenRouter lookup
-        langsmith-cli runs pricing --project-name-pattern "prd/*" --from-cache --no-lookup
+    \b
+      # Check without OpenRouter lookup
+      langsmith-cli runs pricing \\
+        --project-name-pattern "prd/*" \\
+        --from-cache \\
+        --no-lookup
 
-        # Check recent runs from API
-        langsmith-cli runs pricing --project my-project --last 7d
+    \b
+      # Check recent runs from API
+      langsmith-cli runs pricing --project my-project --last 7d
 
-        # JSON output for automation
-        langsmith-cli --json runs pricing --project-name-pattern "prd/*" --from-cache
+    \b
+      # JSON output for automation
+      langsmith-cli --json runs pricing \\
+        --project-name-pattern "prd/*" \\
+        --from-cache
     """
     from collections import defaultdict
 
