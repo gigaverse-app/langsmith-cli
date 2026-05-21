@@ -19,6 +19,7 @@ from langsmith_cli.utils import (
     parse_comma_separated_list,
     parse_fields_option,
     parse_json_string,
+    render_detail_fields,
     render_output,
     require_confirmation,
     sort_by_option,
@@ -193,7 +194,7 @@ def get_example(ctx, example_id, as_of, fields, output):
     def render_example_details(data: dict, console: ConsoleProtocol) -> None:
         from rich.syntax import Syntax
 
-        console.print(f"[bold]Example ID:[/bold] {data.get('id')}")
+        render_detail_fields(data, console, [("id", "Example ID")])
         if "inputs" in data:
             console.print("\n[bold]Inputs:[/bold]")
             console.print(Syntax(json_dumps(data["inputs"], indent=2), "json"))

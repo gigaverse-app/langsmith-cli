@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 import click
 
 from langsmith_cli.filtering import build_tag_fql_filters
-from langsmith_cli.output import json_dumps
+from langsmith_cli.output import json_dumps, render_detail_fields
 from langsmith_cli.time_parsing import (
     build_time_fql_filters,
     combine_fql_filters,
@@ -217,8 +217,7 @@ def render_run_details(
     if title:
         console.print(f"[bold]{title}[/bold]")
 
-    console.print(f"[bold]ID:[/bold] {data.get('id')}")
-    console.print(f"[bold]Name:[/bold] {data.get('name')}")
+    render_detail_fields(data, console, [("id", "ID"), ("name", "Name")])
 
     # Print other fields
     for k, v in data.items():

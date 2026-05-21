@@ -25,6 +25,7 @@ from langsmith_cli.utils import (
     exclude_option,
     output_option,
     output_single_item,
+    render_detail_fields,
     render_output,
     require_confirmation,
     get_or_create_client,
@@ -337,16 +338,24 @@ def get_project(ctx, name_or_id, include_stats, fields, output):
     data = filter_fields(project, fields)
 
     def render_project_details(data: dict, console: ConsoleProtocol) -> None:
-        console.print(f"[bold]Project:[/bold] {data.get('name')}")
-        console.print(f"[bold]ID:[/bold] {data.get('id')}")
-        if data.get("description"):
-            console.print(f"[bold]Description:[/bold] {data.get('description')}")
-        if data.get("run_count") is not None:
-            console.print(f"[bold]Runs:[/bold] {data.get('run_count')}")
-        if data.get("error_rate") is not None:
+        render_detail_fields(
+            data,
+            console,
+            [
+                ("name", "Project"),
+                ("id", "ID"),
+                ("description", "Description"),
+                ("run_count", "Runs"),
+            ],
+        )
+        if "error_rate" in data and data["error_rate"] is not None:
             rate = data["error_rate"]
             console.print(f"[bold]Error Rate:[/bold] {rate * 100:.1f}%")
-        if data.get("total_cost") is not None and float(data["total_cost"]) > 0:
+        if (
+            "total_cost" in data
+            and data["total_cost"] is not None
+            and float(data["total_cost"]) > 0
+        ):
             console.print(f"[bold]Cost:[/bold] ${float(data['total_cost']):.4f}")
 
     output_single_item(

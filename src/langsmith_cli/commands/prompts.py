@@ -17,6 +17,7 @@ from langsmith_cli.utils import (
     output_single_item,
     parse_comma_separated_list,
     parse_fields_option,
+    render_detail_fields,
     render_output,
     require_confirmation,
     sort_by_option,
@@ -310,9 +311,10 @@ def pull_prompt(ctx, name, commit, include_model, fields, output):
     def render_commit_details(data: dict, console: ConsoleProtocol) -> None:
         from rich.syntax import Syntax
 
-        console.print(f"[bold]Prompt:[/bold] {data.get('owner')}/{data.get('repo')}")
-        console.print(f"[bold]Commit:[/bold] {data.get('commit_hash')}")
-        if data.get("manifest"):
+        if "owner" in data and "repo" in data:
+            console.print(f"[bold]Prompt:[/bold] {data['owner']}/{data['repo']}")
+        render_detail_fields(data, console, [("commit_hash", "Commit")])
+        if "manifest" in data and data["manifest"]:
             console.print("\n[bold]Manifest:[/bold]")
             console.print(Syntax(json_dumps(data["manifest"], indent=2), "json"))
 

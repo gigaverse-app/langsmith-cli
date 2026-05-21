@@ -135,6 +135,33 @@ def test_annotation_queues_get_json(runner):
         assert data["name"] == "my-queue"
 
 
+def test_annotation_queues_get_human_fields_skips_omitted_values(runner):
+    """INVARIANT: human --fields output does not render omitted fields as None."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        q = create_annotation_queue(
+            id_str="33333333-3333-3333-3333-333333333333",
+            name="my-queue",
+        )
+        mock_client.read_annotation_queue.return_value = q
+        result = runner.invoke(
+            cli,
+            [
+                "annotation-queues",
+                "get",
+                "33333333-3333-3333-3333-333333333333",
+                "--fields",
+                "name",
+            ],
+        )
+
+        assert result.exit_code == 0
+        output = strip_ansi(result.output)
+        assert "Name: my-queue" in output
+        assert "ID:" not in output
+        assert "None" not in output
+
+
 def test_annotation_queues_get_output_file(runner, tmp_path):
     """INVARIANT: annotation-queues get supports the standard --output file flag."""
     out = tmp_path / "queue.json"

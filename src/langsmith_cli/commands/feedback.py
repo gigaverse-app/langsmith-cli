@@ -13,6 +13,7 @@ from langsmith_cli.utils import (
     output_option,
     output_single_item,
     parse_fields_option,
+    render_detail_fields,
     render_output,
     require_confirmation,
 )
@@ -139,13 +140,17 @@ def get_feedback(ctx, feedback_id, fields, output):
     data = filter_fields(fb, fields)
 
     def render_feedback_details(data: dict, console: ConsoleProtocol) -> None:
-        console.print(f"[bold]ID:[/bold] {data.get('id')}")
-        console.print(f"[bold]Key:[/bold] {data.get('key')}")
-        console.print(f"[bold]Score:[/bold] {data.get('score')}")
-        if data.get("comment"):
-            console.print(f"[bold]Comment:[/bold] {data.get('comment')}")
-        if data.get("run_id"):
-            console.print(f"[bold]Run ID:[/bold] {data.get('run_id')}")
+        render_detail_fields(
+            data,
+            console,
+            [
+                ("id", "ID"),
+                ("key", "Key"),
+                ("score", "Score"),
+                ("comment", "Comment"),
+                ("run_id", "Run ID"),
+            ],
+        )
 
     output_single_item(
         ctx, data, console, output=output, render_fn=render_feedback_details

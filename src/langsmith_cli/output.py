@@ -203,6 +203,30 @@ def print_empty_result_message(console: ConsoleProtocol, item_type: str) -> None
     console.print(f"[yellow]No {item_type} found.[/yellow]")
 
 
+def render_detail_fields(
+    data: dict[str, Any],
+    console: ConsoleProtocol,
+    fields: list[tuple[str, str]],
+    *,
+    skip_empty: bool = True,
+) -> None:
+    """Render labeled fields from a filtered detail dictionary.
+
+    ``get`` commands often render a dict produced by ``filter_fields``. When a
+    user asks for ``--fields name`` the omitted keys should simply disappear
+    from human output, not show up as ``None`` values.
+    """
+    for key, label in fields:
+        if key not in data:
+            continue
+        value = data[key]
+        if value is None:
+            continue
+        if skip_empty and value == "":
+            continue
+        console.print(f"[bold]{label}:[/bold] {value}")
+
+
 def safe_model_dump(
     obj: ModelDumpable | dict[str, Any],
     include: set[str] | None = None,

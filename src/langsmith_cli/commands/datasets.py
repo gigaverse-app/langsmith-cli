@@ -26,6 +26,7 @@ from langsmith_cli.utils import (
     output_single_item,
     parse_comma_separated_list,
     parse_json_string,
+    render_detail_fields,
     render_output,
     require_confirmation,
 )
@@ -214,9 +215,15 @@ def get_dataset(ctx, dataset_id, fields, output):
     data = filter_fields(dataset, fields)
 
     def render_dataset_details(data: dict, console: ConsoleProtocol) -> None:
-        console.print(f"[bold]Name:[/bold] {data.get('name')}")
-        console.print(f"[bold]ID:[/bold] {data.get('id')}")
-        console.print(f"[bold]Description:[/bold] {data.get('description')}")
+        render_detail_fields(
+            data,
+            console,
+            [
+                ("name", "Name"),
+                ("id", "ID"),
+                ("description", "Description"),
+            ],
+        )
 
     output_single_item(
         ctx, data, console, output=output, render_fn=render_dataset_details

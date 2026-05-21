@@ -13,6 +13,7 @@ from langsmith_cli.utils import (
     output_option,
     output_single_item,
     parse_fields_option,
+    render_detail_fields,
     render_output,
     require_confirmation,
 )
@@ -111,10 +112,15 @@ def get_queue(ctx, queue_id, fields, output):
     data = filter_fields(queue, fields)
 
     def render_queue_details(data: dict, console: ConsoleProtocol) -> None:
-        console.print(f"[bold]ID:[/bold] {data.get('id')}")
-        console.print(f"[bold]Name:[/bold] {data.get('name')}")
-        if data.get("description"):
-            console.print(f"[bold]Description:[/bold] {data.get('description')}")
+        render_detail_fields(
+            data,
+            console,
+            [
+                ("id", "ID"),
+                ("name", "Name"),
+                ("description", "Description"),
+            ],
+        )
 
     output_single_item(
         ctx, data, console, output=output, render_fn=render_queue_details
