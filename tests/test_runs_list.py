@@ -5,7 +5,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from conftest import create_run, make_run_id
+from conftest import create_project, create_run, make_run_id
 from langsmith_cli.main import cli
 
 
@@ -50,6 +50,20 @@ class TestRunsListBasic:
 
         _, kwargs = mock_client.list_runs.call_args
         assert kwargs["is_root"] is False
+
+    def test_project_pattern_alias_filters_projects(self, runner, mock_client):
+        """--project-pattern is the short alias for --project-name-pattern."""
+        mock_client.list_projects.return_value = [
+            create_project("prd/api"),
+            create_project("dev/api"),
+        ]
+        mock_client.list_runs.return_value = []
+
+        result = runner.invoke(cli, ["runs", "list", "--project-pattern", "prd/*"])
+
+        assert result.exit_code == 0
+        _, kwargs = mock_client.list_runs.call_args
+        assert kwargs["project_name"] == "prd/api"
 
     @pytest.mark.parametrize(
         "args,message",

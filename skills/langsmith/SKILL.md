@@ -220,6 +220,7 @@ url = f"https://smith.langchain.com/o/{org_id}/projects/p/{proj_id}?peek={run_id
 
 ```bash
 # Multi-project matching
+--project-pattern "prd/*"         # wildcard alias for --project-name-pattern
 --project-name-pattern "prd/*"    # wildcard
 --project-name-regex "^(prd|stg)" # regex
 

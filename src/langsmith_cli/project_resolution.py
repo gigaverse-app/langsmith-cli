@@ -860,7 +860,7 @@ def add_project_filter_options(func: Callable[..., Any]) -> Callable[..., Any]:
     - --project-id: Direct project UUID (bypasses name resolution)
     - --project-name: Substring/contains match
     - --project-name-exact: Exact match
-    - --project-name-pattern: Wildcard pattern (*, ?)
+    - --project-pattern / --project-name-pattern: Wildcard pattern (*, ?)
     - --project-name-regex: Regular expression
 
     Usage:
@@ -885,7 +885,9 @@ def add_project_filter_options(func: Callable[..., Any]) -> Callable[..., Any]:
         help="Regular expression pattern for project names (e.g., '^prod-.*-v[0-9]+$').",
     )(func)
     func = click.option(
+        "--project-pattern",
         "--project-name-pattern",
+        "project_name_pattern",
         help="Wildcard pattern for project names (e.g., 'dev/*', '*production*').",
     )(func)
     func = click.option(
