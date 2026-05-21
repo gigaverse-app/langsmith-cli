@@ -14,6 +14,7 @@ from langsmith_cli.utils import (
     output_single_item,
     parse_fields_option,
     render_output,
+    require_confirmation,
 )
 
 console = Console()
@@ -193,11 +194,9 @@ def delete_queue(ctx, queue_id, confirm):
     with not_found_as_click_exception("Annotation queue", queue_id):
         client.read_annotation_queue(queue_id)
 
-    if not confirm:
-        if not click.confirm(
-            f"Are you sure you want to delete annotation queue {queue_id}?"
-        ):
-            raise click.ClickException("Cancelled.")
+    require_confirmation(
+        confirm, f"Are you sure you want to delete annotation queue {queue_id}?"
+    )
 
     logger.debug(f"Deleting annotation queue: {queue_id}")
 

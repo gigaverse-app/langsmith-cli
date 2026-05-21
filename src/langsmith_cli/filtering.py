@@ -115,6 +115,35 @@ def fields_option(
     )
 
 
+def require_confirmation(skip: bool, prompt: str) -> None:
+    """Ask the user for confirmation, or abort with a uniform "Cancelled." error.
+
+    Every destructive command shares the same two-step dance: skip the prompt
+    if ``--confirm``/``--yes`` was passed, otherwise call ``click.confirm`` and
+    raise ``ClickException("Cancelled.")`` if the user declines. Centralizing
+    this keeps the abort message identical everywhere and makes future
+    changes (e.g. adding a second confirmation step) a one-place edit.
+
+    Args:
+        skip: True if the user passed ``--confirm`` / ``--yes`` and the prompt
+            should be skipped.
+        prompt: The yes/no question to put to the user.
+
+    Raises:
+        click.ClickException: If ``skip`` is False and the user declined.
+
+    Example::
+
+        require_confirmation(
+            confirm, f"Are you sure you want to delete dataset '{name}'?"
+        )
+    """
+    if skip:
+        return
+    if not click.confirm(prompt):
+        raise click.ClickException("Cancelled.")
+
+
 def confirm_option(
     help_text: str = "Skip confirmation prompt.",
 ) -> Any:
@@ -136,9 +165,7 @@ def confirm_option(
         @confirm_option()
         @click.pass_context
         def delete_dataset(ctx, name_or_id, confirm):
-            if not confirm:
-                if not click.confirm("Delete?"):
-                    raise click.ClickException("Cancelled.")
+            require_confirmation(confirm, "Delete?")
             ...
     """
     return click.option(

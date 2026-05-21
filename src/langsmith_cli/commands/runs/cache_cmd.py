@@ -26,6 +26,7 @@ from langsmith_cli.utils import (
     parse_fields_option,
     partition_metadata_filters,
     render_output,
+    require_confirmation,
     resolve_project_filters,
 )
 
@@ -522,9 +523,8 @@ def cache_clear(ctx: click.Context, project: str | None, confirm: bool) -> None:
 
     logger = ctx.obj["logger"]
 
-    if not project and not confirm:
-        if not click.confirm("Clear ALL cached run data?"):
-            raise click.ClickException("Cancelled.")
+    if not project:
+        require_confirmation(confirm, "Clear ALL cached run data?")
 
     deleted = do_clear(project)
     if deleted:

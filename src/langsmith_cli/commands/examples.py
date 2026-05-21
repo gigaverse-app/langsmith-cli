@@ -19,6 +19,7 @@ from langsmith_cli.utils import (
     parse_fields_option,
     parse_json_string,
     render_output,
+    require_confirmation,
     sort_by_option,
     sort_items,
 )
@@ -283,10 +284,10 @@ def delete_examples(ctx, example_ids, confirm):
     logger = ctx.obj["logger"]
     configure_logger_streams(ctx, logger)
 
-    if not confirm:
-        count = len(example_ids)
-        if not click.confirm(f"Are you sure you want to delete {count} example(s)?"):
-            raise click.ClickException("Cancelled.")
+    require_confirmation(
+        confirm,
+        f"Are you sure you want to delete {len(example_ids)} example(s)?",
+    )
 
     logger.debug(f"Deleting {len(example_ids)} example(s)")
 

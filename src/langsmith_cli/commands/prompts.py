@@ -6,6 +6,7 @@ from langsmith_cli.utils import (
     configure_logger_streams,
     confirm_option,
     count_option,
+    emit_action_result,
     exclude_option,
     fields_option,
     filter_fields,
@@ -16,6 +17,7 @@ from langsmith_cli.utils import (
     parse_comma_separated_list,
     parse_fields_option,
     render_output,
+    require_confirmation,
     sort_by_option,
     sort_items,
 )
@@ -244,10 +246,12 @@ def push_prompt(ctx, name, file_path, description, tags, is_public, public, priv
             "Install with: pip install langchain-core"
         )
 
-    if ctx.obj.get("json"):
-        click.echo(json_dumps({"status": "success", "name": name}))
-    else:
-        logger.success(f"Successfully pushed prompt to {name}")
+    emit_action_result(
+        ctx,
+        logger,
+        payload={"status": "success", "name": name},
+        success_message=f"Successfully pushed prompt to {name}",
+    )
 
 
 @prompts.command("pull")
@@ -312,9 +316,7 @@ def delete_prompt(ctx, name, confirm):
     logger = ctx.obj["logger"]
     configure_logger_streams(ctx, logger)
 
-    if not confirm:
-        if not click.confirm(f"Are you sure you want to delete prompt '{name}'?"):
-            raise click.ClickException("Cancelled.")
+    require_confirmation(confirm, f"Are you sure you want to delete prompt '{name}'?")
 
     logger.debug(f"Deleting prompt: {name}")
 
@@ -330,10 +332,12 @@ def delete_prompt(ctx, name, confirm):
             logger.warning(f"Prompt '{name}' not found.")
         return
 
-    if ctx.obj.get("json"):
-        click.echo(json_dumps({"status": "success", "name": name}))
-    else:
-        logger.success(f"Deleted prompt '{name}'")
+    emit_action_result(
+        ctx,
+        logger,
+        payload={"status": "success", "name": name},
+        success_message=f"Deleted prompt '{name}'",
+    )
 
 
 @prompts.command("create")
@@ -366,10 +370,12 @@ def create_prompt_cmd(ctx, name, description, tags, is_public, public, private):
             tags=tags_list if tags_list else None,
             is_public=prompt_is_public,
         )
-        if ctx.obj.get("json"):
-            click.echo(json_dumps(prompt.model_dump(mode="json")))
-        else:
-            logger.success(f"Created prompt '{prompt.full_name}'")
+        emit_action_result(
+            ctx,
+            logger,
+            model=prompt,
+            success_message=f"Created prompt '{prompt.full_name}'",
+        )
     except LangSmithConflictError:
         if ctx.obj.get("json"):
             click.echo(

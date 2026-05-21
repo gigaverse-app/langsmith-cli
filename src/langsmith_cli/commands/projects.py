@@ -25,6 +25,7 @@ from langsmith_cli.utils import (
     output_option,
     output_single_item,
     render_output,
+    require_confirmation,
     get_or_create_client,
 )
 
@@ -391,11 +392,9 @@ def delete_project(ctx, name_or_id, confirm):
     logger = ctx.obj["logger"]
     configure_logger_streams(ctx, logger)
 
-    if not confirm:
-        if not click.confirm(
-            f"Are you sure you want to delete project '{name_or_id}'?"
-        ):
-            raise click.ClickException("Cancelled.")
+    require_confirmation(
+        confirm, f"Are you sure you want to delete project '{name_or_id}'?"
+    )
 
     logger.debug(f"Deleting project: {name_or_id}")
 

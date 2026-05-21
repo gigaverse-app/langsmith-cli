@@ -3,7 +3,6 @@ import json as json_lib
 import os
 from typing import Any
 import click
-from rich.console import Console
 from dotenv import load_dotenv
 from langsmith_cli.commands.annotation_queues import annotation_queues
 from langsmith_cli.commands.auth import login
@@ -32,8 +31,6 @@ if "LANGSMITH_API_KEY" not in os.environ:
 if "LANGSMITH_API_KEY" not in os.environ:
     load_dotenv()
 
-console = Console()
-
 
 def _http_status_from_exception(exc: BaseException) -> int | None:
     """Extract an HTTP status from SDK/http exception chains when available."""
@@ -46,19 +43,34 @@ def _http_status_from_exception(exc: BaseException) -> int | None:
         seen.add(id(current))
 
         if isinstance(current, (httpx.HTTPStatusError, requests.HTTPError)):
-            response = getattr(current, "response", None)
+            response = current.response
             if response is not None:
-                status_code = getattr(response, "status_code", None)
-                if isinstance(status_code, int):
-                    return status_code
-
-            if current.args and isinstance(current.args[0], str):
-                status_text = current.args[0].split(maxsplit=1)[0]
-                if status_text.isdigit():
-                    return int(status_text)
+                return response.status_code
 
         current = current.__cause__ or current.__context__
     return None
+
+
+def _get_console() -> Any:
+    from rich.console import Console
+
+    return Console()
+
+
+def _is_json_mode(ctx: click.Context) -> bool:
+    if ctx.obj is None:
+        return False
+    if "json" not in ctx.obj:
+        return False
+    return bool(ctx.obj["json"])
+
+
+def _close_cached_client(ctx: click.Context) -> None:
+    if ctx.obj is None:
+        return
+    if "client" not in ctx.obj:
+        return
+    ctx.obj["client"].close()
 
 
 class LangSmithCLIGroup(click.Group):
@@ -86,7 +98,7 @@ class LangSmithCLIGroup(click.Group):
             )
 
             # Get JSON mode from context
-            json_mode = ctx.obj.get("json", False) if ctx.obj else False
+            json_mode = _is_json_mode(ctx)
 
             # Handle specific exception types with friendly messages
             if isinstance(e, LangSmithAuthError):
@@ -101,6 +113,7 @@ class LangSmithCLIGroup(click.Group):
                     }
                     click.echo(json_lib.dumps(error_data))
                 else:
+                    console = _get_console()
                     console.print(f"[red]Error:[/red] {error_msg}")
                     console.print(f"[yellow]→[/yellow] {help_msg}")
 
@@ -112,6 +125,7 @@ class LangSmithCLIGroup(click.Group):
                     error_data = {"error": "NotFoundError", "message": error_msg}
                     click.echo(json_lib.dumps(error_data))
                 else:
+                    console = _get_console()
                     console.print(f"[red]Error:[/red] {error_msg}")
                 sys.exit(1)
 
@@ -121,6 +135,7 @@ class LangSmithCLIGroup(click.Group):
                     error_data = {"error": "ConflictError", "message": error_msg}
                     click.echo(json_lib.dumps(error_data))
                 else:
+                    console = _get_console()
                     console.print(f"[yellow]Warning:[/yellow] {error_msg}")
                 # Don't exit for conflicts - they're often non-fatal
                 return
@@ -144,6 +159,7 @@ class LangSmithCLIGroup(click.Group):
                         }
                         click.echo(json_lib.dumps(error_data))
                     else:
+                        console = _get_console()
                         console.print(f"[red]Error:[/red] {error_msg}")
                         console.print(f"[yellow]→[/yellow] {help_msg}")
                         console.print(
@@ -168,6 +184,7 @@ class LangSmithCLIGroup(click.Group):
                         }
                         click.echo(json_lib.dumps(error_data))
                     else:
+                        console = _get_console()
                         console.print(f"[red]Error:[/red] {error_msg}")
                         console.print(f"[yellow]→[/yellow] {help_msg}")
 
@@ -179,6 +196,7 @@ class LangSmithCLIGroup(click.Group):
                         error_data = {"error": "LangSmithError", "message": error_str}
                         click.echo(json_lib.dumps(error_data))
                     else:
+                        console = _get_console()
                         console.print(f"[red]Error:[/red] {error_str}")
                     sys.exit(1)
 
@@ -218,14 +236,11 @@ class LangSmithCLIGroup(click.Group):
                     # In human mode, re-raise for Click's default formatting
                     raise
         finally:
-            if ctx.obj and "client" in ctx.obj:
-                try:
-                    ctx.obj["client"].close()
-                except AttributeError:
-                    pass
-            # Flush stdout to prevent data loss when piping to other processes
-            # This fixes race conditions where buffered output may not reach the pipe
-            sys.stdout.flush()
+            try:
+                _close_cached_client(ctx)
+            finally:
+                # Flush stdout to prevent data loss when piping to other processes.
+                sys.stdout.flush()
 
 
 @click.group(cls=LangSmithCLIGroup)

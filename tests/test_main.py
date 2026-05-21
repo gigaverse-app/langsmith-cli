@@ -11,9 +11,16 @@ def _wrapped_langsmith_http_error(status_code: int, reason: str) -> Exception:
     import requests
     from langsmith.utils import LangSmithError
 
+    response = requests.Response()
+    response.status_code = status_code
+    response.reason = reason
+    response.url = "https://api.smith.langchain.com/sessions"
+
     try:
         try:
-            raise requests.HTTPError(f"{status_code} Client Error: {reason}")
+            raise requests.HTTPError(
+                f"{status_code} Client Error: {reason}", response=response
+            )
         except requests.HTTPError as inner:
             raise LangSmithError(f"Failed to GET /sessions: {reason}") from inner
     except LangSmithError as wrapped:

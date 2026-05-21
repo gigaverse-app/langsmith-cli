@@ -14,6 +14,7 @@ from langsmith_cli.utils import (
     output_single_item,
     parse_fields_option,
     render_output,
+    require_confirmation,
 )
 
 console = Console()
@@ -207,11 +208,9 @@ def delete_feedback_cmd(ctx, feedback_id, confirm):
     logger = ctx.obj["logger"]
     configure_logger_streams(ctx, logger)
 
-    if not confirm:
-        if not click.confirm(
-            f"Are you sure you want to delete feedback {feedback_id}?"
-        ):
-            raise click.ClickException("Cancelled.")
+    require_confirmation(
+        confirm, f"Are you sure you want to delete feedback {feedback_id}?"
+    )
 
     logger.debug(f"Deleting feedback: {feedback_id}")
 

@@ -27,6 +27,7 @@ from langsmith_cli.utils import (
     parse_comma_separated_list,
     parse_json_string,
     render_output,
+    require_confirmation,
 )
 
 if TYPE_CHECKING:
@@ -333,11 +334,9 @@ def delete_dataset(ctx, name_or_id, confirm):
     logger = ctx.obj["logger"]
     configure_logger_streams(ctx, logger)
 
-    if not confirm:
-        if not click.confirm(
-            f"Are you sure you want to delete dataset '{name_or_id}'?"
-        ):
-            raise click.ClickException("Cancelled.")
+    require_confirmation(
+        confirm, f"Are you sure you want to delete dataset '{name_or_id}'?"
+    )
 
     logger.debug(f"Deleting dataset: {name_or_id}")
 
