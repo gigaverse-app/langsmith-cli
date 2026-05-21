@@ -83,6 +83,9 @@ def _fetch_with_rate_limit_retry(
     Returns:
         List of items from the successful call
     """
+    import httpx
+    from langsmith.utils import LangSmithRateLimitError
+
     delay = initial_delay
     for attempt in range(max_retries + 1):
         try:
@@ -90,7 +93,7 @@ def _fetch_with_rate_limit_retry(
             if isinstance(items, Iterable) and not isinstance(items, (list, tuple)):
                 items = list(items)
             return items  # type: ignore[return-value]
-        except Exception as e:
+        except (LangSmithRateLimitError, httpx.HTTPStatusError) as e:
             if attempt < max_retries and _is_rate_limited(e):
                 time.sleep(delay)
                 delay *= 2
