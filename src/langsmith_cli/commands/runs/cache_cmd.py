@@ -1,6 +1,6 @@
 """Cache subcommands for runs (download, list, clear, grep)."""
 
-from typing import Any
+from typing import Any, NotRequired, TypedDict
 import json
 
 import click
@@ -29,6 +29,30 @@ from langsmith_cli.utils import (
     require_confirmation,
     resolve_project_filters,
 )
+
+
+class CacheDownloadProjectResult(TypedDict):
+    """Per-project result emitted by ``runs cache download``."""
+
+    project: str
+    status: str
+    new_runs: int
+    total_runs: int
+    size_mb: float
+    mode: str
+    elapsed_s: float
+    incremental_from: NotRequired[str]
+    error_type: NotRequired[str]
+    error: NotRequired[str]
+
+
+def _cache_download_error_message(result: CacheDownloadProjectResult) -> str:
+    """Return the required error message for a failed cache download result."""
+    if "error" not in result:
+        raise RuntimeError(
+            f"Cache download error result for {result['project']} is missing error"
+        )
+    return result["error"]
 
 
 @runs.group("cache")
@@ -181,13 +205,13 @@ def cache_download(
         base_filters.extend(build_metadata_fql_filters(server_meta))
 
     # Results tracking
-    results: list[dict[str, Any]] = []
+    results: list[CacheDownloadProjectResult] = []
     overall_start = time.monotonic()
 
-    def download_project(proj_name: str) -> dict[str, Any]:
+    def download_project(proj_name: str) -> CacheDownloadProjectResult:
         """Download runs for a single project. Runs in thread pool."""
         proj_start = time.monotonic()
-        result: dict[str, Any] = {
+        result: CacheDownloadProjectResult = {
             "project": proj_name,
             "status": "success",
             "new_runs": 0,
@@ -417,7 +441,7 @@ def cache_download(
         if errors:
             for e in errors:
                 logger.warning(
-                    f"  Failed: {e['project']} - {e.get('error', 'unknown')}"
+                    f"  Failed: {e['project']} - {_cache_download_error_message(e)}"
                 )
 
 
