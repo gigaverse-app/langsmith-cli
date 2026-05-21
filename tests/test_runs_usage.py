@@ -1079,6 +1079,34 @@ class TestUsageCsvFormat:
         assert "time" in rows[0]
         assert "run_count" in rows[0]
 
+    def test_output_respects_json_format(self, runner, mock_client, tmp_path):
+        """--output writes a JSON array when --format json is explicit."""
+        mock_client.list_runs.return_value = [
+            _create_llm_run(1, hour=16, model="gpt-4"),
+            _create_llm_run(2, hour=17, model="claude-3"),
+        ]
+        output_file = tmp_path / "usage.json"
+
+        result = runner.invoke(
+            cli,
+            [
+                "-qq",
+                "runs",
+                "usage",
+                "--last",
+                "24h",
+                "--format",
+                "json",
+                "--output",
+                str(output_file),
+            ],
+        )
+
+        assert result.exit_code == 0
+        data = json.loads(output_file.read_text())
+        assert isinstance(data, list)
+        assert "run_count" in data[0]
+
 
 class TestUsageProviderGatewayBreakdown:
     """Tests for --breakdown provider and --breakdown gateway dimensions."""
@@ -1455,6 +1483,31 @@ class TestUsageApplyPricing:
         data = _extract_json(result.output)
         bucket = data["buckets"][0]
         assert bucket["total_cost"] == pytest.approx(0.0)
+
+    def test_apply_pricing_missing_required_key_fails_fast(
+        self, runner, mock_client, tmp_path
+    ):
+        """INVARIANT: Malformed pricing rows are rejected instead of defaulted."""
+        mock_client.list_runs.return_value = [_create_llm_run(1, model="gpt-4")]
+
+        pricing_file = tmp_path / "pricing.yaml"
+        pricing_file.write_text("gpt-4:\n  input_per_million: 2.5\n")
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "usage",
+                "--last",
+                "24h",
+                "--apply-pricing",
+                str(pricing_file),
+            ],
+        )
+
+        assert result.exit_code != 0
+        assert "missing: output_per_million" in result.output
 
 
 class TestGetServiceTier:

@@ -1,6 +1,7 @@
 """Tests for the runs pricing command."""
 
 import json
+import re
 from datetime import datetime, timezone
 from decimal import Decimal
 from unittest.mock import patch, MagicMock
@@ -11,6 +12,7 @@ from langsmith.schemas import Run
 
 from conftest import create_run, make_run_id, strip_ansi
 from langsmith_cli.commands.runs import _fetch_openrouter_pricing
+from langsmith_cli.commands.runs.pricing_cmd import _validate_openrouter_models_response
 from langsmith_cli.main import cli
 
 
@@ -261,6 +263,81 @@ class TestFetchOpenRouterPricing:
             result = _fetch_openrouter_pricing(["totally-unknown-model"], logger)
 
         assert "totally-unknown-model" not in result
+
+    def test_malformed_openrouter_response_warns_and_returns_empty(self):
+        """Malformed OpenRouter responses are not silently treated as valid data."""
+        mock_response = json.dumps({"unexpected": []}).encode()
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = mock_response
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        logger = MagicMock()
+
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            result = _fetch_openrouter_pricing(["gpt-4o"], logger)
+
+        assert result == {}
+        logger.warning.assert_called_once()
+        assert "unexpected shape" in logger.warning.call_args.args[0]
+
+    @pytest.mark.parametrize(
+        ("payload", "message"),
+        [
+            ([], "expected object"),
+            ({"data": {}}, "field 'data' must be a list"),
+            ({"data": ["bad"]}, "data[0] must be an object"),
+            ({"data": [{"pricing": {"prompt": "1", "completion": "2"}}]}, "id"),
+            (
+                {"data": [{"id": 123, "pricing": {"prompt": "1", "completion": "2"}}]},
+                "id must be a string",
+            ),
+            ({"data": [{"id": "model"}]}, "pricing"),
+            ({"data": [{"id": "model", "pricing": []}]}, "pricing must be an object"),
+            (
+                {"data": [{"id": "model", "pricing": {"completion": "2"}}]},
+                "prompt",
+            ),
+            ({"data": [{"id": "model", "pricing": {"prompt": "1"}}]}, "completion"),
+            (
+                {
+                    "data": [
+                        {
+                            "id": "model",
+                            "pricing": {"prompt": 1, "completion": "2"},
+                        }
+                    ]
+                },
+                "prompt must be a string",
+            ),
+            (
+                {
+                    "data": [
+                        {
+                            "id": "model",
+                            "pricing": {"prompt": "1", "completion": 2},
+                        }
+                    ]
+                },
+                "completion must be a string",
+            ),
+            (
+                {
+                    "data": [
+                        {
+                            "id": "model",
+                            "pricing": {"prompt": "free", "completion": "2"},
+                        }
+                    ]
+                },
+                "numeric strings",
+            ),
+        ],
+    )
+    def test_openrouter_response_validation_fails_fast(self, payload, message):
+        """Malformed OpenRouter payloads fail at the network boundary."""
+        with pytest.raises(ValueError, match=re.escape(message)):
+            _validate_openrouter_models_response(payload)
 
 
 class TestPricingTagFiltering:
@@ -548,6 +625,7 @@ class TestPricingWithOpenRouterLookup:
                         "--project",
                         "test-proj",
                         "--from-cache",
+                        "--lookup",
                     ],
                 )
 
@@ -597,6 +675,7 @@ class TestPricingWithOpenRouterLookup:
                         "--project",
                         "test-proj",
                         "--from-cache",
+                        "--lookup",
                     ],
                 )
 
@@ -604,9 +683,11 @@ class TestPricingWithOpenRouterLookup:
         output = strip_ansi(result.output)
         assert "OpenRouter" in output
 
-    def test_api_fetch_exception_swallowed_silently(self, runner, mock_client):
-        """INVARIANT: API errors for individual projects are swallowed (no crash)."""
-        mock_client.list_runs.side_effect = Exception("network error")
+    def test_api_fetch_exception_reported_without_crashing(self, runner, mock_client):
+        """INVARIANT: API errors for individual projects are reported without crashing."""
+        from langsmith.utils import LangSmithError
+
+        mock_client.list_runs.side_effect = LangSmithError("network error")
 
         result = runner.invoke(
             cli,
@@ -625,3 +706,34 @@ class TestPricingWithOpenRouterLookup:
         assert result.exit_code == 0
         data = _extract_json(result.output)
         assert data["models"] == []
+        assert "Failed to fetch pricing runs from test-proj" in result.output
+
+    def test_format_json_outputs_json_without_global_flag(
+        self, runner, tmp_path, monkeypatch
+    ):
+        """--format json outputs JSON even without root --json."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+        from langsmith_cli.cache import append_runs_to_cache
+
+        append_runs_to_cache(
+            "test-proj",
+            [_make_llm_run(1, model="gpt-4o", total_cost=Decimal("0.005"))],
+        )
+
+        with patch("langsmith.Client"):
+            result = runner.invoke(
+                cli,
+                [
+                    "runs",
+                    "pricing",
+                    "--project",
+                    "test-proj",
+                    "--from-cache",
+                    "--format",
+                    "json",
+                ],
+            )
+
+        assert result.exit_code == 0
+        data = _extract_json(result.output)
+        assert data["models"][0]["model"] == "gpt-4o"

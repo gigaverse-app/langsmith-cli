@@ -3,12 +3,12 @@
 from typing import Any
 
 import click
-from rich.table import Table
 
 from langsmith_cli.commands.runs._group import runs, console
 from langsmith_cli.utils import (
     add_project_filter_options,
     get_or_create_client,
+    is_json_context,
     json_dumps,
     resolve_project_filters,
 )
@@ -44,6 +44,9 @@ def run_stats(
     )
 
     # Resolve to project IDs for the stats API
+    # Lazy: SDK exception import is cold-path for stats.
+    from langsmith.utils import LangSmithError, LangSmithNotFoundError
+
     resolved_project_ids: list[Any] = []
     if pq.use_id:
         resolved_project_ids.append(pq.project_id)
@@ -52,12 +55,16 @@ def run_stats(
             try:
                 p = client.read_project(project_name=proj_name)
                 resolved_project_ids.append(p.id)
-            except Exception:
-                # Fallback: use project name as ID (user might have passed ID directly)
+            except (LangSmithNotFoundError, LangSmithError):
+                # Fallback: pass the raw name through. The stats API may still
+                # resolve it (e.g. when the user passed an ID rather than a name).
+                # Narrowing to LangSmith errors lets unrelated bugs (TypeError,
+                # AttributeError) surface immediately instead of silently
+                # ending up here.
                 resolved_project_ids.append(proj_name)
 
     if not resolved_project_ids:
-        if ctx.obj.get("json"):
+        if is_json_context(ctx):
             click.echo(
                 json_dumps(
                     {"error": "NotFoundError", "message": "No matching projects found."}
@@ -69,7 +76,7 @@ def run_stats(
 
     stats = client.get_run_stats(project_ids=resolved_project_ids)
 
-    if ctx.obj.get("json"):
+    if is_json_context(ctx):
         click.echo(json_dumps(stats))
         return
 
@@ -80,6 +87,8 @@ def run_stats(
         table_title = f"Stats: {pq.names[0]}"
     else:
         table_title = f"Stats: {len(pq.names)} projects"
+
+    from rich.table import Table
 
     table = Table(title=table_title)
     table.add_column("Metric")

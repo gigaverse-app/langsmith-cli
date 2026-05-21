@@ -88,6 +88,39 @@ def test_experiments_results_json(runner):
         assert "feedback_stats" in data
 
 
+def test_experiments_results_missing_run_stats_fails_fast(runner):
+    """INVARIANT: malformed SDK experiment results are not silently defaulted."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.get_experiment_results.return_value = {"feedback_stats": {}}
+        result = runner.invoke(
+            cli, ["--json", "experiments", "results", "my-experiment"]
+        )
+
+        assert result.exit_code != 0
+        data = parse_json_output(result.output)
+        assert data["error"] == "TypeError"
+        assert "run_stats" in data["message"]
+
+
+def test_experiments_results_malformed_feedback_stats_fails_fast(runner):
+    """INVARIANT: feedback_stats must be a mapping."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.get_experiment_results.return_value = {
+            "run_stats": {},
+            "feedback_stats": "bad",
+        }
+        result = runner.invoke(
+            cli, ["--json", "experiments", "results", "my-experiment"]
+        )
+
+        assert result.exit_code != 0
+        data = parse_json_output(result.output)
+        assert data["error"] == "TypeError"
+        assert "feedback_stats" in data["message"]
+
+
 def test_experiments_results_passes_name_to_sdk(runner):
     """INVARIANT: experiment name is passed to get_experiment_results SDK call."""
     with patch("langsmith.Client") as MockClient:

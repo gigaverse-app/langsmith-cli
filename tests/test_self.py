@@ -2,6 +2,7 @@
 
 import json
 import sys
+import urllib.error
 from unittest.mock import MagicMock, patch
 
 from langsmith_cli.main import cli
@@ -339,7 +340,9 @@ class TestCheckLatestVersion:
         """INVARIANT: Returns None when PyPI is unreachable."""
         from langsmith_cli.commands.self_cmd import check_latest_version
 
-        with patch("urllib.request.urlopen", side_effect=Exception("timeout")):
+        with patch(
+            "urllib.request.urlopen", side_effect=urllib.error.URLError("timeout")
+        ):
             assert check_latest_version() is None
 
 
