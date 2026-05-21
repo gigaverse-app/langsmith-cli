@@ -824,7 +824,7 @@ def partition_metadata_filters(
 def apply_metadata_filter(
     runs_iter: Iterable["Run"],
     metadata_filters: tuple[str, ...],
-) -> Iterable["Run"]:
+) -> Iterator["Run"]:
     """Apply client-side metadata wildcard filters to a run iterator/list.
 
     Accesses run.extra["metadata"] for each run. Filters are in "key=value" or
@@ -840,7 +840,7 @@ def apply_metadata_filter(
     import fnmatch
 
     if not metadata_filters:
-        return runs_iter
+        return iter(runs_iter)
 
     parsed: list[tuple[str, str]] = []
     for mf in metadata_filters:
