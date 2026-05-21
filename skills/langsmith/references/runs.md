@@ -513,6 +513,7 @@ langsmith-cli --json runs analyze [OPTIONS]
 - Multi-project: `--project-name`, `--project-name-pattern`, `--project-name-regex`, etc.
 - `--group-by TEXT` - Grouping field (e.g., `tag:length_category`, `metadata:user_tier`)
 - `--metrics TEXT` - Metrics to compute (comma-separated). Available: `count`, `error_rate`, `p50_latency`, `p95_latency`, `p99_latency`, `avg_latency`, `total_tokens`, `avg_cost`
+- `--tag TEXT` - Filter by tag server-side (repeatable, AND logic)
 - `--sample-size INTEGER` - Number of recent runs to analyze (default: 300, use 0 for all)
 - `--filter TEXT` - Additional FQL filter
 - `--format [table|json|csv|yaml]` - Output format
