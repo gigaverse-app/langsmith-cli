@@ -1,9 +1,10 @@
 """Export command for runs."""
 
-from typing import Any
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
 
 import click
-from langsmith.schemas import Run
 
 from langsmith_cli.commands.runs._group import runs
 from langsmith_cli.utils import (
@@ -19,6 +20,9 @@ from langsmith_cli.utils import (
     resolve_project_filters,
     resolve_root_scope,
 )
+
+if TYPE_CHECKING:
+    from langsmith.schemas import Run
 
 
 @runs.command("export")

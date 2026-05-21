@@ -1,10 +1,12 @@
 """Open and watch commands for runs."""
 
+from __future__ import annotations
+
 from datetime import datetime as _datetime, timezone as _timezone
+from typing import TYPE_CHECKING
 
 import click
 from rich.table import Table
-from langsmith.schemas import Run
 
 from langsmith_cli.commands.runs._group import runs
 from langsmith_cli.utils import (
@@ -13,6 +15,9 @@ from langsmith_cli.utils import (
     json_dumps,
     resolve_project_filters,
 )
+
+if TYPE_CHECKING:
+    from langsmith.schemas import Run
 
 
 @runs.command("open")

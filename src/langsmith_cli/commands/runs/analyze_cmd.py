@@ -1,10 +1,11 @@
 """Analyze command and grouping/metrics helpers for runs."""
 
-from typing import Any
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
 
 import click
 from rich.table import Table
-from langsmith.schemas import Run
 
 from langsmith_cli.commands.runs._group import runs, console, _make_fetch_runs
 from langsmith_cli.utils import (
@@ -21,6 +22,9 @@ from langsmith_cli.utils import (
     output_formatted_data,
     resolve_project_filters,
 )
+
+if TYPE_CHECKING:
+    from langsmith.schemas import Run
 
 
 def _parse_single_grouping(grouping_str: str) -> tuple[str, str]:

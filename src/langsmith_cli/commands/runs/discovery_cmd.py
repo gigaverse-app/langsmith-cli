@@ -1,10 +1,11 @@
 """Discovery commands: tags, metadata-keys, fields, describe."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import click
-from langsmith.schemas import Run
 
 from langsmith_cli.commands.runs._group import _make_fetch_runs, console, runs
 from langsmith_cli.utils import (
@@ -18,6 +19,9 @@ from langsmith_cli.utils import (
     json_dumps,
     resolve_project_filters,
 )
+
+if TYPE_CHECKING:
+    from langsmith.schemas import Run
 
 
 @dataclass

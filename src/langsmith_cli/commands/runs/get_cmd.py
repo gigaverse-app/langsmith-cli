@@ -1,11 +1,12 @@
 """Runs get, get-latest, and view-file commands."""
 
+from __future__ import annotations
+
 from datetime import datetime as _datetime, timezone as _timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 import json
 
 import click
-from langsmith.schemas import Run
 
 from langsmith_cli.commands.runs._group import runs, console
 from langsmith_cli.utils import (
@@ -23,6 +24,9 @@ from langsmith_cli.utils import (
     render_run_details,
     resolve_project_filters,
 )
+
+if TYPE_CHECKING:
+    from langsmith.schemas import Run
 
 
 @runs.command("get")

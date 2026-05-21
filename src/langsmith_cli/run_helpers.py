@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import datetime
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 import click
-from langsmith.schemas import Run
 
 from langsmith_cli.filtering import build_tag_fql_filters
 from langsmith_cli.output import json_dumps
@@ -15,6 +14,9 @@ from langsmith_cli.time_parsing import (
     combine_fql_filters,
     parse_duration_to_seconds,
 )
+
+if TYPE_CHECKING:
+    from langsmith.schemas import Run
 
 
 def resolve_root_scope(

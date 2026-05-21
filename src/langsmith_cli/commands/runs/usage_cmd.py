@@ -1,10 +1,11 @@
 """Usage analysis command for runs."""
 
+from __future__ import annotations
+
 from datetime import datetime as _datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import click
-from langsmith.schemas import Run
 from pydantic import BaseModel
 from rich.table import Table
 
@@ -32,6 +33,9 @@ from langsmith_cli.utils import (
     resolve_project_filters,
     write_output_to_file,
 )
+
+if TYPE_CHECKING:
+    from langsmith.schemas import Run
 
 
 class UsageBucket(BaseModel):
