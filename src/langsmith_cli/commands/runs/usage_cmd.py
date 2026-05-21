@@ -20,17 +20,18 @@ from langsmith_cli.utils import (
     build_metadata_fql_filters,
     build_tag_fql_filters,
     build_time_fql_filters,
+    collect_runs_streaming,
     combine_fql_filters,
     configure_logger_streams,
     determine_output_format,
     filter_runs_by_tags,
+    get_full_model_name,
     get_or_create_client,
     output_formatted_data,
     output_option,
     resolve_project_filters,
     write_output_to_file,
 )
-from langsmith_cli.run_helpers import get_full_model_name
 
 
 class UsageBucket(BaseModel):
@@ -577,34 +578,29 @@ def usage_runs(
         if grep:
             select_fields.extend(["inputs", "outputs", "error"])
 
-        failed_projects: list[tuple[str, str]] = []
-        sources: list[tuple[str, dict[str, Any]]] = []
-        if pq.use_id:
-            sources = [(f"id:{pq.project_id}", {"project_id": pq.project_id})]
-        else:
-            sources = [(name, {"project_name": name}) for name in pq.names]
+        def _record_project(run: Run, source_label: str) -> None:
+            # Side-channel: keep an authoritative run.id → project map so
+            # later breakdowns by project don't have to fall back to the
+            # session_name attribute (which select=... strips off the Run).
+            run_project_map[str(run.id)] = source_label
 
-        for source_label, proj_kwargs in sources:
-            try:
-                runs_iter = client.list_runs(
-                    **proj_kwargs,
-                    filter=combined_filter,
-                    limit=None,
-                    select=select_fields,
-                )
-                collected = 0
-                for run in runs_iter:
-                    all_runs.append(run)
-                    run_project_map[str(run.id)] = source_label
-                    collected += 1
-                    if sample_size > 0 and collected >= sample_size:
-                        break
-            except Exception as e:
-                failed_projects.append((source_label, str(e)))
+        stream_result = collect_runs_streaming(
+            client,
+            pq,
+            filter=combined_filter,
+            select=select_fields,
+            sample_size=sample_size,
+            on_run=_record_project,
+        )
+        all_runs = stream_result.items
 
-        if failed_projects and len(all_runs) == 0:
+        # Match prior behavior: complain when any project failed and we got
+        # zero runs total (covers both "every project failed" and the more
+        # subtle "one project succeeded but returned nothing while another
+        # failed" case).
+        if stream_result.has_failures and not all_runs:
             logger.warning("All projects failed to fetch:")
-            for proj, error_msg in failed_projects[:3]:
+            for proj, error_msg in stream_result.failed_sources[:3]:
                 short = error_msg[:100] + "..." if len(error_msg) > 100 else error_msg
                 logger.warning(f"  {proj}: {short}")
             raise click.ClickException(
