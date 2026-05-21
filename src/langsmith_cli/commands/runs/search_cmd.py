@@ -169,7 +169,9 @@ def search_runs(
 
     combined_filter = combine_fql_filters(search_filters)
 
-    # Invoke list_runs with the filter and project filters
+    # Delegate to list_runs by passing only the options search exposes.
+    # Click's ctx.invoke fills in defaults for every list_runs param we omit,
+    # so new flags added to `runs list` don't need to be mirrored here.
     return ctx.invoke(
         list_runs,
         project=project,
@@ -181,40 +183,21 @@ def search_runs(
         limit=limit,
         filter_=combined_filter,
         output_format=output_format,
-        # Pass through other required args with defaults
         status=status,
-        trace_id=None,
         run_type=run_type,
-        is_root=None,
-        roots=roots,  # Pass through --roots flag
-        all_runs=False,
-        trace_filter=None,
-        tree_filter=None,
-        reference_example_id=None,
+        roots=roots,
         tag=tag,
-        name_pattern=None,
-        name_regex=None,
-        model=None,
         failed=failed_arg,
         succeeded=succeeded,
-        slow=False,
-        recent=False,
-        today=False,
-        min_latency=None,
-        max_latency=None,
-        since=since,  # Pass through time filters
-        before=before,  # Pass through time filters
-        last=last,  # Pass through time filters
+        since=since,
+        before=before,
+        last=last,
         query=query_arg,
         grep=grep_arg,
         grep_ignore_case=grep_ignore_case,
         grep_regex=grep_regex,
         grep_in=grep_in_arg,
-        fetch=None,
         metadata_filters=metadata_filters,
-        sort_by=None,
-        no_truncate=False,
-        exclude=None,
         fields=fields,
         count=count,
         output=output,
