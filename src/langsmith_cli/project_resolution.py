@@ -2,12 +2,17 @@
 
 import re
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Callable, Generic, TypeVar
 
 import click
 import langsmith
-from langsmith.utils import LangSmithError, LangSmithNotFoundError
+from langsmith.utils import (
+    LangSmithError,
+    LangSmithNotFoundError,
+    LangSmithRateLimitError,
+)
 from pydantic import BaseModel, Field
 
 from langsmith_cli.utils import apply_regex_filter, apply_wildcard_filter
@@ -15,10 +20,16 @@ from langsmith_cli.utils import apply_regex_filter, apply_wildcard_filter
 T = TypeVar("T")
 
 
-def _is_rate_limited(error_msg: str) -> bool:
-    """Check if an error message indicates a rate limit (429) response."""
-    msg = error_msg.lower()
-    return "429" in msg or "too many requests" in msg or "rate limit" in msg
+def _is_rate_limited(error: BaseException) -> bool:
+    """Return whether an exception is an explicit rate-limit response."""
+    if isinstance(error, LangSmithRateLimitError):
+        return True
+
+    import httpx
+
+    if isinstance(error, httpx.HTTPStatusError):
+        return error.response.status_code == 429
+    return False
 
 
 def _fetch_with_rate_limit_retry(
@@ -40,11 +51,11 @@ def _fetch_with_rate_limit_retry(
     for attempt in range(max_retries + 1):
         try:
             items = func()
-            if hasattr(items, "__iter__") and not isinstance(items, (list, tuple)):
+            if isinstance(items, Iterable) and not isinstance(items, (list, tuple)):
                 items = list(items)
             return items  # type: ignore[return-value]
         except Exception as e:
-            if attempt < max_retries and _is_rate_limited(str(e)):
+            if attempt < max_retries and _is_rate_limited(e):
                 time.sleep(delay)
                 delay *= 2
             else:
@@ -82,6 +93,11 @@ class FetchResult(BaseModel, Generic[T]):
     successful_sources: list[str]
     failed_sources: list[tuple[str, str]] = Field(
         default_factory=list, description="(source_name, error_message)"
+    )
+    failed_exceptions: dict[str, BaseException] = Field(
+        default_factory=dict,
+        description="Maps source_name to the underlying exception, for callers "
+        "that need to inspect failure type (e.g. to decide whether to retry).",
     )
     item_source_map: dict[str, str] = Field(
         default_factory=dict,
@@ -290,15 +306,18 @@ def fetch_from_projects(
                 result.report_failures(console)
             return result
         except Exception as e:
+            source_name = f"id:{project_query.project_id}"
             return FetchResult(
                 items=[],
                 successful_sources=[],
-                failed_sources=[(f"id:{project_query.project_id}", str(e))],
+                failed_sources=[(source_name, str(e))],
+                failed_exceptions={source_name: e},
             )
 
     all_items: list[Any] = []
     successful: list[str] = []
     failed: list[tuple[str, str]] = []
+    failed_excs: dict[str, BaseException] = {}
 
     for proj_name in project_names:
         try:
@@ -309,9 +328,13 @@ def fetch_from_projects(
             successful.append(proj_name)
         except Exception as e:
             failed.append((proj_name, str(e)))
+            failed_excs[proj_name] = e
 
     result = FetchResult(
-        items=all_items, successful_sources=successful, failed_sources=failed
+        items=all_items,
+        successful_sources=successful,
+        failed_sources=failed,
+        failed_exceptions=failed_excs,
     )
 
     # Automatically show warnings if requested

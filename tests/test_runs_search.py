@@ -95,10 +95,15 @@ class TestRunsSearch:
 
     def test_search_retries_with_fql_when_query_rejected(self, runner, mock_client):
         """Plain search falls back to FQL search() if LangSmith rejects freeform query."""
-        from langsmith.utils import LangSmithError
+        import httpx
+
+        request = httpx.Request("POST", "https://api.smith.langchain.com/runs/query")
+        response = httpx.Response(422, request=request)
 
         mock_client.list_runs.side_effect = [
-            LangSmithError("Failed to generate filter from freeform query"),
+            httpx.HTTPStatusError(
+                "unprocessable query", request=request, response=response
+            ),
             [create_run(name="search-result")],
         ]
 

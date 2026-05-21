@@ -1,6 +1,8 @@
 """Runs list command."""
 
 import click
+import httpx
+import requests
 
 from langsmith_cli.commands.runs._group import _make_fetch_runs, console, runs
 from langsmith_cli.utils import (
@@ -34,6 +36,39 @@ from langsmith_cli.utils import (
     sort_items,
     write_output_to_file,
 )
+
+
+def _is_query_rejection(exc: BaseException) -> bool:
+    """True when ``exc`` looks like the server rejecting the ``query=`` param.
+
+    The LangSmith SDK surfaces HTTP errors as raw ``httpx``/``requests`` errors
+    (see :func:`langsmith.utils.raise_for_status_with_text`), so we inspect the
+    response status code directly. 422 means the request body was unprocessable —
+    which is exactly what happens when the freeform ``query=`` value can't be
+    parsed server-side. Any other failure mode (auth, network, not-found) is
+    *not* a query-shape problem and must not trigger the FQL fallback retry.
+    """
+    response = None
+    if isinstance(exc, httpx.HTTPStatusError):
+        response = exc.response
+    elif isinstance(exc, requests.HTTPError):
+        response = exc.response
+    if response is None:
+        return False
+    return getattr(response, "status_code", None) == 422
+
+
+def _all_failures_are_query_rejection(
+    failed_exceptions: dict[str, BaseException],
+) -> bool:
+    """True only when every recorded failure is a 422 query rejection.
+
+    Used to guard the FQL ``search()`` fallback in ``runs list`` so we don't
+    retry pointlessly on auth/network/not-found errors.
+    """
+    if not failed_exceptions:
+        return False
+    return all(_is_query_rejection(exc) for exc in failed_exceptions.values())
 
 
 @runs.command("list")
@@ -433,7 +468,11 @@ def list_runs(
         **fetch_kwargs,
     )
 
-    if result.all_failed and query:
+    if (
+        result.all_failed
+        and query
+        and _all_failures_are_query_rejection(result.failed_exceptions)
+    ):
         fallback_filter = f"search({quote_fql_string(query)})"
         fallback_filters = (
             [combined_filter, fallback_filter] if combined_filter else [fallback_filter]

@@ -793,3 +793,93 @@ class TestTraceAlias:
         assert result.exit_code == 0
         call_kwargs = mock_client.list_runs.call_args[1]
         assert call_kwargs.get("trace_id") == SOME_TRACE
+
+
+class TestRunsListQueryFallback:
+    """INVARIANTS for the freeform --query fallback to FQL search().
+
+    The fallback exists because the server rejects some freeform queries with
+    HTTP 422; in that case the CLI retries once with `search("<query>")`. The
+    retry MUST be narrow: only fire when every source failed *and* every
+    failure looks like a 422. Other failure modes (auth, not-found, network)
+    must propagate as errors, not loop into a useless retry.
+    """
+
+    def test_query_422_triggers_fql_search_retry(self, runner, mock_client):
+        """INVARIANT: 422 on --query everywhere triggers one FQL search() retry."""
+        import httpx
+
+        # Build a real 422 response so the helper's status_code check fires.
+        request = httpx.Request("POST", "https://api.smith.langchain.com/runs/query")
+        response = httpx.Response(422, request=request, text="bad query")
+        rejection = httpx.HTTPStatusError("422", request=request, response=response)
+
+        # First call raises 422; second (fallback) returns one run.
+        mock_client.list_runs.side_effect = [
+            rejection,
+            iter([create_run(name="found via fql")]),
+        ]
+
+        result = runner.invoke(cli, ["runs", "list", "--query", "some text"])
+
+        assert result.exit_code == 0, result.output
+        assert mock_client.list_runs.call_count == 2
+
+        # Retry must pass a `search(...)` FQL filter and clear `query`.
+        retry_kwargs = mock_client.list_runs.call_args_list[1].kwargs
+        assert retry_kwargs.get("query") is None
+        assert 'search("some text")' in (retry_kwargs.get("filter") or "")
+
+    def test_non_422_failure_does_not_trigger_retry(self, runner, mock_client):
+        """INVARIANT: auth/not-found/network errors must NOT trigger the FQL fallback.
+
+        Retrying on non-query failures wastes a round-trip and lies in the
+        warning message ("LangSmith rejected the freeform query"). Only 422
+        is shaped like a query rejection.
+        """
+        from langsmith.utils import LangSmithAuthError
+
+        mock_client.list_runs.side_effect = LangSmithAuthError("forbidden")
+
+        result = runner.invoke(cli, ["runs", "list", "--query", "anything"])
+
+        # Single attempt, no retry, command surfaces the error.
+        assert mock_client.list_runs.call_count == 1
+        assert result.exit_code != 0
+
+    def test_no_query_means_no_fallback(self, runner, mock_client):
+        """INVARIANT: without --query, the fallback path is never reached."""
+        from langsmith.utils import LangSmithError
+
+        mock_client.list_runs.side_effect = LangSmithError("unrelated boom")
+
+        result = runner.invoke(cli, ["runs", "list"])
+
+        assert mock_client.list_runs.call_count == 1
+        assert result.exit_code != 0
+
+
+class TestRunsSearchDelegation:
+    """INVARIANT: runs search delegates to runs list via ctx.invoke and
+    relies on Click to fill in defaults for params it doesn't expose.
+
+    This guards against drift: when runs list grows a new option, runs
+    search must not need a code change to keep working.
+    """
+
+    def test_search_does_not_break_when_list_has_unmentioned_params(
+        self, runner, mock_client
+    ):
+        """Search must succeed end-to-end without enumerating every list_runs param.
+
+        This is the structural guarantee that the kwargs glue between the
+        two commands is robust to new flags being added to runs list.
+        """
+        mock_client.list_runs.return_value = iter([create_run(name="hit")])
+
+        result = runner.invoke(cli, ["runs", "search", "hello"])
+
+        assert result.exit_code == 0, result.output
+        # Server sees the freeform query.
+        kwargs = mock_client.list_runs.call_args.kwargs
+        assert kwargs.get("query") == "hello"

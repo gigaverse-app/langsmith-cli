@@ -1863,6 +1863,7 @@ class TestFetchWithRateLimitRetry:
 
     def test_retries_on_429_and_succeeds(self):
         from unittest.mock import patch
+        from langsmith.utils import LangSmithRateLimitError
         from langsmith_cli.project_resolution import _fetch_with_rate_limit_retry
 
         items = [create_run(id_str="auto")]
@@ -1872,7 +1873,7 @@ class TestFetchWithRateLimitRetry:
             nonlocal call_count
             call_count += 1
             if call_count < 3:
-                raise Exception("429 Client Error: Too Many Requests")
+                raise LangSmithRateLimitError("Too Many Requests")
             return iter(items)
 
         with patch("langsmith_cli.project_resolution.time.sleep"):
@@ -1883,14 +1884,40 @@ class TestFetchWithRateLimitRetry:
 
     def test_raises_after_max_retries_exceeded(self):
         from unittest.mock import patch
+        from langsmith.utils import LangSmithRateLimitError
         from langsmith_cli.project_resolution import _fetch_with_rate_limit_retry
 
         def always_rate_limited():
-            raise Exception("429 Client Error: Too Many Requests")
+            raise LangSmithRateLimitError("Too Many Requests")
 
         with patch("langsmith_cli.project_resolution.time.sleep"):
-            with pytest.raises(Exception, match="429"):
+            with pytest.raises(LangSmithRateLimitError, match="Too Many Requests"):
                 _fetch_with_rate_limit_retry(always_rate_limited, max_retries=2)
+
+    def test_retries_on_httpx_429(self):
+        from unittest.mock import patch
+        import httpx
+        from langsmith_cli.project_resolution import _fetch_with_rate_limit_retry
+
+        items = [create_run(id_str="auto")]
+        call_count = 0
+
+        def flaky_fetch():
+            nonlocal call_count
+            call_count += 1
+            if call_count < 2:
+                request = httpx.Request("GET", "https://api.smith.langchain.com")
+                response = httpx.Response(429, request=request)
+                raise httpx.HTTPStatusError(
+                    "rate limited", request=request, response=response
+                )
+            return iter(items)
+
+        with patch("langsmith_cli.project_resolution.time.sleep"):
+            result = _fetch_with_rate_limit_retry(flaky_fetch, max_retries=2)
+
+        assert result == items
+        assert call_count == 2
 
     def test_does_not_retry_non_rate_limit_errors(self):
         from unittest.mock import patch
@@ -1912,6 +1939,7 @@ class TestFetchWithRateLimitRetry:
 
     def test_exponential_backoff_doubles_delay(self):
         from unittest.mock import call, patch
+        from langsmith.utils import LangSmithRateLimitError
         from langsmith_cli.project_resolution import _fetch_with_rate_limit_retry
 
         items = [create_run(id_str="auto")]
@@ -1921,7 +1949,7 @@ class TestFetchWithRateLimitRetry:
             nonlocal call_count
             call_count += 1
             if call_count < 3:
-                raise Exception("Too Many Requests rate limit exceeded")
+                raise LangSmithRateLimitError("Too Many Requests")
             return iter(items)
 
         with patch("langsmith_cli.project_resolution.time.sleep") as mock_sleep:

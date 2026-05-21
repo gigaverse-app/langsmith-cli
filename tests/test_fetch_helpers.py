@@ -269,6 +269,7 @@ class TestFetchFromProjects:
         assert len(result.failed_sources) == 1
         assert result.failed_sources[0][0] == "proj2"
         assert "Network timeout" in result.failed_sources[0][1]
+        assert isinstance(result.failed_exceptions["proj2"], ConnectionError)
 
         # Should have printed warning
         console.print.assert_called()
@@ -291,6 +292,7 @@ class TestFetchFromProjects:
         assert len(result.items) == 0
         assert len(result.successful_sources) == 0
         assert len(result.failed_sources) == 2
+        assert set(result.failed_exceptions) == {"proj1", "proj2"}
 
     def test_passes_kwargs_to_fetch_func(self):
         """Test that additional kwargs are passed to fetch_func."""
@@ -348,6 +350,26 @@ class TestFetchFromProjects:
         # Should have failures but no console output
         assert result.has_failures is True
         console.print.assert_not_called()
+
+    def test_project_id_failure_preserves_exception(self):
+        """Project-id fetch failures keep the original exception for callers."""
+        from langsmith_cli.project_resolution import ProjectQuery
+
+        client = MagicMock()
+
+        def mock_fetch(c, proj, **kwargs):
+            raise RuntimeError("project-id failed")
+
+        result = fetch_from_projects(
+            client,
+            [],
+            mock_fetch,
+            project_query=ProjectQuery(names=[], project_id="project-uuid"),
+        )
+
+        source_name = "id:project-uuid"
+        assert result.failed_sources == [(source_name, "project-id failed")]
+        assert isinstance(result.failed_exceptions[source_name], RuntimeError)
 
     def test_no_console_provided_doesnt_crash(self):
         """Test that missing console doesn't cause errors."""
