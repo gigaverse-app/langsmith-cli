@@ -123,6 +123,21 @@ def test_prompts_list_public_only(runner):
         assert result.exit_code == 0
 
 
+def test_prompts_list_public_private_aliases(runner):
+    """INVARIANT: --public/--private filter prompts without boolean values."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_prompts.return_value = ListPromptsResponse(repos=[], total=0)
+
+        result = runner.invoke(cli, ["prompts", "list", "--public"])
+        assert result.exit_code == 0
+        assert mock_client.list_prompts.call_args[1]["is_public"] is True
+
+        result = runner.invoke(cli, ["prompts", "list", "--private"])
+        assert result.exit_code == 0
+        assert mock_client.list_prompts.call_args[1]["is_public"] is False
+
+
 def test_prompts_list_with_filter(runner):
     """INVARIANT: Filtering prompts should work."""
     with patch("langsmith.Client") as MockClient:
@@ -467,6 +482,23 @@ def test_prompts_push_public(runner, tmp_path):
         assert call_kwargs["is_public"] is True
 
 
+def test_prompts_push_public_private_aliases(runner, tmp_path):
+    """INVARIANT: prompts push accepts paired visibility flags."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        prompt_file = tmp_path / "my_prompt.txt"
+        prompt_file.write_text("Test prompt")
+
+        result = runner.invoke(
+            cli,
+            ["prompts", "push", "my-prompt", str(prompt_file), "--public"],
+        )
+
+        assert result.exit_code == 0
+        assert mock_client.push_prompt.call_args[1]["is_public"] is True
+
+
 # ===== prompts pull tests =====
 
 
@@ -607,6 +639,17 @@ def test_prompts_delete_json(runner):
         mock_client.delete_prompt.assert_called_once_with("my-prompt")
 
 
+def test_prompts_delete_yes_alias(runner):
+    """INVARIANT: prompts delete accepts --yes as confirmation alias."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        result = runner.invoke(cli, ["prompts", "delete", "my-prompt", "--yes"])
+
+        assert result.exit_code == 0
+        mock_client.delete_prompt.assert_called_once_with("my-prompt")
+
+
 def test_prompts_delete_table_output(runner):
     """INVARIANT: prompts delete should show success message."""
     with patch("langsmith.Client") as MockClient:
@@ -702,6 +745,22 @@ def test_prompts_create_with_options(runner):
         assert call_kwargs["description"] == "A test prompt"
         assert call_kwargs["tags"] == ["prod", "v2"]
         assert call_kwargs["is_public"] is True
+
+
+def test_prompts_create_public_private_aliases(runner):
+    """INVARIANT: prompts create accepts paired visibility flags."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.create_prompt.return_value = create_prompt(
+            repo_handle="new-prompt",
+            full_name="owner/new-prompt",
+            owner="owner",
+        )
+
+        result = runner.invoke(cli, ["prompts", "create", "new-prompt", "--public"])
+
+        assert result.exit_code == 0
+        assert mock_client.create_prompt.call_args[1]["is_public"] is True
 
 
 def test_prompts_create_already_exists(runner):

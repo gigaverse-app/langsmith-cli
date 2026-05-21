@@ -19,7 +19,6 @@ from langsmith_cli.utils import (
     safe_model_dump,
     sort_by_option,
     sort_items,
-    write_output_to_file,
 )
 
 console = Console()
@@ -50,6 +49,12 @@ def examples():
 @click.option("--include-attachments", type=bool, help="Include attachments.")
 @click.option("--as-of", help="Dataset version tag or ISO timestamp.")
 @sort_by_option(fields="created_at, modified_at")
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["table", "json", "csv", "yaml"]),
+    help="Output format (default: table, or json if --json flag used).",
+)
 @exclude_option()
 @fields_option()
 @count_option()
@@ -68,6 +73,7 @@ def list_examples(
     include_attachments,
     as_of,
     sort_by,
+    output_format,
     exclude,
     fields,
     count,
@@ -75,7 +81,9 @@ def list_examples(
 ):
     """List examples for a dataset."""
     logger = ctx.obj["logger"]
-    configure_logger_streams(ctx, logger, output=output, fields=fields)
+    configure_logger_streams(
+        ctx, logger, output=output, output_format=output_format, fields=fields
+    )
 
     logger.debug(
         f"Listing examples: dataset={dataset}, limit={limit}, "
@@ -111,12 +119,6 @@ def list_examples(
     if sort_by:
         examples_list = sort_items(examples_list, sort_by)
 
-    # Handle file output - short circuit if writing to file
-    if output:
-        data = filter_fields(examples_list, fields)
-        write_output_to_file(data, output, console, format_type="jsonl")
-        return
-
     # Define table builder function
     def build_examples_table(examples):
         table = Table(title=f"Examples: {dataset}")
@@ -136,14 +138,16 @@ def list_examples(
 
     include_fields = parse_fields_option(fields)
 
-    # Unified output rendering
+    # Unified output rendering (handles --json, --format, --output, --count uniformly)
     render_output(
         examples_list,
         build_examples_table,
         ctx,
         include_fields=include_fields,
         empty_message="No examples found",
+        output_format=output_format,
         count_flag=count,
+        output_path=output,
     )
 
 
@@ -262,7 +266,7 @@ def update_example(ctx, example_id, inputs, outputs, metadata, split):
 
 @examples.command("delete")
 @click.argument("example_ids", nargs=-1, required=True)
-@click.option("--confirm", is_flag=True, help="Skip confirmation prompt.")
+@click.option("--confirm", "--yes", is_flag=True, help="Skip confirmation prompt.")
 @click.pass_context
 def delete_examples(ctx, example_ids, confirm):
     """Delete one or more examples by ID."""

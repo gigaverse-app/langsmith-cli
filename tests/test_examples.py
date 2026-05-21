@@ -695,6 +695,17 @@ def test_examples_delete_table_output(runner):
         assert "2" in output  # "Deleted 2 example(s)"
 
 
+def test_examples_delete_yes_alias(runner):
+    """INVARIANT: examples delete accepts --yes as confirmation alias."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        result = runner.invoke(cli, ["examples", "delete", "id-1", "id-2", "--yes"])
+
+        assert result.exit_code == 0
+        assert mock_client.delete_example.call_count == 2
+
+
 # ===== examples from-run tests =====
 
 

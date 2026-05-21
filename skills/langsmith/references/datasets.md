@@ -93,20 +93,20 @@ langsmith-cli --json datasets create "qa-pairs" \
 Delete a dataset by name or ID.
 
 ```bash
-langsmith-cli --json datasets delete <name-or-id> --confirm
+langsmith-cli --json datasets delete <name-or-id> --yes
 ```
 
 **Arguments:**
 - `name-or-id` (required) - Dataset name or UUID (auto-detected)
 
 **Options:**
-- `--confirm` - Skip confirmation prompt (required for non-interactive use)
+- `--yes`, `--confirm` - Skip confirmation prompt (required for non-interactive use)
 
 **Output:** `{"status": "success", "name": "<dataset-name>"}`
 
 **Example:**
 ```bash
-langsmith-cli --json datasets delete "old-test-data" --confirm
+langsmith-cli --json datasets delete "old-test-data" --yes
 ```
 
 ### `datasets push`

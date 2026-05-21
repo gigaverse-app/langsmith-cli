@@ -149,17 +149,17 @@ langsmith-cli --json examples delete <example-id> [<example-id>...] [OPTIONS]
 - `example-ids` (required) - One or more example UUIDs
 
 **Options:**
-- `--confirm` - Skip confirmation prompt
+- `--yes`, `--confirm` - Skip confirmation prompt
 
 **Output:** `{"status": "success", "deleted": [...], "errors": [...]}`
 
 **Examples:**
 ```bash
 # Delete single example
-langsmith-cli --json examples delete <uuid> --confirm
+langsmith-cli --json examples delete <uuid> --yes
 
 # Bulk delete
-langsmith-cli --json examples delete <uuid1> <uuid2> <uuid3> --confirm
+langsmith-cli --json examples delete <uuid1> <uuid2> <uuid3> --yes
 ```
 
 ### `examples from-run`
@@ -183,4 +183,3 @@ langsmith-cli --json examples from-run <run-id> --dataset <name>
 # Turn a good run into a training example
 langsmith-cli --json examples from-run <run-uuid> --dataset "training-data"
 ```
-

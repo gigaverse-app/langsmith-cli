@@ -42,6 +42,15 @@ class TestRunsListBasic:
         _, kwargs = mock_client.list_runs.call_args
         assert kwargs["is_root"] is True
 
+    def test_list_with_all_runs_flag(self, runner, mock_client):
+        """--all-runs is an ergonomic alias for --is-root false."""
+        mock_client.list_runs.return_value = []
+
+        runner.invoke(cli, ["runs", "list", "--all-runs"])
+
+        _, kwargs = mock_client.list_runs.call_args
+        assert kwargs["is_root"] is False
+
     def test_list_table_includes_tokens_and_model(self, runner, mock_client):
         """Table output includes tokens and model columns."""
         mock_client.list_runs.return_value = [
@@ -221,6 +230,15 @@ class TestRunsListFilters:
         assert 'has(tags, "production")' in kwargs["filter"]
         assert 'has(tags, "experimental")' in kwargs["filter"]
         assert kwargs["filter"].startswith("and(")
+
+    def test_tag_filter_quotes_fql_strings(self, runner, mock_client):
+        """Tag filters safely quote embedded quotes for FQL."""
+        mock_client.list_runs.return_value = []
+
+        runner.invoke(cli, ["runs", "list", "--tag", 'team:"core"'])
+
+        _, kwargs = mock_client.list_runs.call_args
+        assert 'has(tags, "team:\\"core\\"")' in kwargs["filter"]
 
     @pytest.mark.parametrize(
         "flag,expected_error",

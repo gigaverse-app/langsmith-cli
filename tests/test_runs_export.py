@@ -78,6 +78,26 @@ def test_export_json_output(runner, tmp_path):
         assert len(data["files"]) == 1
 
 
+def test_export_with_all_runs_flag(runner, tmp_path):
+    """--all-runs is an ergonomic alias for --is-root false."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        project = create_project(name="test-proj")
+        mock_client.read_project.return_value = project
+        mock_client.list_runs.return_value = []
+
+        out_dir = tmp_path / "traces"
+        result = runner.invoke(
+            cli,
+            ["runs", "export", str(out_dir), "--project", "test-proj", "--all-runs"],
+        )
+
+        assert result.exit_code == 0
+        call_kwargs = mock_client.list_runs.call_args[1]
+        assert call_kwargs["is_root"] is False
+
+
 def test_export_with_fields_pruning(runner, tmp_path):
     """INVARIANT: --fields should limit fields in exported files."""
     with patch("langsmith.Client") as MockClient:

@@ -225,6 +225,26 @@ def test_annotation_queues_delete_with_confirm(runner):
         mock_client.delete_annotation_queue.assert_called_once()
 
 
+def test_annotation_queues_delete_yes_alias(runner):
+    """INVARIANT: annotation-queues delete accepts --yes as confirmation alias."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        q = create_annotation_queue(id_str="33333333-3333-3333-3333-333333333333")
+        mock_client.read_annotation_queue.return_value = q
+        mock_client.delete_annotation_queue.return_value = None
+        result = runner.invoke(
+            cli,
+            [
+                "annotation-queues",
+                "delete",
+                "33333333-3333-3333-3333-333333333333",
+                "--yes",
+            ],
+        )
+        assert result.exit_code == 0
+        mock_client.delete_annotation_queue.assert_called_once()
+
+
 def test_annotation_queues_get_not_found(runner):
     """INVARIANT: annotation-queues get exits non-zero when queue ID not found."""
     with patch("langsmith.Client") as MockClient:

@@ -10,7 +10,8 @@ langsmith-cli --json prompts list [OPTIONS]
 
 **Options:**
 - `--limit INTEGER` - Maximum results (default: 20)
-- `--is-public BOOLEAN` - Filter by visibility: `true` or `false`
+- `--public` / `--private` - Filter by visibility
+- `--is-public BOOLEAN` - Legacy visibility filter: `true` or `false`
 - `--exclude TEXT` - Exclude items containing substring (repeatable)
 - `--fields TEXT` - Comma-separated field names to include
 - `--count` - Output only the count of results
@@ -33,10 +34,10 @@ langsmith-cli --json prompts list [OPTIONS]
 **Example:**
 ```bash
 # List your prompts
-langsmith-cli --json prompts list --is-public false --limit 20
+langsmith-cli --json prompts list --private --limit 20
 
 # Browse public prompts
-langsmith-cli --json prompts list --is-public true
+langsmith-cli --json prompts list --public
 ```
 
 ### `prompts get`
@@ -95,7 +96,8 @@ langsmith-cli --json prompts push <name> <file-path> [OPTIONS]
 **Options:**
 - `--description TEXT` - Prompt description
 - `--tags TEXT` - Comma-separated tags
-- `--is-public BOOLEAN` - Make public: `true` or `false`
+- `--public` / `--private` - Set prompt visibility
+- `--is-public BOOLEAN` - Legacy visibility flag: `true` or `false`
 
 **File Format (JSON):**
 ```json
@@ -183,7 +185,8 @@ langsmith-cli --json prompts create <name> [OPTIONS]
 
 **Options:**
 - `--description TEXT` - Prompt description
-- `--is-public BOOLEAN` - Make prompt public: `true` or `false` (default: private)
+- `--public` / `--private` - Set prompt visibility (default: private)
+- `--is-public BOOLEAN` - Legacy visibility flag: `true` or `false`
 - `--tags TEXT` - Comma-separated tags
 
 **Output:** Created prompt object
@@ -206,13 +209,13 @@ langsmith-cli --json prompts delete <name> [OPTIONS]
 - `name` (required) - Prompt name to delete
 
 **Options:**
-- `--confirm` - Skip confirmation prompt
+- `--yes`, `--confirm` - Skip confirmation prompt
 
 **Output:** Success/error status
 
 **Example:**
 ```bash
-langsmith-cli --json prompts delete "old-prompt" --confirm
+langsmith-cli --json prompts delete "old-prompt" --yes
 ```
 
 ### `prompts commits`
@@ -247,4 +250,3 @@ langsmith-cli --json prompts commits "my-prompt" --limit 5
 # Count total versions
 langsmith-cli --json prompts commits "my-prompt" --count
 ```
-

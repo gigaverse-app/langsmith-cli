@@ -27,7 +27,6 @@ from langsmith_cli.utils import (
     parse_json_string,
     render_output,
     safe_model_dump,
-    write_output_to_file,
 )
 
 console = Console()
@@ -79,6 +78,12 @@ def datasets():
 @click.option("--metadata", help="Filter by metadata (JSON string).")
 @add_name_filter_options
 @sort_by_option(fields="name, created_at, example_count")
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["table", "json", "csv", "yaml"]),
+    help="Output format (default: table, or json if --json flag used).",
+)
 @exclude_option()
 @fields_option()
 @count_option()
@@ -95,6 +100,7 @@ def list_datasets(
     name_pattern,
     name_regex,
     sort_by,
+    output_format,
     exclude,
     fields,
     count,
@@ -102,7 +108,9 @@ def list_datasets(
 ):
     """List all available datasets."""
     logger = ctx.obj["logger"]
-    configure_logger_streams(ctx, logger, output=output, fields=fields)
+    configure_logger_streams(
+        ctx, logger, output=output, output_format=output_format, fields=fields
+    )
 
     logger.debug(
         f"Listing datasets: limit={limit}, data_type={data_type}, "
@@ -146,12 +154,6 @@ def list_datasets(
     if sort_by:
         datasets_list = sort_items(datasets_list, sort_by)
 
-    # Handle file output - short circuit if writing to file
-    if output:
-        data = filter_fields(datasets_list, fields)
-        write_output_to_file(data, output, console, format_type="jsonl")
-        return
-
     # Define table builder function
     def build_datasets_table(datasets):
         table = Table(title="Datasets")
@@ -164,14 +166,16 @@ def list_datasets(
 
     include_fields = parse_fields_option(fields)
 
-    # Unified output rendering
+    # Unified output rendering (handles --json, --format, --output, --count uniformly)
     render_output(
         datasets_list,
         build_datasets_table,
         ctx,
         include_fields=include_fields,
         empty_message="No datasets found",
+        output_format=output_format,
         count_flag=count,
+        output_path=output,
     )
 
 
@@ -322,7 +326,7 @@ def resolve_dataset(
 
 @datasets.command("delete")
 @click.argument("name_or_id")
-@click.option("--confirm", is_flag=True, help="Skip confirmation prompt.")
+@click.option("--confirm", "--yes", is_flag=True, help="Skip confirmation prompt.")
 @click.pass_context
 def delete_dataset(ctx, name_or_id, confirm):
     """Delete a dataset by name or ID."""

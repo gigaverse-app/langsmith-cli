@@ -184,6 +184,7 @@ def search_runs(
         run_type=run_type,
         is_root=None,
         roots=roots,  # Pass through --roots flag
+        all_runs=False,
         trace_filter=None,
         tree_filter=None,
         reference_example_id=None,

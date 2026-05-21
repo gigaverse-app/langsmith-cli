@@ -130,12 +130,11 @@ langsmith-cli --json projects delete <name-or-id> [OPTIONS]
 - `name-or-id` (required) - Project name or UUID
 
 **Options:**
-- `--confirm` - Skip confirmation prompt
+- `--yes`, `--confirm` - Skip confirmation prompt
 
 **Output:** Success status
 
 **Example:**
 ```bash
-langsmith-cli --json projects delete "test-project" --confirm
+langsmith-cli --json projects delete "test-project" --yes
 ```
-

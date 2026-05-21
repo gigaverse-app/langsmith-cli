@@ -886,6 +886,19 @@ def test_projects_delete_with_confirm_json(runner):
         mock_client.delete_project.assert_called_once_with(project_id=str(project.id))
 
 
+def test_projects_delete_yes_alias(runner):
+    """INVARIANT: projects delete accepts --yes as confirmation alias."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        project = create_project(name="my-project")
+        mock_client.read_project.return_value = project
+
+        result = runner.invoke(cli, ["projects", "delete", "my-project", "--yes"])
+
+        assert result.exit_code == 0
+        mock_client.delete_project.assert_called_once_with(project_id=str(project.id))
+
+
 def test_projects_delete_table_output(runner):
     """INVARIANT: projects delete should show success message."""
     with patch("langsmith.Client") as MockClient:

@@ -192,7 +192,7 @@ def create_feedback_cmd(ctx, run_id, key, score, value, comment, feedback_source
 
 @feedback.command("delete")
 @click.argument("feedback_id")
-@click.option("--confirm", is_flag=True, help="Skip confirmation prompt.")
+@click.option("--confirm", "--yes", is_flag=True, help="Skip confirmation prompt.")
 @click.pass_context
 def delete_feedback_cmd(ctx, feedback_id, confirm):
     """Delete a feedback item by ID."""

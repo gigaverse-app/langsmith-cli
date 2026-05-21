@@ -511,6 +511,19 @@ def test_datasets_delete_by_name_json(runner):
         mock_client.delete_dataset.assert_called_once_with(dataset_id=str(dataset.id))
 
 
+def test_datasets_delete_yes_alias(runner):
+    """INVARIANT: datasets delete accepts --yes as confirmation alias."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        dataset = create_dataset(name="my-dataset")
+        mock_client.read_dataset.return_value = dataset
+
+        result = runner.invoke(cli, ["datasets", "delete", "my-dataset", "--yes"])
+
+        assert result.exit_code == 0
+        mock_client.delete_dataset.assert_called_once_with(dataset_id=str(dataset.id))
+
+
 def test_datasets_delete_by_uuid(runner):
     """INVARIANT: UUID input should resolve directly by ID."""
     with patch("langsmith.Client") as MockClient:

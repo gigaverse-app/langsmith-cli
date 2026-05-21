@@ -176,7 +176,7 @@ def update_queue(ctx, queue_id, name, description):
 
 @annotation_queues.command("delete")
 @click.argument("queue_id")
-@click.option("--confirm", is_flag=True, help="Skip confirmation prompt.")
+@click.option("--confirm", "--yes", is_flag=True, help="Skip confirmation prompt.")
 @click.pass_context
 def delete_queue(ctx, queue_id, confirm):
     """Delete an annotation queue by ID."""

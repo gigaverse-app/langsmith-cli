@@ -375,7 +375,7 @@ def update_project(ctx, name_or_id, new_name, description):
 
 @projects.command("delete")
 @click.argument("name_or_id")
-@click.option("--confirm", is_flag=True, help="Skip confirmation prompt.")
+@click.option("--confirm", "--yes", is_flag=True, help="Skip confirmation prompt.")
 @click.pass_context
 def delete_project(ctx, name_or_id, confirm):
     """Delete a project."""

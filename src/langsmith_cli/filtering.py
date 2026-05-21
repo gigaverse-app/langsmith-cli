@@ -673,6 +673,29 @@ def apply_grep_filter(
     return filtered_items
 
 
+def quote_fql_string(value: str) -> str:
+    """Safely quote a string for use as an FQL string literal.
+
+    Uses JSON encoding to escape embedded quotes, backslashes, control characters,
+    and non-ASCII characters so the result is always a valid FQL string literal.
+
+    Args:
+        value: The raw string to embed in an FQL expression.
+
+    Returns:
+        The value wrapped in double quotes with all dangerous characters escaped.
+
+    Example:
+        >>> quote_fql_string('foo')
+        '"foo"'
+        >>> quote_fql_string('she said "hi"')
+        '"she said \\"hi\\""'
+    """
+    import json as _json
+
+    return _json.dumps(value)
+
+
 def build_tag_fql_filters(tags: tuple[str, ...] | list[str]) -> list[str]:
     """Build FQL filter clauses for tag filtering (AND logic).
 
@@ -682,7 +705,7 @@ def build_tag_fql_filters(tags: tuple[str, ...] | list[str]) -> list[str]:
     Returns:
         List of FQL filter strings, one per tag
     """
-    return [f'has(tags, "{t}")' for t in tags]
+    return [f"has(tags, {quote_fql_string(t)})" for t in tags]
 
 
 def filter_runs_by_tags(

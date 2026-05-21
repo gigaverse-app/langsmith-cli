@@ -25,6 +25,7 @@ langsmith-cli --json runs list [OPTIONS]
 - `--run-type TEXT` - Filter by type: `llm`, `chain`, `tool`, `retriever`, `prompt`, `parser`
 - `--is-root BOOLEAN` - Filter for root traces only: `true` or `false`
 - `--roots` - Show only root traces (shorthand for `--is-root true`)
+- `--all-runs` - Include nested child runs (shorthand for `--is-root false`)
 - `--trace-id UUID` - Get all runs in a specific trace tree
 - `--filter TEXT` - Advanced FQL query (see Filter Query Language section)
 - `--since TEXT` - Show runs since this time (ISO format or shorthand like `7d`, `24h`, `30m`, `2w`)
@@ -89,7 +90,7 @@ langsmith-cli --json runs list --trace-id <uuid> --run-type llm
 langsmith-cli --json runs list --filter 'gt(latency, "5s")' --limit 10
 
 # Root runs with specific tag
-langsmith-cli --json runs list --is-root true --filter 'has(tags, "production")'
+langsmith-cli --json runs list --roots --filter 'has(tags, "production")'
 ```
 
 ### `runs get`
@@ -419,6 +420,7 @@ langsmith-cli --json runs export <directory> [OPTIONS]
 - `--limit INTEGER` - Maximum runs to export (default: 50)
 - `--status TEXT` - Filter: `success` or `error`
 - `--roots` - Export only root traces
+- `--all-runs` - Export all runs including nested child runs
 - `--run-type TEXT` - Filter by type: `llm`, `chain`, `tool`, etc.
 - `--tag TEXT` - Filter by tag (can specify multiple)
 - `--last TEXT` - Time window: `24h`, `7d`, `30m`, etc.

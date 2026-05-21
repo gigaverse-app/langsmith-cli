@@ -97,6 +97,21 @@ def test_feedback_list_output_file(runner, tmp_path):
         assert "quality" in out.read_text()
 
 
+def test_feedback_list_output_file_respects_format(runner, tmp_path):
+    """INVARIANT: list --output respects explicit non-table --format."""
+    out = tmp_path / "feedback.json"
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_feedback.return_value = iter([create_feedback(key="quality")])
+        result = runner.invoke(
+            cli, ["feedback", "list", "--format", "json", "--output", str(out)]
+        )
+        assert result.exit_code == 0
+        data = parse_json_output(out.read_text())
+        assert isinstance(data, list)
+        assert data[0]["key"] == "quality"
+
+
 def test_feedback_list_with_run_id(runner):
     """INVARIANT: --run-id passes run_ids to the SDK list_feedback call."""
     with patch("langsmith.Client") as MockClient:
@@ -224,6 +239,24 @@ def test_feedback_delete_with_confirm(runner):
                 "delete",
                 "11111111-1111-1111-1111-111111111111",
                 "--confirm",
+            ],
+        )
+        assert result.exit_code == 0
+        mock_client.delete_feedback.assert_called_once()
+
+
+def test_feedback_delete_yes_alias(runner):
+    """INVARIANT: feedback delete accepts --yes as confirmation alias."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.delete_feedback.return_value = None
+        result = runner.invoke(
+            cli,
+            [
+                "feedback",
+                "delete",
+                "11111111-1111-1111-1111-111111111111",
+                "--yes",
             ],
         )
         assert result.exit_code == 0

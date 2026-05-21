@@ -29,19 +29,58 @@ def json_dumps(obj: Any, **kwargs: Any) -> str:
     return json.dumps(obj, ensure_ascii=False, default=str, **kwargs)
 
 
+def is_machine_readable_output(
+    ctx: click.Context,
+    *,
+    output: str | None = None,
+    output_format: str | None = None,
+    count: bool = False,
+    fields: str | None = None,
+) -> bool:
+    """Return True when the command should route diagnostics to stderr.
+
+    Any of these signals means stdout is being consumed by a machine:
+    - global --json flag
+    - explicit non-table --format (json/csv/yaml)
+    - --output writing data to a file (diagnostics must not corrupt stdout)
+    - --count returning a single integer
+    - --fields filtering JSON output (caller is post-processing)
+
+    Centralizing the rule prevents drift between commands that compute it inline.
+    """
+    if ctx.obj.get("json"):
+        return True
+    if output:
+        return True
+    if count:
+        return True
+    if fields:
+        return True
+    if output_format and output_format != "table":
+        return True
+    return False
+
+
 def configure_logger_streams(
     ctx: click.Context,
     logger: Any,
     *,
     output: str | None = None,
+    output_format: str | None = None,
+    count: bool = False,
     fields: str | None = None,
 ) -> None:
     """Set logger.use_stderr when output is machine-readable.
 
-    Machine-readable modes (--json, --output, --fields) must write data to
-    stdout and diagnostics to stderr so the two streams don't mix.
+    See :func:`is_machine_readable_output` for the full set of signals.
     """
-    logger.use_stderr = bool(ctx.obj.get("json")) or bool(output) or bool(fields)
+    logger.use_stderr = is_machine_readable_output(
+        ctx,
+        output=output,
+        output_format=output_format,
+        count=count,
+        fields=fields,
+    )
 
 
 class ConsoleProtocol(Protocol):
@@ -198,6 +237,8 @@ def render_output(
                      include_fields={"name", "id"},
                      empty_message="No projects found")
     """
+    from rich.console import Console
+
     # Normalize to list
     items = data if isinstance(data, list) else [data] if data else []
 
@@ -206,15 +247,18 @@ def render_output(
         click.echo(str(len(items)))
         return
 
-    if output_path:
-        serialized = [safe_model_dump(item, include=include_fields) for item in items]
-        from rich.console import Console
-
-        write_output_to_file(serialized, output_path, Console(), format_type="jsonl")
-        return
-
     # Determine output format
     format_type = determine_output_format(output_format, ctx.obj.get("json"))
+
+    # File output respects --format. Tables aren't sensible in files, so fall
+    # back to JSONL (the historical default) when --format is table or unset.
+    if output_path:
+        serialized = [safe_model_dump(item, include=include_fields) for item in items]
+        file_format = "jsonl" if format_type == "table" else format_type
+        write_output_to_file(
+            serialized, output_path, Console(), format_type=file_format
+        )
+        return
 
     # Handle non-table formats (JSON, CSV, YAML)
     if format_type != "table":
@@ -227,25 +271,16 @@ def render_output(
         return
 
     # Table output mode
+    console = Console()
     if not items:
-        from rich.console import Console
-
-        console = Console()
         console.print(f"[yellow]{empty_message}[/yellow]")
         return
 
     # Build and print table
     if table_builder:
-        table = table_builder(items)
-        from rich.console import Console
-
-        console = Console()
-        console.print(table)
+        console.print(table_builder(items))
     else:
         # Data is already a table or printable object
-        from rich.console import Console
-
-        console = Console()
         console.print(data)
 
 
@@ -300,6 +335,17 @@ def write_output_to_file(
             elif format_type == "json":
                 # Write as JSON array
                 f.write(json_dumps(data))
+            elif format_type == "yaml":
+                import yaml
+
+                yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+            elif format_type == "csv":
+                import csv
+
+                if data:
+                    writer = csv.DictWriter(f, fieldnames=list(data[0].keys()))
+                    writer.writeheader()
+                    writer.writerows(data)
             else:
                 raise ValueError(f"Unsupported format_type: {format_type}")
 
@@ -363,7 +409,7 @@ def output_single_item(
 
 
 def output_option(
-    help_text: str = "Write output to file instead of stdout. For list commands, uses JSONL format (one item per line); for single items, uses JSON format.",
+    help_text: str = "Write output to file instead of stdout. List commands default to JSONL; combine with --format json/csv/yaml to choose another file format.",
 ) -> Any:
     """Reusable Click option decorator for --output flag.
 

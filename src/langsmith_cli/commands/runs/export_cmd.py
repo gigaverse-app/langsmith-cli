@@ -34,6 +34,11 @@ from langsmith_cli.utils import (
     is_flag=True,
     help="Export only root traces.",
 )
+@click.option(
+    "--all-runs",
+    is_flag=True,
+    help="Export all runs including nested child runs.",
+)
 @click.option("--run-type", help="Filter by run type (llm, chain, tool, etc).")
 @click.option(
     "--tag",
@@ -62,6 +67,7 @@ def export_runs(
     filter_,
     is_root,
     roots,
+    all_runs,
     run_type,
     tag,
     since,
@@ -118,6 +124,8 @@ def export_runs(
     # Handle --roots flag
     if roots:
         is_root = True
+    if all_runs:
+        is_root = False
 
     # Build filter using shared helper (reuse canonical filter builder)
     combined_filter, error_filter = build_runs_list_filter(

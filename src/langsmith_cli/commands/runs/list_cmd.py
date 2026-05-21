@@ -1,7 +1,5 @@
 """Runs list command."""
 
-import json
-
 import click
 
 from langsmith_cli.commands.runs._group import _make_fetch_runs, console, runs
@@ -25,19 +23,17 @@ from langsmith_cli.utils import (
     filter_fields,
     get_matching_items,
     get_or_create_client,
+    is_machine_readable_output,
     output_formatted_data,
     output_option,
     parse_duration_to_seconds,
     parse_fields_option,
+    quote_fql_string,
     raise_if_all_failed_with_suggestions,
     resolve_project_filters,
     sort_items,
     write_output_to_file,
 )
-
-
-def _fql_string(value: str) -> str:
-    return json.dumps(value)
 
 
 @runs.command("list")
@@ -60,6 +56,11 @@ def _fql_string(value: str) -> str:
     "--roots",
     is_flag=True,
     help="Show only root traces (shorthand for --is-root true). Recommended for cleaner output.",
+)
+@click.option(
+    "--all-runs",
+    is_flag=True,
+    help="Include nested child runs (shorthand for --is-root false).",
 )
 @click.option("--trace-filter", help="Filter applied to root trace.")
 @click.option("--tree-filter", help="Filter if any run in trace tree matches.")
@@ -155,6 +156,7 @@ def list_runs(
     run_type,
     is_root,
     roots,
+    all_runs,
     trace_filter,
     tree_filter,
     reference_example_id,
@@ -227,8 +229,12 @@ def list_runs(
     format_type = determine_output_format(output_format, ctx.obj.get("json"))
 
     # Determine if output is machine-readable (use stderr for diagnostics)
-    is_machine_readable = (
-        ctx.obj.get("json") or format_type in ["csv", "yaml", "json"] or count or output
+    is_machine_readable = is_machine_readable_output(
+        ctx,
+        output=output,
+        output_format=format_type,
+        count=count,
+        fields=fields,
     )
     logger.use_stderr = is_machine_readable
 
@@ -261,6 +267,8 @@ def list_runs(
     # Handle --roots flag (convenience for --is-root true)
     if roots:
         is_root = True
+    if all_runs:
+        is_root = False
 
     # Handle status filtering with multiple options
     error_filter = None
@@ -288,7 +296,7 @@ def list_runs(
     # patterns still need client-side matching because FQL has no glob match.
     client_name_pattern = name_pattern
     if name_pattern and not any(ch in name_pattern for ch in "*?["):
-        fql_filters.append(f"eq(name, {_fql_string(name_pattern)})")
+        fql_filters.append(f"eq(name, {quote_fql_string(name_pattern)})")
         client_name_pattern = None
 
     # Model filtering (search in model-related fields)
@@ -426,7 +434,7 @@ def list_runs(
     )
 
     if result.all_failed and query:
-        fallback_filter = f"search({_fql_string(query)})"
+        fallback_filter = f"search({quote_fql_string(query)})"
         fallback_filters = (
             [combined_filter, fallback_filter] if combined_filter else [fallback_filter]
         )

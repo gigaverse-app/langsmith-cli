@@ -34,16 +34,51 @@ def prompts():
 @click.option(
     "--is-public", type=bool, default=None, help="Filter by public/private status."
 )
+@click.option(
+    "--public",
+    "public_filter",
+    flag_value=True,
+    default=None,
+    help="Show only public prompts.",
+)
+@click.option(
+    "--private",
+    "public_filter",
+    flag_value=False,
+    help="Show only private prompts.",
+)
 @sort_by_option(fields="full_name, created_at, updated_at")
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["table", "json", "csv", "yaml"]),
+    help="Output format (default: table, or json if --json flag used).",
+)
 @exclude_option()
 @fields_option()
 @count_option()
 @output_option()
 @click.pass_context
-def list_prompts(ctx, limit, is_public, sort_by, exclude, fields, count, output):
+def list_prompts(
+    ctx,
+    limit,
+    is_public,
+    public_filter,
+    sort_by,
+    output_format,
+    exclude,
+    fields,
+    count,
+    output,
+):
     """List available prompt repositories."""
     logger = ctx.obj["logger"]
-    configure_logger_streams(ctx, logger, output=output, fields=fields)
+    configure_logger_streams(
+        ctx, logger, output=output, output_format=output_format, fields=fields
+    )
+
+    if public_filter is not None:
+        is_public = public_filter
 
     logger.debug(f"Listing prompts: limit={limit}, is_public={is_public}")
 
@@ -59,12 +94,6 @@ def list_prompts(ctx, limit, is_public, sort_by, exclude, fields, count, output)
     if sort_by:
         prompts_list = sort_items(prompts_list, sort_by)
 
-    # Handle file output - short circuit if writing to file
-    if output:
-        data = filter_fields(prompts_list, fields)
-        write_output_to_file(data, output, console, format_type="jsonl")
-        return
-
     # Define table builder function
     def build_prompts_table(prompts):
         table = Table(title="Prompts")
@@ -77,13 +106,16 @@ def list_prompts(ctx, limit, is_public, sort_by, exclude, fields, count, output)
 
     include_fields = parse_fields_option(fields)
 
+    # Unified output rendering (handles --json, --format, --output, --count uniformly)
     render_output(
         prompts_list,
         build_prompts_table,
         ctx,
         include_fields=include_fields,
         empty_message="No prompts found",
+        output_format=output_format,
         count_flag=count,
+        output_path=output,
     )
 
 
@@ -148,8 +180,14 @@ def get_prompt(ctx, name, commit, fields, output):
 @click.option("--description", help="Prompt description.")
 @click.option("--tags", help="Comma-separated tags.")
 @click.option("--is-public", type=bool, default=False, help="Make prompt public.")
+@click.option(
+    "--public/--private",
+    "public_flag",
+    default=None,
+    help="Set prompt visibility without passing a boolean value.",
+)
 @click.pass_context
-def push_prompt(ctx, name, file_path, description, tags, is_public):
+def push_prompt(ctx, name, file_path, description, tags, is_public, public_flag):
     """Push a local prompt file to LangSmith."""
     logger = ctx.obj["logger"]
     is_machine_readable = ctx.obj.get("json")
@@ -164,6 +202,7 @@ def push_prompt(ctx, name, file_path, description, tags, is_public):
 
     # Parse tags if provided
     tags_list = parse_comma_separated_list(tags)
+    prompt_is_public = public_flag if public_flag is not None else is_public
 
     # Push prompt with metadata
     try:
@@ -172,7 +211,7 @@ def push_prompt(ctx, name, file_path, description, tags, is_public):
             object=content,
             description=description,
             tags=tags_list,
-            is_public=is_public,
+            is_public=prompt_is_public,
         )
     except ImportError:
         raise click.ClickException(
@@ -239,7 +278,7 @@ def pull_prompt(ctx, name, commit, include_model, fields, output):
 
 @prompts.command("delete")
 @click.argument("name")
-@click.option("--confirm", is_flag=True, help="Skip confirmation prompt.")
+@click.option("--confirm", "--yes", is_flag=True, help="Skip confirmation prompt.")
 @click.pass_context
 def delete_prompt(ctx, name, confirm):
     """Delete a prompt from LangSmith."""
@@ -277,8 +316,14 @@ def delete_prompt(ctx, name, confirm):
 @click.option("--description", help="Prompt description.")
 @click.option("--tags", help="Comma-separated tags.")
 @click.option("--is-public", type=bool, default=False, help="Make prompt public.")
+@click.option(
+    "--public/--private",
+    "public_flag",
+    default=None,
+    help="Set prompt visibility without passing a boolean value.",
+)
 @click.pass_context
-def create_prompt_cmd(ctx, name, description, tags, is_public):
+def create_prompt_cmd(ctx, name, description, tags, is_public, public_flag):
     """Create a new empty prompt repository."""
     from langsmith.utils import LangSmithConflictError
 
@@ -290,13 +335,14 @@ def create_prompt_cmd(ctx, name, description, tags, is_public):
 
     client = get_or_create_client(ctx)
     tags_list = parse_comma_separated_list(tags)
+    prompt_is_public = public_flag if public_flag is not None else is_public
 
     try:
         prompt = client.create_prompt(
             name,
             description=description,
             tags=tags_list if tags_list else None,
-            is_public=is_public,
+            is_public=prompt_is_public,
         )
         if ctx.obj.get("json"):
             click.echo(json_dumps(prompt.model_dump(mode="json")))
