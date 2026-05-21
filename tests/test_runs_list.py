@@ -171,10 +171,11 @@ class TestRunsListJSON:
         When ALL sources fail, the global error handler outputs a JSON error object
         with non-zero exit code so scripts can detect and parse the failure.
         """
+        from langsmith.utils import LangSmithError
 
         with patch("langsmith.Client") as MockClient:
             mock_client = MockClient.return_value
-            mock_client.list_runs.side_effect = Exception("API Error")
+            mock_client.list_runs.side_effect = LangSmithError("API Error")
 
             result = runner.invoke(cli, ["--json", "runs", "list", "--project", "test"])
 
@@ -191,12 +192,13 @@ class TestRunsListJSON:
         When ALL sources fail during iteration, the global error handler outputs
         a JSON error object with non-zero exit code.
         """
+        from langsmith.utils import LangSmithError
 
         with patch("langsmith.Client") as MockClient:
             mock_client = MockClient.return_value
 
             def failing_iterator():
-                raise Exception("Iterator failed")
+                raise LangSmithError("Iterator failed")
                 yield  # Never reached
 
             mock_client.list_runs.return_value = failing_iterator()
@@ -765,7 +767,9 @@ class TestRunsListProjectNotFound:
 
     def test_error_suggests_similar_projects_json(self, runner, mock_client):
         """INVARIANT: JSON error includes suggested project names when project not found."""
-        mock_client.list_runs.side_effect = Exception("Project not found")
+        from langsmith.utils import LangSmithError
+
+        mock_client.list_runs.side_effect = LangSmithError("Project not found")
         proj = MagicMock()
         proj.name = "prd/promotion_service"
         mock_client.list_projects.return_value = [proj]
@@ -788,7 +792,9 @@ class TestRunsListProjectNotFound:
 
     def test_error_suggests_similar_projects_human(self, runner, mock_client):
         """INVARIANT: Human-mode error includes suggested project names."""
-        mock_client.list_runs.side_effect = Exception("Project not found")
+        from langsmith.utils import LangSmithError
+
+        mock_client.list_runs.side_effect = LangSmithError("Project not found")
         proj = MagicMock()
         proj.name = "prd/promotion_service"
         mock_client.list_projects.return_value = [proj]
