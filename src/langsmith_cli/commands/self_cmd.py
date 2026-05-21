@@ -155,16 +155,19 @@ def detect_installation() -> dict[str, str]:
     return result
 
 
-# `--refresh` is the answer to issue #119's root cause: `uv tool upgrade` reads
-# the package's available-version list from ~/.cache/uv/simple-v*/pypi/<name>.rkyv,
-# which is invalidated using HTTP cache semantics from PyPI's simple index. For
-# minutes after a new release ships, uv can resolve against a stale view and
-# silently no-op exit 0. `--refresh` forces a fresh index fetch every time, so
-# `self update` never relies on a cache that hasn't seen the new version yet.
-# Verification (`_verify_installed_version`) still guards the post-condition for
-# any *other* reason the installer might no-op.
+# `--reinstall` is the answer to issue #119's root cause: `uv tool upgrade`
+# reads the package's available-version list from
+# ~/.cache/uv/simple-v*/pypi/<name>.rkyv, invalidated via HTTP cache semantics
+# from PyPI's simple index. For minutes after a release ships, uv can resolve
+# against a stale view and silently no-op exit 0. `uv tool upgrade --reinstall`
+# implies `--refresh` (per `uv tool upgrade --help`), so the simple-index cache
+# is bypassed every time `self update` runs. The `uv tool upgrade --refresh`
+# flag does NOT exist on `uv tool upgrade` itself in uv 0.9.x — only on
+# `uv pip install` / `uv sync` — so we must use `--reinstall` here.
+# Verification (`_verify_installed_version`) still guards the post-condition
+# for any *other* reason the installer might no-op.
 _UPDATE_COMMANDS: dict[str, str] = {
-    "uv tool": "uv tool upgrade --refresh langsmith-cli",
+    "uv tool": "uv tool upgrade --reinstall langsmith-cli",
     "pipx": "pipx upgrade langsmith-cli",
     "pip (virtualenv)": "pip install --upgrade langsmith-cli",
     "pip (system)": "pip install --upgrade langsmith-cli",

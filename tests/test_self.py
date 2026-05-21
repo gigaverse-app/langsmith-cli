@@ -277,16 +277,45 @@ class TestGetUpdateCommand:
     """Unit tests for get_update_command() pure function."""
 
     def test_uv_tool_returns_uv_upgrade(self):
-        """INVARIANT: uv tool installs use 'uv tool upgrade --refresh langsmith-cli'.
+        """INVARIANT: uv tool installs use 'uv tool upgrade --reinstall langsmith-cli'.
 
-        `--refresh` is required to bypass uv's simple-index cache, which was the
-        root cause behind #119: without it, uv can resolve against a stale view
-        of PyPI for minutes after a new release and silently no-op exit 0.
+        `--reinstall` is required to bypass uv's simple-index cache, which was
+        the root cause behind #119: without it, uv can resolve against a stale
+        view of PyPI for minutes after a new release and silently no-op exit 0.
+        `--reinstall` implies `--refresh` (per `uv tool upgrade --help`). The
+        bare `--refresh` flag is not a valid argument to `uv tool upgrade` in
+        uv 0.9.x — using it causes uv to error with 'unexpected argument'.
         """
         from langsmith_cli.commands.self_cmd import get_update_command
 
         assert (
-            get_update_command("uv tool") == "uv tool upgrade --refresh langsmith-cli"
+            get_update_command("uv tool") == "uv tool upgrade --reinstall langsmith-cli"
+        )
+
+    def test_uv_tool_upgrade_actually_accepts_the_flag(self):
+        """REGRESSION FROM v0.10.1: the previously-shipped `--refresh` flag is
+        rejected by `uv tool upgrade` ("unexpected argument"). This test invokes
+        the real `uv` binary with `--help` and asserts that the flag we use
+        appears in the supported-flags list. Skips silently if uv isn't installed."""
+        import shutil
+        import subprocess
+
+        uv = shutil.which("uv")
+        if uv is None:
+            import pytest
+
+            pytest.skip("uv not on PATH")
+
+        help_output = subprocess.run(
+            [uv, "tool", "upgrade", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert help_output.returncode == 0
+        assert "--reinstall" in help_output.stdout, (
+            "uv tool upgrade no longer supports --reinstall; revisit "
+            "_UPDATE_COMMANDS['uv tool'] in self_cmd.py"
         )
 
     def test_pipx_returns_pipx_upgrade(self):
@@ -430,10 +459,12 @@ class TestSelfUpdateCLI:
         assert result.exit_code == 0
         mock_run.assert_called_once()
         cmd = mock_run.call_args[0][0]
-        assert cmd == ["uv", "tool", "upgrade", "--refresh", "langsmith-cli"]
-        # Lock in the #119 root-cause defense: --refresh must be present.
+        assert cmd == ["uv", "tool", "upgrade", "--reinstall", "langsmith-cli"]
+        # Lock in the #119 root-cause defense: --reinstall must be present.
         # Without it, uv's simple-index cache can silently no-op exit 0.
-        assert "--refresh" in cmd
+        # (`--reinstall` implies `--refresh`; the bare `--refresh` flag is
+        # rejected by `uv tool upgrade` in uv 0.9.x.)
+        assert "--reinstall" in cmd
 
     def test_update_json_output(self, runner):
         """INVARIANT: --json self update returns structured JSON with status."""
@@ -736,7 +767,7 @@ class TestSelfUpdateVerification:
         assert data["expected_version"] == "0.10.0"
         assert data["executable_path"] == "/home/u/.local/bin/langsmith-cli"
         assert data["install_method"] == "uv tool"
-        assert data["command"] == "uv tool upgrade --refresh langsmith-cli"
+        assert data["command"] == "uv tool upgrade --reinstall langsmith-cli"
         assert data["remediation"] == (
             "uv tool install --force langsmith-cli && hash -r"
         )
