@@ -1,7 +1,6 @@
 import click
 from rich.console import Console
 from rich.table import Table
-from langsmith.utils import LangSmithNotFoundError
 from langsmith_cli.utils import (
     configure_logger_streams,
     confirm_option,
@@ -102,6 +101,7 @@ def get_queue(ctx, queue_id, fields, output):
     logger.debug(f"Fetching annotation queue: {queue_id}")
 
     client = get_or_create_client(ctx)
+    from langsmith.utils import LangSmithNotFoundError
 
     try:
         queue = client.read_annotation_queue(queue_id)
@@ -166,6 +166,7 @@ def update_queue(ctx, queue_id, name, description):
     logger.debug(f"Updating annotation queue: {queue_id}")
 
     client = get_or_create_client(ctx)
+    from langsmith.utils import LangSmithNotFoundError
 
     try:
         client.read_annotation_queue(queue_id)
@@ -196,6 +197,7 @@ def delete_queue(ctx, queue_id, confirm):
     configure_logger_streams(ctx, logger)
 
     client = get_or_create_client(ctx)
+    from langsmith.utils import LangSmithNotFoundError
 
     try:
         client.read_annotation_queue(queue_id)

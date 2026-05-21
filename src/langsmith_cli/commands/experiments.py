@@ -2,7 +2,6 @@ from datetime import timedelta
 from decimal import Decimal
 
 import click
-from langsmith.utils import LangSmithNotFoundError
 from rich.console import Console
 from rich.table import Table
 from langsmith_cli.utils import (
@@ -34,6 +33,7 @@ def results(ctx, name):
     logger.debug(f"Fetching experiment results: {name}")
 
     client = get_or_create_client(ctx)
+    from langsmith.utils import LangSmithNotFoundError
 
     try:
         experiment_results = client.get_experiment_results(name=name)

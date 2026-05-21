@@ -1,7 +1,6 @@
 import click
 from rich.console import Console
 from rich.table import Table
-from langsmith.utils import LangSmithNotFoundError
 from langsmith_cli.utils import (
     configure_logger_streams,
     confirm_option,
@@ -130,6 +129,7 @@ def get_feedback(ctx, feedback_id, fields, output):
     logger.debug(f"Fetching feedback: {feedback_id}")
 
     client = get_or_create_client(ctx)
+    from langsmith.utils import LangSmithNotFoundError
 
     try:
         fb = client.read_feedback(feedback_id)
@@ -219,6 +219,7 @@ def delete_feedback_cmd(ctx, feedback_id, confirm):
     logger.debug(f"Deleting feedback: {feedback_id}")
 
     client = get_or_create_client(ctx)
+    from langsmith.utils import LangSmithNotFoundError
 
     try:
         client.delete_feedback(feedback_id)
