@@ -8,6 +8,7 @@ from langsmith_cli.utils import (
     configure_logger_streams,
     get_or_create_client,
     json_dumps,
+    not_found_as_click_exception,
 )
 
 console = Console()
@@ -33,12 +34,8 @@ def results(ctx, name):
     logger.debug(f"Fetching experiment results: {name}")
 
     client = get_or_create_client(ctx)
-    from langsmith.utils import LangSmithNotFoundError
-
-    try:
+    with not_found_as_click_exception("Experiment", name):
         experiment_results = client.get_experiment_results(name=name)
-    except LangSmithNotFoundError:
-        raise click.ClickException(f"Experiment '{name}' not found.")
 
     run_stats = experiment_results.get("run_stats", {})
     feedback_stats = experiment_results.get("feedback_stats", {})

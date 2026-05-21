@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import re
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Generic, TypeVar
 
@@ -17,6 +18,41 @@ if TYPE_CHECKING:
     from langsmith import Client
 
 T = TypeVar("T")
+
+
+@contextmanager
+def not_found_as_click_exception(entity: str, identifier: str | Any) -> Iterator[None]:
+    """Translate ``LangSmithNotFoundError`` into a uniform ``ClickException``.
+
+    Almost every ``get``/``update``/``delete`` command in the CLI wraps a single
+    SDK read with the same try/except dance::
+
+        from langsmith.utils import LangSmithNotFoundError
+        try:
+            x = client.read_x(xid)
+        except LangSmithNotFoundError:
+            raise click.ClickException(f"X '{xid}' not found.")
+
+    Centralizing this stops the message format from drifting (e.g. one
+    command saying "X '<id>' not found." and another saying "Could not
+    find X with id <id>"), and removes the duplicated function-scope
+    ``from langsmith.utils import LangSmithNotFoundError`` imports.
+
+    Args:
+        entity: Human-readable entity name, e.g. ``"Feedback"`` or ``"Annotation queue"``.
+        identifier: The id/name the user supplied — interpolated into the message.
+
+    Example::
+
+        with not_found_as_click_exception("Feedback", feedback_id):
+            fb = client.read_feedback(feedback_id)
+    """
+    from langsmith.utils import LangSmithNotFoundError
+
+    try:
+        yield
+    except LangSmithNotFoundError:
+        raise click.ClickException(f"{entity} '{identifier}' not found.") from None
 
 
 def _is_rate_limited(error: BaseException) -> bool:

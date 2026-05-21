@@ -12,6 +12,7 @@ from langsmith_cli.utils import (
     filter_fields,
     get_or_create_client,
     json_dumps,
+    not_found_as_click_exception,
     output_option,
     output_single_item,
     parse_comma_separated_list,
@@ -327,13 +328,9 @@ def example_from_run(ctx, run_id, dataset):
 
     client = get_or_create_client(ctx)
 
-    from langsmith.utils import LangSmithNotFoundError
-
     # Read the run first
-    try:
+    with not_found_as_click_exception("Run", run_id):
         run = client.read_run(run_id)
-    except LangSmithNotFoundError:
-        raise click.ClickException(f"Run '{run_id}' not found.")
 
     # Create example from the run
     example = client.create_example_from_run(run, dataset_name=dataset)

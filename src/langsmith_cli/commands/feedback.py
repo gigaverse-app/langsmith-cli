@@ -9,6 +9,7 @@ from langsmith_cli.utils import (
     fields_option,
     filter_fields,
     get_or_create_client,
+    not_found_as_click_exception,
     output_option,
     output_single_item,
     parse_fields_option,
@@ -129,12 +130,8 @@ def get_feedback(ctx, feedback_id, fields, output):
     logger.debug(f"Fetching feedback: {feedback_id}")
 
     client = get_or_create_client(ctx)
-    from langsmith.utils import LangSmithNotFoundError
-
-    try:
+    with not_found_as_click_exception("Feedback", feedback_id):
         fb = client.read_feedback(feedback_id)
-    except LangSmithNotFoundError:
-        raise click.ClickException(f"Feedback '{feedback_id}' not found.")
 
     data = filter_fields(fb, fields)
 
@@ -219,12 +216,8 @@ def delete_feedback_cmd(ctx, feedback_id, confirm):
     logger.debug(f"Deleting feedback: {feedback_id}")
 
     client = get_or_create_client(ctx)
-    from langsmith.utils import LangSmithNotFoundError
-
-    try:
+    with not_found_as_click_exception("Feedback", feedback_id):
         client.delete_feedback(feedback_id)
-    except LangSmithNotFoundError:
-        raise click.ClickException(f"Feedback '{feedback_id}' not found.")
 
     emit_action_result(
         ctx,

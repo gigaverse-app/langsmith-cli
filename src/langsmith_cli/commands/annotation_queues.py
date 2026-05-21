@@ -9,6 +9,7 @@ from langsmith_cli.utils import (
     fields_option,
     filter_fields,
     get_or_create_client,
+    not_found_as_click_exception,
     output_option,
     output_single_item,
     parse_fields_option,
@@ -101,12 +102,8 @@ def get_queue(ctx, queue_id, fields, output):
     logger.debug(f"Fetching annotation queue: {queue_id}")
 
     client = get_or_create_client(ctx)
-    from langsmith.utils import LangSmithNotFoundError
-
-    try:
+    with not_found_as_click_exception("Annotation queue", queue_id):
         queue = client.read_annotation_queue(queue_id)
-    except LangSmithNotFoundError:
-        raise click.ClickException(f"Annotation queue '{queue_id}' not found.")
 
     data = filter_fields(queue, fields)
 
@@ -166,12 +163,8 @@ def update_queue(ctx, queue_id, name, description):
     logger.debug(f"Updating annotation queue: {queue_id}")
 
     client = get_or_create_client(ctx)
-    from langsmith.utils import LangSmithNotFoundError
-
-    try:
+    with not_found_as_click_exception("Annotation queue", queue_id):
         client.read_annotation_queue(queue_id)
-    except LangSmithNotFoundError:
-        raise click.ClickException(f"Annotation queue '{queue_id}' not found.")
 
     client.update_annotation_queue(
         queue_id,
@@ -197,12 +190,8 @@ def delete_queue(ctx, queue_id, confirm):
     configure_logger_streams(ctx, logger)
 
     client = get_or_create_client(ctx)
-    from langsmith.utils import LangSmithNotFoundError
-
-    try:
+    with not_found_as_click_exception("Annotation queue", queue_id):
         client.read_annotation_queue(queue_id)
-    except LangSmithNotFoundError:
-        raise click.ClickException(f"Annotation queue '{queue_id}' not found.")
 
     if not confirm:
         if not click.confirm(
