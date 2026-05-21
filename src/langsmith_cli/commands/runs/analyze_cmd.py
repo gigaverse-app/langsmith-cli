@@ -12,6 +12,7 @@ from langsmith_cli.utils import (
     add_time_filter_options,
     build_time_fql_filters,
     combine_fql_filters,
+    configure_logger_streams,
     determine_output_format,
     fetch_from_projects,
     get_or_create_client,
@@ -362,10 +363,7 @@ def analyze_runs(
           --sample-size 0
     """
     logger = ctx.obj["logger"]
-
-    # Determine if output is machine-readable
-    is_machine_readable = ctx.obj.get("json") or output_format in ["csv", "yaml"]
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger, output_format=output_format)
 
     from collections import defaultdict
 
