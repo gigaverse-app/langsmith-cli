@@ -13,6 +13,7 @@ from langsmith_cli.utils import (
     configure_logger_streams,
     confirm_option,
     count_option,
+    emit_action_result,
     exclude_option,
     fields_option,
     filter_fields,
@@ -21,13 +22,11 @@ from langsmith_cli.utils import (
     sort_by_option,
     sort_items,
     parse_fields_option,
-    json_dumps,
     output_option,
     output_single_item,
     parse_comma_separated_list,
     parse_json_string,
     render_output,
-    safe_model_dump,
 )
 
 console = Console()
@@ -241,12 +240,12 @@ def create_dataset(ctx, name, description, dataset_type):
         dataset_name=name, description=description, data_type=data_type_enum
     )
 
-    if ctx.obj.get("json"):
-        data = safe_model_dump(dataset)
-        click.echo(json_dumps(data))
-        return
-
-    logger.success(f"Created dataset {dataset.name} (ID: {dataset.id})")
+    emit_action_result(
+        ctx,
+        logger,
+        model=dataset,
+        success_message=f"Created dataset {dataset.name} (ID: {dataset.id})",
+    )
 
 
 @datasets.command("push")
@@ -296,20 +295,16 @@ def push_dataset(ctx, file_path, dataset):
         dataset_name=dataset,
     )
 
-    if ctx.obj.get("json"):
-        click.echo(
-            json_dumps(
-                {
-                    "status": "success",
-                    "dataset": dataset,
-                    "examples_count": len(examples),
-                }
-            )
-        )
-    else:
-        logger.success(
-            f"Successfully pushed {len(examples)} examples to dataset '{dataset}'"
-        )
+    emit_action_result(
+        ctx,
+        logger,
+        payload={
+            "status": "success",
+            "dataset": dataset,
+            "examples_count": len(examples),
+        },
+        success_message=f"Successfully pushed {len(examples)} examples to dataset '{dataset}'",
+    )
 
 
 def resolve_dataset(
@@ -348,7 +343,9 @@ def delete_dataset(ctx, name_or_id, confirm):
     dataset = resolve_dataset(client, name_or_id)
     client.delete_dataset(dataset_id=str(dataset.id))
 
-    if ctx.obj.get("json"):
-        click.echo(json_dumps({"status": "success", "name": dataset.name}))
-    else:
-        logger.success(f"Deleted dataset '{dataset.name}'")
+    emit_action_result(
+        ctx,
+        logger,
+        payload={"status": "success", "name": dataset.name},
+        success_message=f"Deleted dataset '{dataset.name}'",
+    )

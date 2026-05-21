@@ -6,15 +6,14 @@ from langsmith_cli.utils import (
     configure_logger_streams,
     confirm_option,
     count_option,
+    emit_action_result,
     fields_option,
     filter_fields,
     get_or_create_client,
-    json_dumps,
     output_option,
     output_single_item,
     parse_fields_option,
     render_output,
-    safe_model_dump,
 )
 
 console = Console()
@@ -194,10 +193,12 @@ def create_feedback_cmd(ctx, run_id, key, score, value, comment, feedback_source
         feedback_source_type=feedback_source_type,
     )
 
-    if ctx.obj.get("json"):
-        click.echo(json_dumps(safe_model_dump(fb)))
-    else:
-        logger.success(f"Created feedback (ID: {fb.id}) for run {run_id}")
+    emit_action_result(
+        ctx,
+        logger,
+        model=fb,
+        success_message=f"Created feedback (ID: {fb.id}) for run {run_id}",
+    )
 
 
 @feedback.command("delete")
@@ -224,7 +225,9 @@ def delete_feedback_cmd(ctx, feedback_id, confirm):
     except LangSmithNotFoundError:
         raise click.ClickException(f"Feedback '{feedback_id}' not found.")
 
-    if ctx.obj.get("json"):
-        click.echo(json_dumps({"status": "success", "deleted": feedback_id}))
-    else:
-        logger.success(f"Deleted feedback {feedback_id}")
+    emit_action_result(
+        ctx,
+        logger,
+        payload={"status": "success", "deleted": feedback_id},
+        success_message=f"Deleted feedback {feedback_id}",
+    )

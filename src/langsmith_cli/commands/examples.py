@@ -6,6 +6,7 @@ from langsmith_cli.utils import (
     configure_logger_streams,
     confirm_option,
     count_option,
+    emit_action_result,
     exclude_option,
     fields_option,
     filter_fields,
@@ -17,7 +18,6 @@ from langsmith_cli.utils import (
     parse_fields_option,
     parse_json_string,
     render_output,
-    safe_model_dump,
     sort_by_option,
     sort_items,
 )
@@ -224,12 +224,12 @@ def create_example(ctx, dataset, inputs, outputs, metadata, split):
         split=normalize_split(split),
     )
 
-    if ctx.obj.get("json"):
-        data = safe_model_dump(example)
-        click.echo(json_dumps(data))
-        return
-
-    logger.success(f"Created example (ID: {example.id}) in dataset {dataset}")
+    emit_action_result(
+        ctx,
+        logger,
+        model=example,
+        success_message=f"Created example (ID: {example.id}) in dataset {dataset}",
+    )
 
 
 @examples.command("update")
@@ -265,10 +265,12 @@ def update_example(ctx, example_id, inputs, outputs, metadata, split):
         split=normalize_split(split),
     )
 
-    if ctx.obj.get("json"):
-        click.echo(json_dumps(result))
-    else:
-        logger.success(f"Updated example {example_id}")
+    emit_action_result(
+        ctx,
+        logger,
+        payload=result,
+        success_message=f"Updated example {example_id}",
+    )
 
 
 @examples.command("delete")
@@ -336,10 +338,11 @@ def example_from_run(ctx, run_id, dataset):
     # Create example from the run
     example = client.create_example_from_run(run, dataset_name=dataset)
 
-    if ctx.obj.get("json"):
-        data = safe_model_dump(example)
-        click.echo(json_dumps(data))
-    else:
-        logger.success(
+    emit_action_result(
+        ctx,
+        logger,
+        model=example,
+        success_message=(
             f"Created example (ID: {example.id}) from run {run_id} in dataset '{dataset}'"
-        )
+        ),
+    )

@@ -6,15 +6,14 @@ from langsmith_cli.utils import (
     configure_logger_streams,
     confirm_option,
     count_option,
+    emit_action_result,
     fields_option,
     filter_fields,
     get_or_create_client,
-    json_dumps,
     output_option,
     output_single_item,
     parse_fields_option,
     render_output,
-    safe_model_dump,
 )
 
 console = Console()
@@ -143,10 +142,12 @@ def create_queue(ctx, name, description):
         description=description,
     )
 
-    if ctx.obj.get("json"):
-        click.echo(json_dumps(safe_model_dump(queue)))
-    else:
-        logger.success(f"Created annotation queue '{name}' (ID: {queue.id})")
+    emit_action_result(
+        ctx,
+        logger,
+        model=queue,
+        success_message=f"Created annotation queue '{name}' (ID: {queue.id})",
+    )
 
 
 @annotation_queues.command("update")
@@ -177,10 +178,12 @@ def update_queue(ctx, queue_id, name, description):
         description=description,
     )
 
-    if ctx.obj.get("json"):
-        click.echo(json_dumps({"status": "success", "queue_id": queue_id}))
-    else:
-        logger.success(f"Updated annotation queue {queue_id}")
+    emit_action_result(
+        ctx,
+        logger,
+        payload={"status": "success", "queue_id": queue_id},
+        success_message=f"Updated annotation queue {queue_id}",
+    )
 
 
 @annotation_queues.command("delete")
@@ -209,7 +212,9 @@ def delete_queue(ctx, queue_id, confirm):
 
     client.delete_annotation_queue(queue_id)
 
-    if ctx.obj.get("json"):
-        click.echo(json_dumps({"status": "success", "deleted": queue_id}))
-    else:
-        logger.success(f"Deleted annotation queue {queue_id}")
+    emit_action_result(
+        ctx,
+        logger,
+        payload={"status": "success", "deleted": queue_id},
+        success_message=f"Deleted annotation queue {queue_id}",
+    )
