@@ -4,6 +4,7 @@ from rich.table import Table
 from langsmith_cli.utils import (
     apply_exclude_filter,
     configure_logger_streams,
+    confirm_option,
     count_option,
     exclude_option,
     fields_option,
@@ -303,15 +304,14 @@ def pull_prompt(ctx, name, commit, include_model, fields, output):
 
 @prompts.command("delete")
 @click.argument("name")
-@click.option("--confirm", "--yes", is_flag=True, help="Skip confirmation prompt.")
+@confirm_option()
 @click.pass_context
 def delete_prompt(ctx, name, confirm):
     """Delete a prompt from LangSmith."""
     from langsmith.utils import LangSmithNotFoundError
 
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json")
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger)
 
     if not confirm:
         if not click.confirm(f"Are you sure you want to delete prompt '{name}'?"):

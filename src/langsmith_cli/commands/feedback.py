@@ -4,6 +4,7 @@ from rich.table import Table
 from langsmith.utils import LangSmithNotFoundError
 from langsmith_cli.utils import (
     configure_logger_streams,
+    confirm_option,
     count_option,
     fields_option,
     filter_fields,
@@ -202,13 +203,12 @@ def create_feedback_cmd(ctx, run_id, key, score, value, comment, feedback_source
 
 @feedback.command("delete")
 @click.argument("feedback_id")
-@click.option("--confirm", "--yes", is_flag=True, help="Skip confirmation prompt.")
+@confirm_option()
 @click.pass_context
 def delete_feedback_cmd(ctx, feedback_id, confirm):
     """Delete a feedback item by ID."""
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json")
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger)
 
     if not confirm:
         if not click.confirm(

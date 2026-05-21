@@ -40,6 +40,7 @@ from langsmith_cli.utils import (
     build_time_fql_filters,
     combine_fql_filters,
     parse_time_range,
+    resolve_root_scope,
     write_output_to_file,
 )
 from langsmith_cli.time_parsing import ensure_aware_datetime
@@ -2156,3 +2157,37 @@ class TestEnsureAwareDatetime:
         b = ensure_aware_datetime(aware)
         assert a is not None and b is not None
         assert a < b  # must not raise TypeError
+
+
+class TestResolveRootScope:
+    """Tests for shared --roots/--all-runs/--is-root resolution."""
+
+    @pytest.mark.parametrize(
+        "roots,all_runs,is_root,expected",
+        [
+            (False, False, None, None),
+            (True, False, None, True),
+            (False, True, None, False),
+            (False, False, True, True),
+            (False, False, False, False),
+            (True, False, True, True),
+            (False, True, False, False),
+        ],
+    )
+    def test_resolves_consistent_scope(self, roots, all_runs, is_root, expected):
+        assert (
+            resolve_root_scope(roots=roots, all_runs=all_runs, is_root=is_root)
+            is expected
+        )
+
+    @pytest.mark.parametrize(
+        "roots,all_runs,is_root,message",
+        [
+            (True, True, None, "Use only one of --roots or --all-runs"),
+            (True, False, False, "Use only one of --roots"),
+            (False, True, True, "Use only one of --all-runs"),
+        ],
+    )
+    def test_rejects_conflicting_scope(self, roots, all_runs, is_root, message):
+        with pytest.raises(click.UsageError, match=message):
+            resolve_root_scope(roots=roots, all_runs=all_runs, is_root=is_root)

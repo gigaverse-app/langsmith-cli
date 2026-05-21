@@ -11,6 +11,7 @@ from langsmith_cli.utils import (
     apply_exclude_filter,
     apply_name_filters,
     configure_logger_streams,
+    confirm_option,
     count_option,
     exclude_option,
     fields_option,
@@ -328,13 +329,12 @@ def resolve_dataset(
 
 @datasets.command("delete")
 @click.argument("name_or_id")
-@click.option("--confirm", "--yes", is_flag=True, help="Skip confirmation prompt.")
+@confirm_option()
 @click.pass_context
 def delete_dataset(ctx, name_or_id, confirm):
     """Delete a dataset by name or ID."""
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json")
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger)
 
     if not confirm:
         if not click.confirm(

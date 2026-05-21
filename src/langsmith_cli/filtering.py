@@ -111,6 +111,40 @@ def fields_option(
     )
 
 
+def confirm_option(
+    help_text: str = "Skip confirmation prompt.",
+) -> Any:
+    """Reusable Click option decorator for the ``--confirm`` / ``--yes`` flag.
+
+    Use this on every destructive command so the spelling stays in sync —
+    older versions exposed only ``--confirm`` and switching to ``--yes`` on
+    one command without the others would create silent UX drift.
+
+    Args:
+        help_text: Custom help text for the option.
+
+    Returns:
+        Click option decorator.
+
+    Example:
+        @datasets.command("delete")
+        @click.argument("name_or_id")
+        @confirm_option()
+        @click.pass_context
+        def delete_dataset(ctx, name_or_id, confirm):
+            if not confirm:
+                if not click.confirm("Delete?"):
+                    raise click.ClickException("Cancelled.")
+            ...
+    """
+    return click.option(
+        "--confirm",
+        "--yes",
+        is_flag=True,
+        help=help_text,
+    )
+
+
 def count_option(
     help_text: str = "Output only the count of results (integer). Useful for scripting and quick checks.",
 ) -> Any:

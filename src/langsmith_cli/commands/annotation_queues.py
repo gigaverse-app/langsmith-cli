@@ -4,6 +4,7 @@ from rich.table import Table
 from langsmith.utils import LangSmithNotFoundError
 from langsmith_cli.utils import (
     configure_logger_streams,
+    confirm_option,
     count_option,
     fields_option,
     filter_fields,
@@ -186,13 +187,12 @@ def update_queue(ctx, queue_id, name, description):
 
 @annotation_queues.command("delete")
 @click.argument("queue_id")
-@click.option("--confirm", "--yes", is_flag=True, help="Skip confirmation prompt.")
+@confirm_option()
 @click.pass_context
 def delete_queue(ctx, queue_id, confirm):
     """Delete an annotation queue by ID."""
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json")
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger)
 
     client = get_or_create_client(ctx)
 

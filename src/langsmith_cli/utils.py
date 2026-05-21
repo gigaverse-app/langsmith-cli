@@ -42,6 +42,7 @@ from langsmith_cli.filtering import (
     apply_wildcard_filter,
     build_metadata_fql_filters,
     build_tag_fql_filters,
+    confirm_option,
     count_option,
     exclude_option,
     extract_regex_search_term,
@@ -92,6 +93,7 @@ from langsmith_cli.run_helpers import (
     extract_model_name,
     format_token_count,
     render_run_details,
+    resolve_root_scope,
 )
 
 __all__ = [
@@ -121,6 +123,7 @@ __all__ = [
     "apply_wildcard_filter",
     "build_metadata_fql_filters",
     "build_tag_fql_filters",
+    "confirm_option",
     "count_option",
     "exclude_option",
     "extract_regex_search_term",
@@ -165,4 +168,5 @@ __all__ = [
     "extract_model_name",
     "format_token_count",
     "render_run_details",
+    "resolve_root_scope",
 ]

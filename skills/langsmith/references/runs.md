@@ -399,12 +399,12 @@ langsmith-cli runs cache list
 Clear cached data.
 
 ```bash
-langsmith-cli runs cache clear [--project TEXT] [--yes]
+langsmith-cli runs cache clear [--project TEXT] [--yes|--confirm]
 ```
 
 **Options:**
 - `--project TEXT` - Clear only this project's cache
-- `--yes` - Skip confirmation prompt
+- `--yes` / `--confirm` - Skip confirmation prompt
 
 ### `runs export`
 

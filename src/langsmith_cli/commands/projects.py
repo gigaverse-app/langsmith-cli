@@ -10,6 +10,8 @@ from langsmith_cli.utils import (
     apply_wildcard_filter,
     apply_exclude_filter,
     apply_client_side_limit,
+    configure_logger_streams,
+    confirm_option,
     extract_wildcard_search_term,
     extract_regex_search_term,
     fields_option,
@@ -376,13 +378,12 @@ def update_project(ctx, name_or_id, new_name, description):
 
 @projects.command("delete")
 @click.argument("name_or_id")
-@click.option("--confirm", "--yes", is_flag=True, help="Skip confirmation prompt.")
+@confirm_option()
 @click.pass_context
 def delete_project(ctx, name_or_id, confirm):
     """Delete a project."""
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json")
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger)
 
     if not confirm:
         if not click.confirm(

@@ -17,6 +17,7 @@ from langsmith_cli.utils import (
     parse_fields_option,
     raise_if_all_failed_with_suggestions,
     resolve_project_filters,
+    resolve_root_scope,
 )
 
 
@@ -121,18 +122,7 @@ def export_runs(
     )
     projects_to_query = pq.names
 
-    if roots and all_runs:
-        raise click.UsageError("Use only one of --roots or --all-runs.")
-    if roots and is_root is False:
-        raise click.UsageError("Use only one of --roots or --is-root false.")
-    if all_runs and is_root is True:
-        raise click.UsageError("Use only one of --all-runs or --is-root true.")
-
-    # Handle root-scope aliases.
-    if roots:
-        is_root = True
-    if all_runs:
-        is_root = False
+    is_root = resolve_root_scope(roots=roots, all_runs=all_runs, is_root=is_root)
 
     # Build filter using shared helper (reuse canonical filter builder)
     combined_filter, error_filter = build_runs_list_filter(

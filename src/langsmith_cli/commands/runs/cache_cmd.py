@@ -17,6 +17,7 @@ from langsmith_cli.utils import (
     build_runs_table,
     build_time_fql_filters,
     combine_fql_filters,
+    confirm_option,
     count_option,
     fields_option,
     get_or_create_client,
@@ -504,9 +505,9 @@ def cache_list(ctx: click.Context) -> None:
 
 @cache_group.command("clear")
 @click.option("--project", help="Clear cache for a specific project only.")
-@click.option("--yes", is_flag=True, help="Skip confirmation prompt.")
+@confirm_option()
 @click.pass_context
-def cache_clear(ctx: click.Context, project: str | None, yes: bool) -> None:
+def cache_clear(ctx: click.Context, project: str | None, confirm: bool) -> None:
     """Clear cached run data.
 
     Examples:
@@ -520,7 +521,7 @@ def cache_clear(ctx: click.Context, project: str | None, yes: bool) -> None:
 
     logger = ctx.obj["logger"]
 
-    if not project and not yes:
+    if not project and not confirm:
         if not click.confirm("Clear ALL cached run data?"):
             raise click.ClickException("Cancelled.")
 

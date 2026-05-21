@@ -5,11 +5,48 @@ from __future__ import annotations
 import datetime
 from typing import Any, Protocol
 
+import click
 from langsmith.schemas import Run
 
 from langsmith_cli.output import json_dumps
 from langsmith_cli.time_parsing import build_time_fql_filters, combine_fql_filters
 from langsmith_cli.utils import build_tag_fql_filters, parse_duration_to_seconds
+
+
+def resolve_root_scope(
+    *, roots: bool, all_runs: bool, is_root: bool | None
+) -> bool | None:
+    """Resolve the ``--roots`` / ``--all-runs`` / ``--is-root`` triple to a
+    single ``is_root: bool | None`` value, rejecting contradictory combinations.
+
+    Multiple commands (``runs list``, ``runs export``) expose all three flags
+    as ergonomic ways to express the same intent — keeping the resolution in
+    one place stops them from drifting (e.g. one enforcing the conflict check
+    and the other silently letting last-write-wins).
+
+    Args:
+        roots: True if ``--roots`` was passed (shorthand for ``--is-root true``).
+        all_runs: True if ``--all-runs`` was passed (shorthand for ``--is-root false``).
+        is_root: Explicit ``--is-root`` value, or ``None`` if not specified.
+
+    Returns:
+        The resolved value to forward to the SDK as ``is_root=``.
+
+    Raises:
+        click.UsageError: If the user passed contradictory flags.
+    """
+    if roots and all_runs:
+        raise click.UsageError("Use only one of --roots or --all-runs.")
+    if roots and is_root is False:
+        raise click.UsageError("Use only one of --roots or --is-root false.")
+    if all_runs and is_root is True:
+        raise click.UsageError("Use only one of --all-runs or --is-root true.")
+
+    if roots:
+        return True
+    if all_runs:
+        return False
+    return is_root
 
 
 class ConsoleProtocol(Protocol):

@@ -5,6 +5,7 @@ INVARIANT: feedback list/get/create/delete commands must be reachable
 and produce valid output (table or JSON) backed by real Pydantic Feedback models.
 """
 
+import json
 from unittest.mock import patch
 
 from langsmith.utils import LangSmithNotFoundError
@@ -323,3 +324,43 @@ def test_feedback_delete_not_found(runner):
         )
         assert result.exit_code != 0
         assert "not found" in result.output.lower()
+
+
+def test_feedback_delete_yes_alias_skips_prompt(runner):
+    """INVARIANT: --yes is a working alias for --confirm on `feedback delete`.
+
+    Guards against drift where one delete command exposes --yes (via
+    confirm_option()) and another silently keeps the old --confirm-only flag.
+    """
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.delete_feedback.return_value = None
+        result = runner.invoke(
+            cli,
+            [
+                "feedback",
+                "delete",
+                "11111111-1111-1111-1111-111111111111",
+                "--yes",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        mock_client.delete_feedback.assert_called_once()
+
+
+def test_feedback_list_format_json_routes_diagnostics_to_stderr(runner):
+    """INVARIANT: `feedback list --format json` must not corrupt stdout with diagnostics.
+
+    `--format json` is by itself a machine-readable signal: a script doing
+    `langsmith-cli feedback list --format json | jq` would break if INFO/DEBUG
+    lines landed on stdout. Centralized via is_machine_readable_output.
+    """
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_feedback.return_value = []
+
+        result = runner.invoke(cli, ["feedback", "list", "--format", "json"])
+
+        assert result.exit_code == 0
+        # Output must be pure JSON (no debug/info preamble).
+        json.loads(result.output.strip())

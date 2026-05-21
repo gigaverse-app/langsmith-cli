@@ -309,3 +309,22 @@ def test_annotation_queues_update_not_found(runner):
         )
         assert result.exit_code != 0
         assert "not found" in result.output.lower()
+
+
+def test_annotation_queues_list_format_json_routes_diagnostics_to_stderr(runner):
+    """INVARIANT: `--format json` alone is enough to flip diagnostics to stderr.
+
+    Without this routing rule, `annotation-queues list --format json | jq` would
+    fail because INFO/DEBUG lines would land on stdout. The fix delegates to
+    is_machine_readable_output via configure_logger_streams.
+    """
+    import json as _json
+
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_annotation_queues.return_value = []
+
+        result = runner.invoke(cli, ["annotation-queues", "list", "--format", "json"])
+
+        assert result.exit_code == 0
+        _json.loads(result.output.strip())

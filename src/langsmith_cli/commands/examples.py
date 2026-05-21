@@ -4,6 +4,7 @@ from rich.table import Table
 from langsmith_cli.utils import (
     apply_exclude_filter,
     configure_logger_streams,
+    confirm_option,
     count_option,
     exclude_option,
     fields_option,
@@ -274,13 +275,12 @@ def update_example(ctx, example_id, inputs, outputs, metadata, split):
 
 @examples.command("delete")
 @click.argument("example_ids", nargs=-1, required=True)
-@click.option("--confirm", "--yes", is_flag=True, help="Skip confirmation prompt.")
+@confirm_option()
 @click.pass_context
 def delete_examples(ctx, example_ids, confirm):
     """Delete one or more examples by ID."""
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json")
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger)
 
     if not confirm:
         count = len(example_ids)

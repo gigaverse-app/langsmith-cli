@@ -429,6 +429,17 @@ class TestCacheCommands:
         assert result.exit_code == 0
         assert list_cached_projects() == []
 
+    def test_cache_clear_accepts_confirm_alias(self, runner, tmp_path, monkeypatch):
+        """Clear command accepts the standard --confirm alias."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+
+        append_runs_to_cache("test-project", [_make_run(1)])
+
+        result = runner.invoke(cli, ["runs", "cache", "clear", "--confirm"])
+
+        assert result.exit_code == 0
+        assert list_cached_projects() == []
+
     def test_cache_clear_specific_project(self, runner, tmp_path, monkeypatch):
         """Clear command can target a specific project."""
         monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
