@@ -1,0 +1,56 @@
+name: Dependabot Auto-merge
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "Dependabot PR number or URL"
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  enable:
+    name: Enable GitHub auto-merge
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.user.login == 'dependabot[bot]'
+    steps:
+      - name: Resolve and validate Dependabot PR
+        id: pr
+        env:
+          PR_REF: ${{ github.event.pull_request.html_url || github.event.inputs.pr }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          pr_json="$(gh pr view "$PR_REF" --json author,headRefName,isDraft,url)"
+
+          author="$(jq -r '.author.login' <<< "$pr_json")"
+          head_ref="$(jq -r '.headRefName' <<< "$pr_json")"
+          is_draft="$(jq -r '.isDraft' <<< "$pr_json")"
+          url="$(jq -r '.url' <<< "$pr_json")"
+
+          if [[ "$author" != "dependabot[bot]" || "$head_ref" != dependabot/* ]]; then
+            echo "Skipping: this is not a Dependabot pull request."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "$is_draft" == "true" ]]; then
+            echo "Skipping: draft Dependabot pull request."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      - name: Enable auto-merge
+        if: steps.pr.outputs.skip != 'true'
+        env:
+          PR_URL: ${{ steps.pr.outputs.url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr merge "$PR_URL" --auto --squash --delete-branch
