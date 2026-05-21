@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING, TypedDict
 import json
 
 import click
@@ -32,6 +32,28 @@ if TYPE_CHECKING:
 # The real implementation lives in run_helpers.get_full_model_name so
 # pricing and usage stay in sync.
 _get_model_name = get_full_model_name
+
+
+class OpenRouterAPIModelPricing(TypedDict):
+    """Pricing payload for a single OpenRouter model."""
+
+    prompt: str
+    completion: str
+
+
+class OpenRouterAPIModel(TypedDict):
+    """Validated subset of an OpenRouter model response."""
+
+    id: str
+    pricing: OpenRouterAPIModelPricing
+
+
+class OpenRouterMatchedPrice(TypedDict):
+    """Pricing match returned for a LangSmith model name."""
+
+    openrouter_id: str
+    input_per_million: float
+    output_per_million: float
 
 
 @runs.command("pricing")
@@ -206,7 +228,7 @@ def pricing_check(
     ]
 
     # Look up pricing from OpenRouter
-    openrouter_prices: dict[str, dict[str, float]] = {}
+    openrouter_prices: dict[str, OpenRouterMatchedPrice] = {}
     if lookup and missing_models:
         openrouter_prices = _fetch_openrouter_pricing(missing_models, logger)
 
@@ -227,7 +249,7 @@ def pricing_check(
 
 def _build_pricing_models_list(
     model_stats: dict[str, dict[str, int | float]],
-    openrouter_prices: dict[str, dict[str, float]],
+    openrouter_prices: dict[str, OpenRouterMatchedPrice],
 ) -> list[dict[str, Any]]:
     """Convert aggregated stats into the JSON-output row list (pure data)."""
     models_data: list[dict[str, Any]] = []
@@ -247,7 +269,7 @@ def _build_pricing_models_list(
 
 def _render_pricing_yaml(
     model_stats: dict[str, dict[str, int | float]],
-    openrouter_prices: dict[str, dict[str, float]],
+    openrouter_prices: dict[str, OpenRouterMatchedPrice],
 ) -> str:
     """Render the pricing YAML used as input to ``--apply-pricing``.
 
@@ -287,7 +309,7 @@ def _render_pricing_yaml(
 def _render_pricing_tables(
     model_stats: dict[str, dict[str, int | float]],
     missing_models: list[str],
-    openrouter_prices: dict[str, dict[str, float]],
+    openrouter_prices: dict[str, OpenRouterMatchedPrice],
 ) -> None:
     """Render the human-mode pricing tables to stdout via Rich Console."""
     from rich.console import Console
@@ -329,7 +351,7 @@ def _render_pricing_tables(
                 p = openrouter_prices[model_name]
                 price_table.add_row(
                     model_name,
-                    str(p.get("openrouter_id", "")),
+                    p["openrouter_id"],
                     f"${p['input_per_million']:.4f}",
                     f"${p['output_per_million']:.4f}",
                 )
@@ -351,7 +373,7 @@ def _render_pricing_tables(
 def _fetch_openrouter_pricing(
     model_names: list[str],
     logger: CLILogger,
-) -> dict[str, dict[str, Any]]:
+) -> dict[str, OpenRouterMatchedPrice]:
     """Fetch pricing from OpenRouter API for given model names.
 
     Returns dict mapping our model name -> pricing info.
@@ -392,34 +414,85 @@ def _fetch_openrouter_pricing(
         logger.warning(f"Failed to fetch OpenRouter pricing: {e}")
         return {}
 
+    try:
+        models = _validate_openrouter_models_response(data)
+    except ValueError as e:
+        logger.warning(f"OpenRouter pricing response had unexpected shape: {e}")
+        return {}
+
     # Build lookup from OpenRouter data
-    or_models: dict[str, dict[str, Any]] = {}
-    for m in data.get("data", []):
-        model_id = m.get("id", "")
-        pricing = m.get("pricing", {})
-        prompt_price = pricing.get("prompt")
-        completion_price = pricing.get("completion")
-        if prompt_price is not None and completion_price is not None:
-            or_models[model_id.lower()] = {
-                "id": model_id,
-                "input_per_token": float(prompt_price),
-                "output_per_token": float(completion_price),
-            }
+    or_models: dict[str, OpenRouterMatchedPrice] = {}
+    for model in models:
+        model_id = model["id"]
+        pricing = model["pricing"]
+        or_models[model_id.lower()] = {
+            "openrouter_id": model_id,
+            "input_per_million": round(float(pricing["prompt"]) * 1_000_000, 4),
+            "output_per_million": round(float(pricing["completion"]) * 1_000_000, 4),
+        }
 
     # Match our models to OpenRouter
-    result: dict[str, dict[str, Any]] = {}
+    result: dict[str, OpenRouterMatchedPrice] = {}
     for our_name, candidates in name_mappings.items():
         for candidate in candidates:
             key = candidate.lower()
             if key in or_models:
-                info = or_models[key]
-                result[our_name] = {
-                    "openrouter_id": info["id"],
-                    "input_per_million": round(info["input_per_token"] * 1_000_000, 4),
-                    "output_per_million": round(
-                        info["output_per_token"] * 1_000_000, 4
-                    ),
-                }
+                result[our_name] = or_models[key]
                 break
 
     return result
+
+
+def _validate_openrouter_models_response(raw: Any) -> list[OpenRouterAPIModel]:
+    """Validate the OpenRouter models response at the network boundary."""
+    if not isinstance(raw, dict):
+        raise ValueError(f"expected object, got {type(raw).__name__}")
+    if "data" not in raw:
+        raise ValueError("missing required field 'data'")
+    data = raw["data"]
+    if not isinstance(data, list):
+        raise ValueError("field 'data' must be a list")
+
+    models: list[OpenRouterAPIModel] = []
+    for index, item in enumerate(data):
+        if not isinstance(item, dict):
+            raise ValueError(f"data[{index}] must be an object")
+        if "id" not in item:
+            raise ValueError(f"data[{index}] missing required field 'id'")
+        model_id = item["id"]
+        if not isinstance(model_id, str):
+            raise ValueError(f"data[{index}].id must be a string")
+        if "pricing" not in item:
+            raise ValueError(f"data[{index}] missing required field 'pricing'")
+        pricing = item["pricing"]
+        if not isinstance(pricing, dict):
+            raise ValueError(f"data[{index}].pricing must be an object")
+        if "prompt" not in pricing:
+            raise ValueError(f"data[{index}].pricing missing required field 'prompt'")
+        if "completion" not in pricing:
+            raise ValueError(
+                f"data[{index}].pricing missing required field 'completion'"
+            )
+        prompt = pricing["prompt"]
+        completion = pricing["completion"]
+        if not isinstance(prompt, str):
+            raise ValueError(f"data[{index}].pricing.prompt must be a string")
+        if not isinstance(completion, str):
+            raise ValueError(f"data[{index}].pricing.completion must be a string")
+        try:
+            float(prompt)
+            float(completion)
+        except ValueError as e:
+            raise ValueError(
+                f"data[{index}].pricing must contain numeric strings"
+            ) from e
+        models.append(
+            OpenRouterAPIModel(
+                id=model_id,
+                pricing=OpenRouterAPIModelPricing(
+                    prompt=prompt,
+                    completion=completion,
+                ),
+            )
+        )
+    return models

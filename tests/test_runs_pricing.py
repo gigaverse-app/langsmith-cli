@@ -262,6 +262,23 @@ class TestFetchOpenRouterPricing:
 
         assert "totally-unknown-model" not in result
 
+    def test_malformed_openrouter_response_warns_and_returns_empty(self):
+        """Malformed OpenRouter responses are not silently treated as valid data."""
+        mock_response = json.dumps({"unexpected": []}).encode()
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = mock_response
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        logger = MagicMock()
+
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            result = _fetch_openrouter_pricing(["gpt-4o"], logger)
+
+        assert result == {}
+        logger.warning.assert_called_once()
+        assert "unexpected shape" in logger.warning.call_args.args[0]
+
 
 class TestPricingTagFiltering:
     """Tests for --tag filtering on runs pricing command."""
