@@ -21,6 +21,7 @@ from langsmith_cli.utils import (
     build_tag_fql_filters,
     build_time_fql_filters,
     combine_fql_filters,
+    configure_logger_streams,
     determine_output_format,
     filter_runs_by_tags,
     get_or_create_client,
@@ -424,8 +425,7 @@ def usage_runs(
     from langsmith_cli.commands.runs import extract_group_value, parse_grouping_field
 
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json") or output_format in ["csv", "yaml"]
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger, output_format=output_format)
 
     # Build filters: only LLM runs (to avoid double-counting from chains)
     time_filters = build_time_fql_filters(since=since, last=last, before=before)
