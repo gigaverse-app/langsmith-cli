@@ -1,9 +1,14 @@
 """Output formatting and rendering utilities."""
 
+from __future__ import annotations
+
 import json
-from typing import Any, Callable, Protocol
+from typing import TYPE_CHECKING, Any, Callable, Protocol
 
 import click
+
+if TYPE_CHECKING:
+    from langsmith_cli.cli_logging import CLILogger
 
 
 def json_dumps(obj: Any, **kwargs: Any) -> str:
@@ -68,7 +73,7 @@ def is_machine_readable_output(
 
 def configure_logger_streams(
     ctx: click.Context,
-    logger: Any,
+    logger: CLILogger,
     *,
     output: str | None = None,
     output_format: str | None = None,
@@ -391,7 +396,7 @@ def write_output_to_file(
 
 def emit_action_result(
     ctx: click.Context,
-    logger: Any,
+    logger: CLILogger,
     *,
     model: Any = None,
     payload: dict[str, Any] | None = None,
