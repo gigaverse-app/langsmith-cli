@@ -103,7 +103,7 @@ This document tracks feature parity between the langsmith-cli and the official L
 
 **`prompts list`** (2/2 parameters):
 - ✅ `limit` → `--limit`
-- ✅ `is_public` → `--is-public`
+- ✅ `is_public` → `--public` / `--private` (legacy `--is-public` still accepted)
 
 **`prompts get`** (2/2 parameters):
 - ✅ `prompt_name` → positional argument
@@ -114,7 +114,7 @@ This document tracks feature parity between the langsmith-cli and the official L
 - ✅ `object` → positional argument (file_path)
 - ✅ `description` → `--description`
 - ✅ `tags` → `--tags`
-- ✅ `is_public` → `--is-public`
+- ✅ `is_public` → `--public` / `--private` (legacy `--is-public` still accepted)
 
 ## Superiority Features
 
