@@ -298,6 +298,10 @@ def view_file(ctx, pattern, no_truncate, fields):
         raise click.ClickException(f"No files match pattern: {pattern}")
 
     # Read all runs from matching files
+    # Lazy import: view-file is a cold-path command and we don't want
+    # `from langsmith.schemas import Run` running for every CLI startup.
+    from langsmith.schemas import Run as _Run
+
     all_runs: list[Run] = []
     for file_path in sorted(file_paths):
         try:
@@ -309,7 +313,7 @@ def view_file(ctx, pattern, no_truncate, fields):
                     try:
                         data = json.loads(line)
                         # Convert dict to Run object using Pydantic validation
-                        run = Run.model_validate(data)
+                        run = _Run.model_validate(data)
                         all_runs.append(run)
                     except json.JSONDecodeError as e:
                         logger.warning(f"Invalid JSON at {file_path}:{line_num} - {e}")
