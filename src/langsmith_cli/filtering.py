@@ -1,14 +1,18 @@
 """Filtering, sorting, and search utilities."""
 
+from __future__ import annotations
+
 import json
 import re
-from typing import Any, Callable, TypeVar, overload
+from typing import TYPE_CHECKING, Any, Callable, TypeVar, overload
 
 import click
-from langsmith.schemas import Run
 from pydantic import BaseModel
 
 from langsmith_cli.output import ConsoleProtocol, json_dumps
+
+if TYPE_CHECKING:
+    from langsmith.schemas import Run
 
 T = TypeVar("T")
 ModelT = TypeVar("ModelT", bound=BaseModel)

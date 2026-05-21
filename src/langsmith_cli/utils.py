@@ -67,6 +67,7 @@ from langsmith_cli.project_resolution import (
     ProjectQuery,
     _looks_like_uuid,
     add_project_filter_options,
+    collect_runs_streaming,
     fetch_from_projects,
     get_matching_items,
     get_matching_projects,
@@ -93,6 +94,7 @@ from langsmith_cli.run_helpers import (
     build_runs_table,
     extract_model_name,
     format_token_count,
+    get_full_model_name,
     render_run_details,
     resolve_root_scope,
 )
@@ -147,6 +149,7 @@ __all__ = [
     "ProjectQuery",
     "_looks_like_uuid",
     "add_project_filter_options",
+    "collect_runs_streaming",
     "fetch_from_projects",
     "get_matching_items",
     "get_matching_projects",
@@ -169,6 +172,7 @@ __all__ = [
     "build_runs_table",
     "extract_model_name",
     "format_token_count",
+    "get_full_model_name",
     "render_run_details",
     "resolve_root_scope",
 ]

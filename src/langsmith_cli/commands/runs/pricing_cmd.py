@@ -20,23 +20,15 @@ from langsmith_cli.utils import (
     json_dumps,
     resolve_project_filters,
 )
+from langsmith_cli.run_helpers import get_full_model_name
 
 if TYPE_CHECKING:
     from langsmith.schemas import Run
 
-
-def _get_model_name(run: Run) -> str:
-    """Extract model name from a run, checking multiple locations."""
-    extra = run.extra or {}
-    metadata = extra.get("metadata", {}) or {}
-    model = metadata.get("ls_model_name")
-    if model:
-        return str(model)
-    invocation = extra.get("invocation_params", {}) or {}
-    model = invocation.get("model") or invocation.get("model_name")
-    if model:
-        return str(model)
-    return "unknown"
+# Backward-compat alias for tests that import this name from pricing_cmd.
+# The real implementation lives in run_helpers.get_full_model_name so
+# pricing and usage stay in sync.
+_get_model_name = get_full_model_name
 
 
 @runs.command("pricing")

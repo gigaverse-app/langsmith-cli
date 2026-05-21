@@ -97,6 +97,32 @@ def extract_model_name(run: Run, max_length: int = 20) -> str:
     return model_name
 
 
+def get_full_model_name(run: Run) -> str:
+    """Extract the full (untruncated) model name from a run.
+
+    Distinct from :func:`extract_model_name`, which truncates and returns
+    ``"-"`` for missing values (table-rendering semantics). Aggregation
+    callers (``runs usage``, ``runs pricing``) need the full name and the
+    sentinel ``"unknown"`` so they can skip non-LLM wrappers cleanly.
+
+    Lookup order:
+        1. ``extra.metadata.ls_model_name`` — the LangSmith-canonical field.
+        2. ``extra.invocation_params.model`` / ``model_name`` — provider raw.
+
+    Returns ``"unknown"`` when no model name is present (e.g. chain/tool runs).
+    """
+    extra = run.extra or {}
+    metadata = extra.get("metadata", {}) or {}
+    model = metadata.get("ls_model_name")
+    if model:
+        return str(model)
+    invocation = extra.get("invocation_params", {}) or {}
+    model = invocation.get("model") or invocation.get("model_name")
+    if model:
+        return str(model)
+    return "unknown"
+
+
 def format_token_count(tokens: int | None) -> str:
     """Format token count with comma separators.
 

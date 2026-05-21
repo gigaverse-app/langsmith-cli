@@ -10,8 +10,10 @@ from langsmith_cli.commands.runs._group import runs, console, _make_fetch_runs
 from langsmith_cli.utils import (
     add_project_filter_options,
     add_time_filter_options,
+    build_tag_fql_filters,
     build_time_fql_filters,
     combine_fql_filters,
+    collect_runs_streaming,
     configure_logger_streams,
     determine_output_format,
     fetch_from_projects,
@@ -270,6 +272,61 @@ def compute_metrics(
     return result
 
 
+def _select_fields_for_analyze(
+    grouping_type: str, requested_metrics: list[str]
+) -> set[str]:
+    """Decide which Run fields the SDK should return for analyze.
+
+    Field pruning is the main reason ``analyze`` is tolerable on large
+    projects — fetching only what each metric needs cuts ~14x of bandwidth
+    per run. Computing this set is mechanical but easy to get wrong (e.g.
+    forgetting that latency metrics need both ``start_time`` and
+    ``end_time``), so we isolate it.
+    """
+    select_fields = {"start_time"}
+    if grouping_type == "tag":
+        select_fields.add("tags")
+    else:
+        select_fields.add("extra")
+
+    for metric in requested_metrics:
+        if metric == "error_rate":
+            select_fields.add("error")
+        elif metric in ("p50_latency", "p95_latency", "p99_latency", "avg_latency"):
+            select_fields.add("end_time")
+        elif metric == "total_tokens":
+            select_fields.add("total_tokens")
+        elif metric == "avg_cost":
+            select_fields.add("total_cost")
+    return select_fields
+
+
+def _render_analyze_table(
+    results: list[dict[str, Any]],
+    requested_metrics: list[str],
+    group_by_label: str,
+) -> Table:
+    """Build a Rich Table from grouped metric rows. View layer only."""
+    table = Table(title=f"Analysis: {group_by_label}")
+    table.add_column("Group", style="cyan")
+    for metric in requested_metrics:
+        table.add_column(metric.replace("_", " ").title(), justify="right")
+
+    for result in results:
+        row_values: list[str] = [str(result["group"])]
+        for metric in requested_metrics:
+            value = result.get(metric, 0)
+            if isinstance(value, float):
+                if metric == "error_rate":
+                    row_values.append(f"{value:.2%}")
+                else:
+                    row_values.append(f"{value:.2f}")
+            else:
+                row_values.append(str(value))
+        table.add_row(*row_values)
+    return table
+
+
 @runs.command("analyze")
 @add_project_filter_options
 @add_time_filter_options
@@ -282,6 +339,11 @@ def compute_metrics(
     "--metrics",
     default="count,error_rate,p50_latency,p95_latency",
     help="Comma-separated list of metrics to compute",
+)
+@click.option(
+    "--tag",
+    multiple=True,
+    help="Filter by tag server-side (can specify multiple times for AND logic)",
 )
 @click.option(
     "--filter",
@@ -314,6 +376,7 @@ def analyze_runs(
     last,
     group_by,
     metrics,
+    tag,
     additional_filter,
     sample_size,
     output_format,
@@ -374,6 +437,9 @@ def analyze_runs(
     # Build time filters and combine with additional_filter
     time_filters = build_time_fql_filters(since=since, last=last, before=before)
     base_filters = time_filters.copy()
+    # Server-side tag filtering (AND logic — all tags must be present)
+    if tag:
+        base_filters.extend(build_tag_fql_filters(tag))
     if additional_filter:
         base_filters.append(additional_filter)
 
@@ -408,30 +474,7 @@ def analyze_runs(
         name_regex=project_name_regex,
     )
 
-    # Determine which fields to fetch based on requested metrics and grouping
-    # Use field selection to reduce data transfer and speed up fetch
-    select_fields = set()
-
-    # Add fields for grouping
-    if grouping_type == "tag":
-        select_fields.add("tags")
-    else:  # metadata
-        select_fields.add("extra")
-
-    # Always add start_time for sorting and latency computation
-    select_fields.add("start_time")
-
-    # Add fields based on requested metrics
-    for metric in requested_metrics:
-        if metric in ["error_rate"]:
-            select_fields.add("error")
-        elif metric in ["p50_latency", "p95_latency", "p99_latency", "avg_latency"]:
-            # latency is computed from start_time and end_time
-            select_fields.add("end_time")  # start_time already added above
-        elif metric == "total_tokens":
-            select_fields.add("total_tokens")
-        elif metric == "avg_cost":
-            select_fields.add("total_cost")
+    select_fields = _select_fields_for_analyze(grouping_type, requested_metrics)
 
     # -------------------------------------------------------------------------
     # Fetch Optimization History & Future Improvements
@@ -464,8 +507,6 @@ def analyze_runs(
 
     # Fetch runs (with optional filter and sample size limit)
     # Use field selection for 10-20x faster fetches
-    all_runs = []
-
     if sample_size == 0:
         # User wants ALL runs. Keep serial pagination, but still push selected
         # fields to the SDK because this path benefits most from sparse runs.
@@ -481,38 +522,21 @@ def analyze_runs(
         )
         all_runs = result.items
     else:
-        # Use sample-based approach with field selection (FAST!)
-        # API has max limit of 100 when using select, so manually collect from iterator
-        failed_projects = []
-        sources: list[tuple[str, dict[str, Any]]] = []
-        if pq.use_id:
-            sources = [(f"id:{pq.project_id}", {"project_id": pq.project_id})]
-        else:
-            sources = [(name, {"project_name": name}) for name in pq.names]
-        for source_label, proj_kwargs in sources:
-            try:
-                runs_iter = client.list_runs(
-                    **proj_kwargs,
-                    filter=combined_filter,
-                    limit=None,  # SDK paginates automatically
-                    select=list(select_fields) if select_fields else None,
-                )
-
-                # Manually collect up to sample_size
-                collected = 0
-                for run in runs_iter:
-                    all_runs.append(run)
-                    collected += 1
-                    if collected >= sample_size:
-                        break  # Stop early when we have enough
-            except Exception as e:
-                failed_projects.append((source_label, str(e)))
-
-        # Report failures if any (but don't spam console in analyze mode)
-        if failed_projects and len(all_runs) == 0:
-            # Only report if we got zero runs (might be all failures)
+        # Sample-based path: stream up to `sample_size` runs total, capped on
+        # the first project that fills the budget.
+        stream_result = collect_runs_streaming(
+            client,
+            pq,
+            filter=combined_filter,
+            select=list(select_fields) if select_fields else None,
+            sample_size=sample_size,
+        )
+        all_runs = stream_result.items
+        if stream_result.all_failed:
+            # Only complain when we got zero runs — analyze is sampling-oriented
+            # and a partial-success path shouldn't spam the console.
             logger.warning("Some projects failed to fetch:")
-            for proj, error_msg in failed_projects[:3]:
+            for proj, error_msg in stream_result.failed_sources[:3]:
                 short_error = (
                     error_msg[:100] + "..." if len(error_msg) > 100 else error_msg
                 )
@@ -546,30 +570,8 @@ def analyze_runs(
         output_formatted_data(results, format_type)
         return
 
-    # Build table for human-readable output
-    table = Table(title=f"Analysis: {group_by}")
-    table.add_column("Group", style="cyan")
-
-    # Add metric columns
-    for metric in requested_metrics:
-        table.add_column(metric.replace("_", " ").title(), justify="right")
-
-    # Add rows
-    for result in results:
-        row_values = [result["group"]]
-        for metric in requested_metrics:
-            value = result.get(metric, 0)
-            # Format numbers nicely
-            if isinstance(value, float):
-                if metric == "error_rate":
-                    row_values.append(f"{value:.2%}")
-                else:
-                    row_values.append(f"{value:.2f}")
-            else:
-                row_values.append(str(value))
-        table.add_row(*row_values)
-
     if not results:
         logger.warning("No groups found.")
-    else:
-        console.print(table)
+        return
+
+    console.print(_render_analyze_table(results, requested_metrics, group_by))

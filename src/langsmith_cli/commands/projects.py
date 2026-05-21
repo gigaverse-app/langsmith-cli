@@ -12,6 +12,7 @@ from langsmith_cli.utils import (
     apply_client_side_limit,
     configure_logger_streams,
     confirm_option,
+    emit_action_result,
     extract_wildcard_search_term,
     extract_regex_search_term,
     fields_option,
@@ -368,11 +369,13 @@ def update_project(ctx, name_or_id, new_name, description):
 
     updated = client.update_project(project.id, name=new_name, description=description)
 
-    if ctx.obj.get("json"):
-        click.echo(json_dumps(updated.model_dump(mode="json")))
-    else:
-        display_name = new_name or project.name
-        logger.success(f"Updated project '{display_name}' (ID: {project.id})")
+    display_name = new_name or project.name
+    emit_action_result(
+        ctx,
+        logger,
+        model=updated,
+        success_message=f"Updated project '{display_name}' (ID: {project.id})",
+    )
 
 
 @projects.command("delete")
@@ -398,7 +401,9 @@ def delete_project(ctx, name_or_id, confirm):
     project = resolve_project(client, name_or_id)
     client.delete_project(project_id=str(project.id))
 
-    if ctx.obj.get("json"):
-        click.echo(json_dumps({"status": "success", "name": name_or_id}))
-    else:
-        logger.success(f"Deleted project '{name_or_id}'")
+    emit_action_result(
+        ctx,
+        logger,
+        payload={"status": "success", "name": name_or_id},
+        success_message=f"Deleted project '{name_or_id}'",
+    )

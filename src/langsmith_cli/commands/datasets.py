@@ -1,9 +1,9 @@
+from __future__ import annotations
+
 import os
-from typing import Any, TypedDict
+from typing import TYPE_CHECKING, Any, TypedDict
 
 import click
-import langsmith
-from langsmith.schemas import Dataset
 from rich.console import Console
 from rich.table import Table
 from langsmith_cli.utils import (
@@ -28,6 +28,10 @@ from langsmith_cli.utils import (
     parse_json_string,
     render_output,
 )
+
+if TYPE_CHECKING:
+    from langsmith import Client
+    from langsmith.schemas import Dataset
 
 console = Console()
 
@@ -308,7 +312,7 @@ def push_dataset(ctx, file_path, dataset):
 
 
 def resolve_dataset(
-    client: langsmith.Client,
+    client: Client,
     name_or_id: str,
 ) -> Dataset:
     """Resolve a dataset by name or UUID, with smart UUID auto-detection."""
