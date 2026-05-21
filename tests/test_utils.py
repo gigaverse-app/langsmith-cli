@@ -1384,6 +1384,47 @@ class TestWriteOutputToFile:
         # Error message must NOT appear on stdout
         assert "Error" not in captured.out
 
+    def test_writes_single_item_json(self, tmp_path):
+        """Single-object output writes one JSON object."""
+        from rich.console import Console
+
+        output_path = tmp_path / "item.json"
+        write_output_to_file(
+            {"id": "123", "name": "test"},
+            str(output_path),
+            Console(),
+            format_type="json",
+        )
+
+        assert json.loads(output_path.read_text()) == {"id": "123", "name": "test"}
+
+    def test_writes_yaml_and_csv_formats(self, tmp_path):
+        """Explicit file formats are honored for list output."""
+        from rich.console import Console
+
+        data = [{"id": "123", "name": "alpha"}]
+        yaml_path = tmp_path / "items.yaml"
+        csv_path = tmp_path / "items.csv"
+
+        write_output_to_file(data, str(yaml_path), Console(), format_type="yaml")
+        write_output_to_file(data, str(csv_path), Console(), format_type="csv")
+
+        assert "name: alpha" in yaml_path.read_text()
+        assert "id,name" in csv_path.read_text()
+        assert "123,alpha" in csv_path.read_text()
+
+    def test_unsupported_file_format_raises_abort(self, tmp_path):
+        """Unsupported file formats fail through the standard abort path."""
+        from rich.console import Console
+
+        with pytest.raises(click.Abort):
+            write_output_to_file(
+                [{"id": "123"}],
+                str(tmp_path / "items.bad"),
+                Console(),
+                format_type="bad",
+            )
+
 
 class TestLooksLikeUuid:
     """Tests for _looks_like_uuid helper."""

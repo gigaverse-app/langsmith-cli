@@ -118,6 +118,36 @@ class TestRunsSearch:
         assert second_call["query"] is None
         assert second_call["filter"] == 'search("test")'
 
+    def test_search_rejects_conflicting_scoped_contains(self, runner, mock_client):
+        """--input-contains and --output-contains are mutually exclusive."""
+        result = runner.invoke(
+            cli,
+            [
+                "runs",
+                "search",
+                "test",
+                "--input-contains",
+                "foo",
+                "--output-contains",
+                "bar",
+            ],
+        )
+
+        assert result.exit_code != 0
+        assert "Use only one of --input-contains or --output-contains" in result.output
+        mock_client.list_runs.assert_not_called()
+
+    def test_search_in_error_sets_failed_grep_scope(self, runner, mock_client):
+        """--in error scopes grep to error text and restricts to failed runs."""
+        mock_client.list_runs.return_value = []
+
+        result = runner.invoke(cli, ["runs", "search", "boom", "--in", "error"])
+
+        assert result.exit_code == 0
+        call_kwargs = mock_client.list_runs.call_args.kwargs
+        assert call_kwargs["query"] is None
+        assert call_kwargs["error"] is True
+
     def test_order_by_not_passed_to_api(self, runner, mock_client):
         """INVARIANT: order_by must NOT be passed to client.list_runs() — API rejects it with 400."""
         mock_client.list_runs.return_value = []

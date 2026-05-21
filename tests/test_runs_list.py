@@ -830,6 +830,21 @@ class TestRunsListQueryFallback:
         assert retry_kwargs.get("query") is None
         assert 'search("some text")' in (retry_kwargs.get("filter") or "")
 
+    def test_query_rejection_helper_handles_invalid_body(self):
+        """INVARIANT: malformed SDK error bodies do not trigger fallback."""
+        import requests
+        from langsmith_cli.commands.runs.list_cmd import (
+            _all_failures_are_query_rejection,
+            _is_query_rejection,
+        )
+
+        assert _is_query_rejection(requests.HTTPError("400", "not-json")) is False
+        assert (
+            _is_query_rejection(requests.HTTPError("400", '{"detail":"other"}'))
+            is False
+        )
+        assert _all_failures_are_query_rejection({}) is False
+
     def test_wrapped_langsmith_query_rejection_triggers_retry(
         self, runner, mock_client
     ):

@@ -470,6 +470,60 @@ def test_datasets_push_rejects_missing_inputs(runner, tmp_path):
         mock_client.create_examples.assert_not_called()
 
 
+def test_datasets_push_rejects_non_object_row(runner, tmp_path):
+    """INVARIANT: datasets push requires each JSONL row to be an object."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.read_dataset.return_value = create_dataset(name="target-dataset")
+
+        jsonl_file = tmp_path / "bad-examples.jsonl"
+        jsonl_file.write_text(json.dumps(["not", "an", "object"]))
+
+        result = runner.invoke(
+            cli, ["datasets", "push", str(jsonl_file), "--dataset", "target-dataset"]
+        )
+
+        assert result.exit_code != 0
+        assert "1: expected a JSON object" in result.output
+        mock_client.create_examples.assert_not_called()
+
+
+def test_datasets_push_rejects_non_object_inputs(runner, tmp_path):
+    """INVARIANT: datasets push requires inputs to be an object."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.read_dataset.return_value = create_dataset(name="target-dataset")
+
+        jsonl_file = tmp_path / "bad-examples.jsonl"
+        jsonl_file.write_text(json.dumps({"inputs": "not-object"}))
+
+        result = runner.invoke(
+            cli, ["datasets", "push", str(jsonl_file), "--dataset", "target-dataset"]
+        )
+
+        assert result.exit_code != 0
+        assert "1: field 'inputs' must be an object" in result.output
+        mock_client.create_examples.assert_not_called()
+
+
+def test_datasets_push_rejects_non_object_outputs(runner, tmp_path):
+    """INVARIANT: datasets push requires outputs to be object or null."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.read_dataset.return_value = create_dataset(name="target-dataset")
+
+        jsonl_file = tmp_path / "bad-examples.jsonl"
+        jsonl_file.write_text(json.dumps({"inputs": {}, "outputs": "not-object"}))
+
+        result = runner.invoke(
+            cli, ["datasets", "push", str(jsonl_file), "--dataset", "target-dataset"]
+        )
+
+        assert result.exit_code != 0
+        assert "1: field 'outputs' must be an object or null" in result.output
+        mock_client.create_examples.assert_not_called()
+
+
 def test_datasets_push_rejects_invalid_json_with_line_number(runner, tmp_path):
     """INVARIANT: datasets push reports invalid JSON with the JSONL line number."""
     with patch("langsmith.Client") as MockClient:
