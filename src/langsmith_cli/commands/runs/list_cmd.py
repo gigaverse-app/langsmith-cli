@@ -256,23 +256,19 @@ def list_runs(
 ):
     """Fetch recent runs from one or more projects.
 
-    Use project filters (--project-name, --project-name-pattern, --project-name-regex, --project-name-exact) to match multiple projects.
+    Use project filters (--project, --project-id, --project-pattern, --project-name-regex) to match one or more projects.
     Use run name filters (--name-pattern, --name-regex) to filter specific run names.
 
     \b
     FQL Filter Examples:
       # Filter by name
       --filter 'eq(name, "extractor")'
-
       # Filter by latency
       --filter 'gt(latency, "5s")'
-
       # Filter by tags
       --filter 'has(tags, "production")'
-
       # Combine multiple conditions
       --filter 'and(eq(run_type, "chain"), gt(latency, "10s"))'
-
       # Complex example: chains that took >10s and had >5000 tokens
       --filter 'and(eq(run_type, "chain"), gt(latency, "10s"), gt(total_tokens, 5000))'
 
@@ -280,10 +276,8 @@ def list_runs(
     Search Examples:
       # Server-side text search (fast, first ~250 chars)
       --query "error message"
-
       # Client-side grep (slower, unlimited, regex)
       --grep "druze" --grep-in inputs,outputs
-
       # Regex search for Hebrew characters
       --grep "[\\u0590-\\u05FF]" --grep-regex --grep-in inputs
     """
