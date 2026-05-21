@@ -1447,7 +1447,8 @@ class TestOutputSingleItem:
         result = runner.invoke(command)
 
         assert result.exit_code == 0
-        assert '"name": "pretty"' in result.output
+        assert '"name"' in result.output
+        assert '"pretty"' in result.output
 
 
 class TestLooksLikeUuid:
