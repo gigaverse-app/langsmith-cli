@@ -106,6 +106,7 @@ langsmith-cli --json runs get <id> --fields inputs,outputs,error
 | List projects | `langsmith-cli --json projects list --name-pattern "dev/*" --fields name` |
 | Count runs | `langsmith-cli --json runs list --project <name> --count` |
 | Run stats | `langsmith-cli --json runs stats --project <name>` |
+| Stratified run sample | `langsmith-cli --json runs sample --project <name> --stratify-by tag:<key> --values a,b --fields id,name,stratum` |
 | List datasets | `langsmith-cli --json datasets list --fields id,name` |
 | List prompts | `langsmith-cli --json prompts list --fields repo_handle,description` |
 | List feedback for a run | `langsmith-cli --json feedback list --run-id <run-id> --fields id,key,score` |

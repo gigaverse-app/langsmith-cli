@@ -14,14 +14,17 @@ from langsmith_cli.utils import (
     add_time_filter_options,
     build_time_fql_filters,
     combine_fql_filters,
+    configure_logger_streams,
     count_option,
     fetch_from_projects,
     fields_option,
     filter_fields,
     get_or_create_client,
     json_dumps,
+    output_formatted_data,
     output_option,
     resolve_project_filters,
+    write_output_to_file,
 )
 
 
@@ -246,7 +249,13 @@ def search_runs(
 )
 @click.option(
     "--output",
-    help="Output file path (JSONL format). If not specified, writes to stdout.",
+    help="Output file path. Defaults to JSONL unless --format is specified.",
+)
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["jsonl", "json", "csv", "yaml"]),
+    help="Output format. Defaults to json for --json stdout, otherwise jsonl.",
 )
 @click.option(
     "--filter",
@@ -272,6 +281,7 @@ def sample_runs(
     samples_per_stratum,
     samples_per_combination,
     output,
+    output_format,
     additional_filter,
     fields,
 ):
@@ -321,9 +331,13 @@ def sample_runs(
 
     logger = ctx.obj["logger"]
 
-    # Determine if output is machine-readable
-    is_machine_readable = output is not None or fields
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(
+        ctx,
+        logger,
+        output=output,
+        output_format=output_format,
+        fields=fields,
+    )
 
     import itertools
 
@@ -475,18 +489,14 @@ def sample_runs(
                 run_dict["stratum"] = f"{field_name}:{stratum_value}"
                 all_samples.append(run_dict)
 
-    # Output as JSONL
+    format_type = output_format
+    if format_type is None:
+        format_type = "json" if ctx.obj.get("json") and output is None else "jsonl"
+
     if output:
-        # Write to file
-        try:
-            with open(output, "w", encoding="utf-8") as f:
-                for sample in all_samples:
-                    f.write(json_dumps(sample) + "\n")
-            logger.success(f"Wrote {len(all_samples)} samples to {output}")
-        except Exception as e:
-            logger.error(f"Error writing to file {output}: {e}")
-            raise click.Abort()
-    else:
-        # Write to stdout (JSONL format)
+        write_output_to_file(all_samples, output, console, format_type=format_type)
+    elif format_type == "jsonl":
         for sample in all_samples:
             click.echo(json_dumps(sample))
+    else:
+        output_formatted_data(all_samples, format_type)

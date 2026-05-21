@@ -476,7 +476,8 @@ langsmith-cli --json runs sample [OPTIONS]
 - `--samples-per-combination INTEGER` - Alias for `--samples-per-stratum` in multi-dimensional mode
 - `--since TEXT` / `--last TEXT` - Time filters
 - `--fields TEXT` - Comma-separated fields to include
-- `--output TEXT` - Write to JSONL file (recommended for data extraction)
+- `--format [jsonl|json|csv|yaml]` - Output format. Defaults to JSON for `--json` stdout, otherwise JSONL.
+- `--output TEXT` - Write output to file. Defaults to JSONL unless `--format` is specified.
 
 **Examples:**
 ```bash
@@ -484,6 +485,11 @@ langsmith-cli --json runs sample [OPTIONS]
 langsmith-cli runs sample --project my-project \
   --stratify-by "tag:length_category" --values "short,medium,long" \
   --samples-per-stratum 20 --output samples.jsonl
+
+# Machine-readable JSON array on stdout
+langsmith-cli --json runs sample --project my-project \
+  --stratify-by "tag:length_category" --values "short,medium,long" \
+  --samples-per-stratum 20
 
 # Multi-dimensional (Cartesian product)
 langsmith-cli runs sample --project my-project \
