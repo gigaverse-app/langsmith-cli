@@ -1,6 +1,8 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 import click
-import langsmith
-from langsmith.schemas import TracerSessionResult
 from rich.console import Console
 from rich.table import Table
 from langsmith_cli.utils import (
@@ -24,14 +26,17 @@ from langsmith_cli.utils import (
     output_single_item,
     render_output,
     get_or_create_client,
-    json_dumps,
 )
+
+if TYPE_CHECKING:
+    from langsmith import Client
+    from langsmith.schemas import TracerSessionResult
 
 console = Console()
 
 
 def resolve_project(
-    client: langsmith.Client,
+    client: Client,
     name_or_id: str,
     *,
     include_stats: bool = False,
@@ -294,13 +299,12 @@ def create_project(ctx, name, description):
     client = get_or_create_client(ctx)
     try:
         project = client.create_project(project_name=name, description=description)
-        if ctx.obj.get("json"):
-            # Use SDK's Pydantic model directly
-            data = project.model_dump(mode="json")
-            click.echo(json_dumps(data))
-            return
-
-        logger.success(f"Created project {project.name} (ID: {project.id})")
+        emit_action_result(
+            ctx,
+            logger,
+            model=project,
+            success_message=f"Created project {project.name} (ID: {project.id})",
+        )
     except LangSmithConflictError:
         # Project already exists - handle gracefully for idempotency
         logger.warning(f"Project {name} already exists.")
