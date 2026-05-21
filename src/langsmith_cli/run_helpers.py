@@ -8,9 +8,13 @@ from typing import Any, Protocol
 import click
 from langsmith.schemas import Run
 
+from langsmith_cli.filtering import build_tag_fql_filters
 from langsmith_cli.output import json_dumps
-from langsmith_cli.time_parsing import build_time_fql_filters, combine_fql_filters
-from langsmith_cli.utils import build_tag_fql_filters, parse_duration_to_seconds
+from langsmith_cli.time_parsing import (
+    build_time_fql_filters,
+    combine_fql_filters,
+    parse_duration_to_seconds,
+)
 
 
 def resolve_root_scope(
