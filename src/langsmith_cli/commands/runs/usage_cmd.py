@@ -745,7 +745,37 @@ def usage_runs(
         _emit_empty_usage_json(output_format, ctx, interval)
         return
 
-    # Compute summary stats
+    summary = _summarize_usage(results, interval)
+
+    # Determine output format
+    format_type = determine_output_format(output_format, ctx.obj.get("json"))
+
+    # Handle file output — write results to file and return
+    if output:
+        file_format = output_format if output_format is not None else "jsonl"
+        write_output_to_file(results, output, console, format_type=file_format)
+        return
+
+    if format_type != "table":
+        if format_type in ("csv", "yaml"):
+            # Flat formats only get the per-bucket rows; the summary doesn't
+            # fit a tabular layout cleanly.
+            output_formatted_data(results, format_type)
+        else:
+            click.echo(json_dumps({"summary": summary, "buckets": results}))
+        return
+
+    _print_usage_summary(summary, group_by=group_by, group_field=group_field)
+    console.print(
+        _build_usage_table(results, interval, group_by, group_field, breakdown)
+    )
+
+
+def _summarize_usage(results: list[dict[str, Any]], interval: str) -> dict[str, Any]:
+    """Roll per-bucket rows up into the summary block emitted in JSON mode and
+    rendered above the human-mode table. Pure data — no I/O."""
+    from collections import defaultdict
+
     unique_groups = {r["group"] for r in results}
     unique_times = {r["time"] for r in results}
     total_tokens_all = sum(r["total_tokens"] for r in results)
@@ -753,7 +783,6 @@ def usage_runs(
     prompt_cost_all = sum(r["prompt_cost"] for r in results)
     completion_cost_all = sum(r["completion_cost"] for r in results)
 
-    # Concurrent groups per time bucket
     groups_per_bucket: dict[str, set[str]] = defaultdict(set)
     for r in results:
         groups_per_bucket[r["time"]].add(r["group"])
@@ -766,53 +795,55 @@ def usage_runs(
         else 0
     )
 
-    # Determine output format
-    format_type = determine_output_format(output_format, ctx.obj.get("json"))
+    return {
+        "total_tokens": total_tokens_all,
+        "total_cost": round(total_cost_all, 6),
+        "prompt_cost": round(prompt_cost_all, 6),
+        "completion_cost": round(completion_cost_all, 6),
+        "active_buckets": len(unique_times),
+        "unique_groups": len(unique_groups),
+        "max_concurrent_groups": max_concurrent,
+        "avg_concurrent_groups": round(avg_concurrent, 1),
+        "interval": interval,
+        "run_count": sum(r["run_count"] for r in results),
+    }
 
-    # Handle file output — write results to file and return
-    if output:
-        file_format = output_format if output_format is not None else "jsonl"
-        write_output_to_file(results, output, console, format_type=file_format)
-        return
 
-    if format_type != "table":
-        # CSV/YAML need a flat list; JSON gets the full nested structure
-        if format_type in ("csv", "yaml"):
-            output_formatted_data(results, format_type)
-        else:
-            output_data: dict[str, Any] = {
-                "summary": {
-                    "total_tokens": total_tokens_all,
-                    "total_cost": round(total_cost_all, 6),
-                    "prompt_cost": round(prompt_cost_all, 6),
-                    "completion_cost": round(completion_cost_all, 6),
-                    "active_buckets": len(unique_times),
-                    "unique_groups": len(unique_groups),
-                    "max_concurrent_groups": max_concurrent,
-                    "avg_concurrent_groups": round(avg_concurrent, 1),
-                    "interval": interval,
-                    "run_count": sum(r["run_count"] for r in results),
-                },
-                "buckets": results,
-            }
-            click.echo(json_dumps(output_data))
-        return
-
-    # Print summary
+def _print_usage_summary(
+    summary: dict[str, Any], *, group_by: str | None, group_field: str | None
+) -> None:
+    """Print the human-mode summary block above the usage table."""
     group_label = group_field or "group"
     console.print("\n[bold]Token Usage Summary[/bold]")
-    console.print(f"  Total tokens: [cyan]{total_tokens_all:,}[/cyan]")
-    console.print(f"  Total cost: [cyan]${total_cost_all:.4f}[/cyan]")
-    console.print(f"  Active {interval}s: [cyan]{len(unique_times)}[/cyan]")
+    console.print(f"  Total tokens: [cyan]{summary['total_tokens']:,}[/cyan]")
+    console.print(f"  Total cost: [cyan]${summary['total_cost']:.4f}[/cyan]")
+    console.print(
+        f"  Active {summary['interval']}s: [cyan]{summary['active_buckets']}[/cyan]"
+    )
     if group_by:
-        console.print(f"  Unique {group_label}s: [cyan]{len(unique_groups)}[/cyan]")
-        console.print(f"  Max concurrent {group_label}s: [cyan]{max_concurrent}[/cyan]")
         console.print(
-            f"  Avg concurrent {group_label}s: [cyan]{avg_concurrent:.1f}[/cyan]"
+            f"  Unique {group_label}s: [cyan]{summary['unique_groups']}[/cyan]"
+        )
+        console.print(
+            f"  Max concurrent {group_label}s: "
+            f"[cyan]{summary['max_concurrent_groups']}[/cyan]"
+        )
+        console.print(
+            f"  Avg concurrent {group_label}s: "
+            f"[cyan]{summary['avg_concurrent_groups']:.1f}[/cyan]"
         )
     console.print()
 
-    # Build table
+
+def _build_usage_table(
+    results: list[dict[str, Any]],
+    interval: str,
+    group_by: str | None,
+    group_field: str | None,
+    breakdown: tuple[str, ...],
+) -> Table:
+    """Render usage rows as a Rich Table. View layer only — no console.print."""
+    group_label = group_field or "group"
     table = Table(title=f"Token Usage by {interval.title()}")
     table.add_column("Time", style="cyan")
     if group_by:
@@ -828,7 +859,7 @@ def usage_runs(
     table.add_column("Out $", justify="right")
 
     for r in results:
-        row_values = [r["time"]]
+        row_values: list[str] = [r["time"]]
         if group_by:
             row_values.append(str(r["group"]))
         for dim in breakdown:
@@ -845,5 +876,4 @@ def usage_runs(
             ]
         )
         table.add_row(*row_values)
-
-    console.print(table)
+    return table
