@@ -961,6 +961,8 @@ def test_projects_delete_requires_confirmation(runner):
 
         result = runner.invoke(cli, ["projects", "delete", "my-project"], input="n\n")
         assert result.exit_code != 0
+        assert "Cancelled" in result.output
+        assert "Aborted" not in result.output
         mock_client.delete_project.assert_not_called()
 
 

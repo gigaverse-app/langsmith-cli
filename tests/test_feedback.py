@@ -248,11 +248,14 @@ def test_feedback_delete_requires_confirm(runner):
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
         mock_client.delete_feedback.return_value = None
-        runner.invoke(
+        result = runner.invoke(
             cli,
             ["feedback", "delete", "11111111-1111-1111-1111-111111111111"],
             input="n\n",
         )
+        assert result.exit_code != 0
+        assert "Cancelled" in result.output
+        assert "Aborted" not in result.output
         mock_client.delete_feedback.assert_not_called()
 
 

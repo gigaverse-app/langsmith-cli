@@ -42,7 +42,14 @@ def annotation_queues():
 def list_queues(ctx, name, name_contains, limit, output_format, fields, count, output):
     """List annotation queues."""
     logger = ctx.obj["logger"]
-    configure_logger_streams(ctx, logger, output=output, fields=fields)
+    configure_logger_streams(
+        ctx,
+        logger,
+        output=output,
+        output_format=output_format,
+        count=count,
+        fields=fields,
+    )
 
     logger.debug(f"Listing annotation queues: name={name}, limit={limit}")
 
@@ -195,9 +202,10 @@ def delete_queue(ctx, queue_id, confirm):
         raise click.ClickException(f"Annotation queue '{queue_id}' not found.")
 
     if not confirm:
-        click.confirm(
-            f"Are you sure you want to delete annotation queue {queue_id}?", abort=True
-        )
+        if not click.confirm(
+            f"Are you sure you want to delete annotation queue {queue_id}?"
+        ):
+            raise click.ClickException("Cancelled.")
 
     logger.debug(f"Deleting annotation queue: {queue_id}")
 

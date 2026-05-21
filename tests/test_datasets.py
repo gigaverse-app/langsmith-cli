@@ -667,8 +667,9 @@ def test_datasets_delete_requires_confirmation(runner):
 
         # Simulate user saying 'n' to confirmation
         result = runner.invoke(cli, ["datasets", "delete", "my-dataset"], input="n\n")
-        # Should abort
         assert result.exit_code != 0
+        assert "Cancelled" in result.output
+        assert "Aborted" not in result.output
         mock_client.delete_dataset.assert_not_called()
 
 

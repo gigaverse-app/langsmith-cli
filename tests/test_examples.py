@@ -721,6 +721,8 @@ def test_examples_delete_requires_confirmation(runner):
 
         result = runner.invoke(cli, ["examples", "delete", "test-id"], input="n\n")
         assert result.exit_code != 0
+        assert "Cancelled" in result.output
+        assert "Aborted" not in result.output
         mock_client.delete_example.assert_not_called()
 
 

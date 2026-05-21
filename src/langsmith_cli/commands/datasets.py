@@ -337,9 +337,10 @@ def delete_dataset(ctx, name_or_id, confirm):
     logger.use_stderr = is_machine_readable
 
     if not confirm:
-        click.confirm(
-            f"Are you sure you want to delete dataset '{name_or_id}'?", abort=True
-        )
+        if not click.confirm(
+            f"Are you sure you want to delete dataset '{name_or_id}'?"
+        ):
+            raise click.ClickException("Cancelled.")
 
     logger.debug(f"Deleting dataset: {name_or_id}")
 

@@ -62,7 +62,14 @@ def list_feedback(
 ):
     """List feedback items, optionally filtered by run, key, or source."""
     logger = ctx.obj["logger"]
-    configure_logger_streams(ctx, logger, output=output, fields=fields)
+    configure_logger_streams(
+        ctx,
+        logger,
+        output=output,
+        output_format=output_format,
+        count=count,
+        fields=fields,
+    )
 
     logger.debug(
         f"Listing feedback: run_id={run_id}, key={feedback_key}, limit={limit}"
@@ -204,9 +211,10 @@ def delete_feedback_cmd(ctx, feedback_id, confirm):
     logger.use_stderr = is_machine_readable
 
     if not confirm:
-        click.confirm(
-            f"Are you sure you want to delete feedback {feedback_id}?", abort=True
-        )
+        if not click.confirm(
+            f"Are you sure you want to delete feedback {feedback_id}?"
+        ):
+            raise click.ClickException("Cancelled.")
 
     logger.debug(f"Deleting feedback: {feedback_id}")
 

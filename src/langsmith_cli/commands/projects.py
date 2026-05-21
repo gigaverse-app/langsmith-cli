@@ -385,9 +385,10 @@ def delete_project(ctx, name_or_id, confirm):
     logger.use_stderr = is_machine_readable
 
     if not confirm:
-        click.confirm(
-            f"Are you sure you want to delete project '{name_or_id}'?", abort=True
-        )
+        if not click.confirm(
+            f"Are you sure you want to delete project '{name_or_id}'?"
+        ):
+            raise click.ClickException("Cancelled.")
 
     logger.debug(f"Deleting project: {name_or_id}")
 

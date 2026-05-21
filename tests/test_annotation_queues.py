@@ -224,11 +224,14 @@ def test_annotation_queues_delete_requires_confirm(runner):
         mock_client = MockClient.return_value
         q = create_annotation_queue(id_str="33333333-3333-3333-3333-333333333333")
         mock_client.read_annotation_queue.return_value = q
-        runner.invoke(
+        result = runner.invoke(
             cli,
             ["annotation-queues", "delete", "33333333-3333-3333-3333-333333333333"],
             input="n\n",
         )
+        assert result.exit_code != 0
+        assert "Cancelled" in result.output
+        assert "Aborted" not in result.output
         mock_client.delete_annotation_queue.assert_not_called()
 
 

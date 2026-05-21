@@ -284,9 +284,8 @@ def delete_examples(ctx, example_ids, confirm):
 
     if not confirm:
         count = len(example_ids)
-        click.confirm(
-            f"Are you sure you want to delete {count} example(s)?", abort=True
-        )
+        if not click.confirm(f"Are you sure you want to delete {count} example(s)?"):
+            raise click.ClickException("Cancelled.")
 
     logger.debug(f"Deleting {len(example_ids)} example(s)")
 

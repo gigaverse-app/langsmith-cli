@@ -733,8 +733,9 @@ def test_prompts_delete_requires_confirmation(runner):
 
         # Simulate user saying 'n' to confirmation
         result = runner.invoke(cli, ["prompts", "delete", "my-prompt"], input="n\n")
-        # Should abort
         assert result.exit_code != 0
+        assert "Cancelled" in result.output
+        assert "Aborted" not in result.output
         mock_client.delete_prompt.assert_not_called()
 
 

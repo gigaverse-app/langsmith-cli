@@ -521,7 +521,8 @@ def cache_clear(ctx: click.Context, project: str | None, yes: bool) -> None:
     logger = ctx.obj["logger"]
 
     if not project and not yes:
-        click.confirm("Clear ALL cached run data?", abort=True)
+        if not click.confirm("Clear ALL cached run data?"):
+            raise click.ClickException("Cancelled.")
 
     deleted = do_clear(project)
     if deleted:

@@ -443,6 +443,21 @@ class TestCacheCommands:
         assert len(projects) == 1
         assert projects[0].project_name == "proj-b"
 
+    def test_cache_clear_cancel_reports_click_error(
+        self, runner, tmp_path, monkeypatch
+    ):
+        """Declining all-cache clear should not use Click's Abort path."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+
+        append_runs_to_cache("test-project", [_make_run(1)])
+
+        result = runner.invoke(cli, ["runs", "cache", "clear"], input="n\n")
+
+        assert result.exit_code != 0
+        assert "Cancelled" in result.output
+        assert "Aborted" not in result.output
+        assert list_cached_projects()[0].project_name == "test-project"
+
     def test_cache_download_parallel_multiple_projects(
         self, runner, mock_client, tmp_path, monkeypatch
     ):

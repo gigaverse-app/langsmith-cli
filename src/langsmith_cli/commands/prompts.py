@@ -314,7 +314,8 @@ def delete_prompt(ctx, name, confirm):
     logger.use_stderr = is_machine_readable
 
     if not confirm:
-        click.confirm(f"Are you sure you want to delete prompt '{name}'?", abort=True)
+        if not click.confirm(f"Are you sure you want to delete prompt '{name}'?"):
+            raise click.ClickException("Cancelled.")
 
     logger.debug(f"Deleting prompt: {name}")
 
