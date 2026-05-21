@@ -136,28 +136,22 @@ def cache_download(
     Uses parallel workers to fetch multiple projects simultaneously.
     Use --full to re-download everything.
 
+    \b
     Examples:
         # Cache all runs from prd/* for last 7 days
         langsmith-cli runs cache download --project-name-pattern "prd/*" --last 7d
-
         # Incremental update (only new runs since last download)
         langsmith-cli runs cache download --project-name-pattern "prd/*"
-
         # Full re-download with 4 workers
         langsmith-cli runs cache download --project prd/video_moderation_service --full --workers 4
-
         # Cache only LLM runs
         langsmith-cli runs cache download --project-name-pattern "prd/*" --run-type llm
-
         # Cache only runs with a specific run name (exact → server-side FQL)
         langsmith-cli runs cache download --project dev/namedrop_service --name-pattern "FACTCHECK" --since 2026-01-15 --before 2026-01-29
-
         # Cache runs whose name matches a wildcard (client-side, downloads all then filters)
         langsmith-cli runs cache download --project dev/namedrop_service --name-pattern "*CHECK*"
-
         # Download only runs from a specific channel (metadata, exact → server-side FQL)
         langsmith-cli runs cache download --project dev/namedrop_service --metadata channel_id=Gigaverse_Daily_Standup
-
         # Download runs from channels matching a wildcard (metadata wildcard → client-side)
         langsmith-cli runs cache download --project dev/namedrop_service --metadata "channel_id=Gigaverse*"
     """
@@ -352,7 +346,6 @@ def cache_download(
                 }
             )
         )
-
         # No Rich Progress in JSON mode - use simple callbacks
         with ThreadPoolExecutor(max_workers=num_workers) as executor:
             futures = {
@@ -407,7 +400,6 @@ def cache_download(
             f"[cyan]Downloading from {num_projects} project(s) ({num_workers} workers)",
             total=None,
         )
-
         # Create per-project tasks
         for name in project_names:
             task_id = progress.add_task(f"  {name}", total=None)
@@ -448,7 +440,6 @@ def cache_download(
                     progress.update(task_id, completed=r["new_runs"])
 
             progress.update(overall_task, completed=num_projects, total=num_projects)
-
         # Print summary
         elapsed = round(time.monotonic() - overall_start, 1)
         total_new = sum(r["new_runs"] for r in results)
@@ -472,6 +463,7 @@ def cache_dir(ctx: click.Context) -> None:
 
     Useful for piping to other tools:
 
+    \b
     Examples:
         langsmith-cli runs cache dir
         duckdb -c "SELECT * FROM read_ndjson_auto('$(langsmith-cli runs cache dir)/*.jsonl')"
@@ -618,10 +610,10 @@ def cache_list(
 def cache_clear(ctx: click.Context, project: str | None, confirm: bool) -> None:
     """Clear cached run data.
 
+    \b
     Examples:
         # Clear specific project
         langsmith-cli runs cache clear --project prd/video_moderation_service
-
         # Clear all cached data
         langsmith-cli runs cache clear --yes
     """
@@ -662,10 +654,10 @@ def cache_repair(ctx: click.Context, project: str | None) -> None:
     before the final write. This command scans each orphaned JSONL file and
     rebuilds the metadata (run count, time range) from its contents.
 
+    \b
     Examples:
         # Repair all orphaned cache files
         langsmith-cli runs cache repair
-
         # Repair a specific project
         langsmith-cli runs cache repair --project dev/namedrop_service
     """
@@ -795,13 +787,12 @@ def cache_schema(
     showing types, presence counts, and sample values. Useful for
     understanding the structure of inputs/outputs before writing queries.
 
+    \b
     Examples:
         # Show full schema
         langsmith-cli runs cache schema --project dev/namedrop_service
-
         # Show only inputs and outputs structure
         langsmith-cli runs cache schema --project dev/namedrop_service --include inputs,outputs
-
         # JSON output for agents
         langsmith-cli --json runs cache schema --project dev/namedrop_service --include outputs
     """
@@ -945,13 +936,12 @@ def cache_grep(
 ) -> None:
     """Search cached runs for a text pattern in inputs/outputs/error.
 
+    \b
     Examples:
         # Search all cached projects for "hello"
         langsmith-cli runs cache grep "hello"
-
         # Case-insensitive regex search in a specific project
         langsmith-cli runs cache grep -i -E "\\\\buser_id\\\\b" --project my-proj
-
         # Search only inputs field, output as JSON
         langsmith-cli --json runs cache grep "error" --grep-in inputs
     """

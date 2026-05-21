@@ -52,6 +52,7 @@ def get_run(ctx, run_id, fields, output, follow_children):
     Use --follow-children when the run is a parent chain (e.g. RunnableSequence)
     whose outputs are null — the actual LLM outputs live in child runs.
 
+    \b
     Examples:
         langsmith-cli --json runs get <id> --fields inputs,outputs
         langsmith-cli --json runs get <id> --follow-children --fields id,name,inputs,outputs
@@ -154,16 +155,14 @@ def get_latest_run(
     This is a convenience command that fetches the latest run matching your filters,
     eliminating the need for piping `runs list` into `jq` and then `runs get`.
 
+    \b
     Examples:
         # Get latest run with just inputs/outputs
         langsmith-cli --json runs get-latest --project my-project --fields inputs,outputs
-
         # Get latest successful run
         langsmith-cli --json runs get-latest --project my-project --succeeded
-
         # Get latest error from production projects
         langsmith-cli --json runs get-latest --project-name-pattern "prd/*" --failed --fields id,name,error
-
         # Get latest slow run from last hour
         langsmith-cli --json runs get-latest --project my-project --slow --recent --fields name,latency
     """
@@ -240,7 +239,6 @@ def get_latest_run(
 
     if not latest_run:
         message_parts = ["No runs found matching the specified filters."]
-
         # Show failed projects if any
         if failed_projects:
             message_parts.append("Some projects failed to fetch:")
@@ -286,6 +284,7 @@ def view_file(ctx, pattern, no_truncate, fields):
 
     Supports glob patterns to read multiple files.
 
+    \b
     Examples:
         langsmith-cli runs view-file samples.jsonl
         langsmith-cli runs view-file "data/*.jsonl"

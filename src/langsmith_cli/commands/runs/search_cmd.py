@@ -276,6 +276,7 @@ def sample_runs(
 
     Supports both single-dimensional and multi-dimensional stratification.
 
+    \b
     Examples:
         # Single dimension: Sample by tag-based length categories
         langsmith-cli runs sample \\
@@ -284,21 +285,18 @@ def sample_runs(
           --values "short,medium,long" \\
           --samples-per-stratum 20 \\
           --output stratified_sample.jsonl
-
         # Multi-dimensional: Sample by length and content type (Cartesian product)
         langsmith-cli runs sample \\
           --project my-project \\
           --stratify-by "tag:length,tag:content_type" \\
           --dimension-values "short|medium|long,news|gaming" \\
           --samples-per-combination 5
-
         # Multi-dimensional: Manual combinations
         langsmith-cli runs sample \\
           --project my-project \\
           --stratify-by "tag:length,tag:content_type" \\
           --values "short:news,medium:gaming,long:news" \\
           --samples-per-stratum 10
-
         # With time filtering: Sample only recent runs
         langsmith-cli runs sample \\
           --project my-project \\
@@ -358,12 +356,10 @@ def sample_runs(
     if is_multi_dimensional:
         # Multi-dimensional stratification
         dimensions = parsed
-
         # Determine sample limit
         sample_limit = (
             samples_per_combination if samples_per_combination else samples_per_stratum
         )
-
         # Generate combinations
         if dimension_values:
             # Cartesian product: parse pipe-separated values per dimension
@@ -393,7 +389,6 @@ def sample_runs(
             raise click.BadParameter(
                 "Multi-dimensional stratification requires --values or --dimension-values"
             )
-
         # Fetch samples for each combination
         for combination_values in combinations:
             # Build FQL filter for this combination
@@ -438,10 +433,8 @@ def sample_runs(
             raise click.BadParameter(
                 "Single-dimensional stratification requires --values"
             )
-
         # Parse values
         stratum_values = [v.strip() for v in values.split(",")]
-
         # Collect samples for each stratum
         for stratum_value in stratum_values:
             # Build FQL filter for this stratum

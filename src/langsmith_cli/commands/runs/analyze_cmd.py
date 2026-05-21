@@ -73,6 +73,7 @@ def parse_grouping_field(grouping_str: str) -> tuple[str, str] | list[tuple[str,
     Raises:
         click.BadParameter: If format is invalid
 
+    \b
     Examples:
         >>> parse_grouping_field("tag:length_category")
         ("tag", "length_category")
@@ -102,6 +103,7 @@ def build_grouping_fql_filter(grouping_type: str, field_name: str, value: str) -
     Returns:
         FQL filter string
 
+    \b
     Examples:
         >>> build_grouping_fql_filter("tag", "length_category", "short")
         'has(tags, "length_category:short")'
@@ -132,6 +134,7 @@ def build_multi_dimensional_fql_filter(
     Raises:
         ValueError: If dimensions and values lists have different lengths
 
+    \b
     Examples:
         >>> build_multi_dimensional_fql_filter(
         ...     [("tag", "length"), ("tag", "content_type")],
@@ -171,6 +174,7 @@ def extract_group_value(run: Run, grouping_type: str, field_name: str) -> str | 
     Returns:
         Group value string, or None if not found
 
+    \b
     Examples:
         Given run.tags = ["env:prod", "length_category:short", "user:123"]
         >>> extract_group_value(run, "tag", "length_category")
@@ -196,7 +200,6 @@ def extract_group_value(run: Run, grouping_type: str, field_name: str) -> str | 
             value = metadata[field_name]
             if value is not None:
                 return str(value)
-
         # Fallback to checking run.extra["metadata"]
         extra_metadata = run_extra_metadata(run)
         if field_name in extra_metadata:
@@ -406,27 +409,25 @@ def analyze_runs(
         - total_tokens: Sum of total tokens
         - avg_cost: Average cost per run
 
+    \b
     Examples:
         # Analyze recent 300 runs (default - fast, ~8 seconds)
         langsmith-cli runs analyze \\
           --project my-project \\
           --group-by "tag:schema" \\
           --metrics "count,error_rate,p50_latency"
-
         # Quick check with smaller sample (~2 seconds)
         langsmith-cli runs analyze \\
           --project my-project \\
           --group-by "tag:schema" \\
           --metrics "count,error_rate" \\
           --sample-size 100
-
         # Larger sample for better accuracy (~28 seconds)
         langsmith-cli runs analyze \\
           --project my-project \\
           --group-by "tag:schema" \\
           --metrics "count,error_rate,p50_latency" \\
           --sample-size 1000
-
         # Analyze ALL runs (slower, but complete)
         langsmith-cli runs analyze \\
           --project my-project \\

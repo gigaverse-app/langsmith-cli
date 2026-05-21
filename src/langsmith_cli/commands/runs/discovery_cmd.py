@@ -147,13 +147,12 @@ def discover_tags(
     Analyzes recent runs to extract structured tag patterns (key:value format).
     Useful for understanding available stratification dimensions.
 
+    \b
     Examples:
         # Discover tags in default project
         langsmith-cli runs tags
-
         # Discover tags in specific project with larger sample
         langsmith-cli --json runs tags --project my-project --sample-size 5000
-
         # Discover tags with pattern filtering
         langsmith-cli runs tags --project-name-pattern "prod/*"
     """
@@ -246,13 +245,12 @@ def discover_metadata_keys(
     Analyzes recent runs to extract all metadata keys.
     Useful for understanding available metadata-based stratification dimensions.
 
+    \b
     Examples:
         # Discover metadata keys in default project
         langsmith-cli runs metadata-keys
-
         # Discover in specific project
         langsmith-cli --json runs metadata-keys --project my-project
-
         # Discover with pattern filtering
         langsmith-cli runs metadata-keys --project-name-pattern "prod/*"
     """
@@ -507,16 +505,14 @@ def discover_fields(
     Analyzes recent runs to extract all field paths, types, presence rates,
     and language distribution for text fields.
 
+    \b
     Examples:
         # Discover fields in default project
         langsmith-cli runs fields
-
         # Focus on inputs/outputs only
         langsmith-cli --json runs fields --include inputs,outputs
-
         # Skip language detection for speed
         langsmith-cli runs fields --no-language
-
         # Exclude verbose fields
         langsmith-cli runs fields --exclude extra,events,serialized
     """
@@ -567,13 +563,12 @@ def describe_fields(
     - Numeric fields: min/max/avg/p50/sum
     - List fields: min/max/avg/p50 element count
 
+    \b
     Examples:
         # Full statistics for all fields
         langsmith-cli runs describe
-
         # Focus on inputs/outputs with language detection
         langsmith-cli --json runs describe --include inputs,outputs
-
         # Quick analysis without language detection
         langsmith-cli runs describe --no-language --sample-size 50
     """

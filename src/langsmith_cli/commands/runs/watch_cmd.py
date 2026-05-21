@@ -58,6 +58,7 @@ def watch_runs(
 
     Watch a single project or multiple projects matching filters.
 
+    \b
     Examples:
         langsmith-cli runs watch --project my-project
         langsmith-cli runs watch --project-name-pattern "dev/*"
@@ -106,7 +107,6 @@ def watch_runs(
         table.add_column("Status", justify="center")
         table.add_column("Tokens", justify="right")
         table.add_column("Latency", justify="right")
-
         # Collect runs from all matching projects
         # Store runs with their project names as tuples
         all_runs: list[tuple[str, Run]] = []
@@ -143,12 +143,10 @@ def watch_runs(
                     all_runs.extend((proj_name, run) for run in runs_list)
                 except _fetch_errors:
                     failed_count += 1
-
         # Sort by start time (most recent first) and limit to 10
         _epoch = _datetime.min.replace(tzinfo=_timezone.utc)
         all_runs.sort(key=lambda item: item[1].start_time or _epoch, reverse=True)
         all_runs = all_runs[:10]
-
         # Add failure count to title if any projects failed
         if failed_count > 0:
             table.title = title + f" ({failed_count} failed)"

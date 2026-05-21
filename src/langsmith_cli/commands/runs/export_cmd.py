@@ -96,13 +96,10 @@ def export_runs(
     Examples:
         # Export last 50 root traces
         langsmith-cli runs export ./traces --project my-project --roots
-
         # Export error traces from last 24h
         langsmith-cli runs export ./errors --project my-project --status error --last 24h
-
         # Export with custom filenames
         langsmith-cli runs export ./traces --project my-project --filename-pattern "{name}_{run_id}.json"
-
         # Export with field pruning for smaller files
         langsmith-cli runs export ./traces --project my-project --fields name,inputs,outputs,status,latency
     """

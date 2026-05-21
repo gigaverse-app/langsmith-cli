@@ -110,19 +110,13 @@ def pricing_check(
     Examples:
       # Check pricing for all prd/* projects from cache
       langsmith-cli runs pricing --project-name-pattern "prd/*" --from-cache
-
-    \b
       # Check without OpenRouter lookup
       langsmith-cli runs pricing \\
         --project-name-pattern "prd/*" \\
         --from-cache \\
         --no-lookup
-
-    \b
       # Check recent runs from API
       langsmith-cli runs pricing --project my-project --last 7d
-
-    \b
       # JSON output for automation
       langsmith-cli --json runs pricing \\
         --project-name-pattern "prd/*" \\

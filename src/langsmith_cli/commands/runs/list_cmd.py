@@ -633,7 +633,6 @@ def list_runs(
     if len(runs) == 0:
         # Provide helpful diagnostic message
         logger.warning("No runs found matching your criteria.")
-
         # Build list of active filters
         active_filters = []
         if len(projects_to_query) == 1:
@@ -667,7 +666,6 @@ def list_runs(
             logger.info("Active filters:")
             for f in active_filters:
                 logger.info(f"  • {f}")
-
         # Show failed projects if any
         if failed_projects:
             logger.warning("Some projects failed to fetch:")
@@ -679,7 +677,6 @@ def list_runs(
                 logger.warning(f"  • {proj}: {short_error}")
             if len(failed_projects) > 3:
                 logger.warning(f"  • ... and {len(failed_projects) - 3} more")
-
         # Provide suggestions
         logger.info("Try:")
         if roots or is_root:
@@ -695,7 +692,6 @@ def list_runs(
         logger.info("  • Check project has runs: langsmith-cli runs list --limit 1")
     else:
         console.print(table)
-
         # Show message if we hit the limit (not in count mode or JSON mode)
         if hit_limit and not count and not is_json_context(ctx):
             # Show the exact number we know

@@ -415,29 +415,26 @@ def usage_runs(
     Only counts run_type="llm" runs with ls_model_name set to avoid
     double-counting tokens from parent chain runs.
 
+    \b
     Examples:
         # Token usage per hour across all prd/* projects
         langsmith-cli runs usage --project-name-pattern "prd/*" --last 7d
-
         # Per channel_id breakdown with model detail
         langsmith-cli runs usage \\
           --project-name-pattern "prd/*" \\
           --group-by metadata:channel_id \\
           --breakdown model \\
           --last 7d --active-only
-
         # Session analysis: filter by specific channel_id
         langsmith-cli runs usage \\
           --project-name-pattern "prd/*" \\
           --metadata channel_id=chat:MyRoom-abc123 \\
           --breakdown model --breakdown project
-
         # From cache (fast, offline)
         langsmith-cli runs usage \\
           --project-name-pattern "prd/*" \\
           --from-cache --group-by metadata:channel_id \\
           --breakdown model --active-only
-
         # JSON output for further processing
         langsmith-cli --json runs usage \\
           --project-name-pattern "prd/*" \\
@@ -489,7 +486,6 @@ def usage_runs(
             name_regex=project_name_regex,
         )
         project_names = pq.names if not pq.use_id else [f"id:{pq.project_id}"]
-
         # Parse time filters for client-side filtering
         from langsmith_cli.filters import parse_time_filter
 
@@ -500,7 +496,6 @@ def usage_runs(
         if result.has_failures:
             for src, err in result.failed_sources[:3]:
                 logger.warning(f"  {src}: {err}")
-
         # Build trace context map from all runs (for group-by/metadata propagation)
         # When LLM runs lack a metadata field, we can look it up from root/chain runs
         if group_by or metadata_filters:
@@ -521,7 +516,6 @@ def usage_runs(
                 for k, v in {**meta, **input_ctx}.items():
                     if v and (is_root or k not in trace_context[tid]):
                         trace_context[tid][k] = str(v)
-
         # Client-side filter: only LLM runs
         for run in result.items:
             if run.run_type != "llm":
@@ -531,11 +525,9 @@ def usage_runs(
             run_id = str(run.id)
             if run_id in result.item_source_map:
                 run_project_map[run_id] = result.item_source_map[run_id]
-
         # Apply tag filters client-side
         if tag:
             all_runs = filter_runs_by_tags(all_runs, tag)
-
         # Apply metadata filters client-side (check metadata, tags, and trace context)
         # Supports exact match, wildcards (*/?), and regex (/pattern/)
         for mf in metadata_filters:
@@ -627,7 +619,6 @@ def usage_runs(
             on_run=_record_project,
         )
         all_runs = stream_result.items
-
         # Match prior behavior: complain when any project failed and we got
         # zero runs total (covers both "every project failed" and the more
         # subtle "one project succeeded but returned nothing while another
@@ -702,7 +693,6 @@ def usage_runs(
 
     for run in model_runs:
         time_key = _bucket_key(run)
-
         # Group value (with trace context fallback for cached runs)
         group_val = "all"
         if group_type and group_field:
@@ -718,7 +708,6 @@ def usage_runs(
                         else None
                     )
             group_val = extracted or "ungrouped"
-
         # Breakdown values
         breakdown_vals: list[str] = []
         for dim in breakdown:
@@ -744,7 +733,6 @@ def usage_runs(
         run_total = float(run.total_cost or 0.0)
         run_prompt = float(run.prompt_cost or 0.0)
         run_completion = float(run.completion_cost or 0.0)
-
         # Estimate costs for runs with tokens but no pricing from LangSmith
         if pricing_table and run_total == 0.0 and (run.total_tokens or 0) > 0:
             estimated = _estimate_run_cost(run, pricing_table)
