@@ -35,7 +35,13 @@ jobs:
           is_draft="$(jq -r '.isDraft' <<< "$pr_json")"
           url="$(jq -r '.url' <<< "$pr_json")"
 
-          if [[ "$author" != "dependabot[bot]" || "$head_ref" != dependabot/* ]]; then
+          if [[ "$author" != "dependabot[bot]" && "$author" != "app/dependabot" ]]; then
+            echo "Skipping: this is not a Dependabot pull request."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "$head_ref" != dependabot/* ]]; then
             echo "Skipping: this is not a Dependabot pull request."
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
