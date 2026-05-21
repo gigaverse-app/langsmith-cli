@@ -32,8 +32,12 @@ from langsmith_cli.utils import (
 console = Console()
 
 
-class DatasetPushRow(TypedDict, total=False):
-    """Validated JSONL row for datasets push."""
+class DatasetPushRow(TypedDict):
+    """Validated JSONL row for datasets push.
+
+    Both ``inputs`` and ``outputs`` are populated by the validator;
+    ``outputs`` may be ``None`` if the source row omitted it.
+    """
 
     inputs: dict[str, Any]
     outputs: dict[str, Any] | None
@@ -50,17 +54,15 @@ def _validate_dataset_push_row(raw_row: Any, line_number: int) -> DatasetPushRow
     if not isinstance(inputs, dict):
         raise click.ClickException(f"{line_number}: field 'inputs' must be an object.")
 
-    row: DatasetPushRow = {"inputs": inputs}
+    outputs: dict[str, Any] | None = None
     if "outputs" in raw_row:
-        outputs = raw_row["outputs"]
-        if outputs is not None and not isinstance(outputs, dict):
+        raw_outputs = raw_row["outputs"]
+        if raw_outputs is not None and not isinstance(raw_outputs, dict):
             raise click.ClickException(
                 f"{line_number}: field 'outputs' must be an object or null."
             )
-        row["outputs"] = outputs
-    else:
-        row["outputs"] = None
-    return row
+        outputs = raw_outputs
+    return DatasetPushRow(inputs=inputs, outputs=outputs)
 
 
 @click.group()

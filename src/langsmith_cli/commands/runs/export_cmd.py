@@ -158,7 +158,7 @@ def export_runs(
         console=None,
         show_warnings=False,
     )
-    all_runs: list[Run] = result.items
+    fetched_runs: list[Run] = result.items
 
     # If all sources failed, raise with suggestions (reports failures internally).
     # Otherwise, report partial failures.
@@ -166,7 +166,7 @@ def export_runs(
     if result.has_failures:
         result.report_failures_to_logger(logger)
 
-    if not all_runs:
+    if not fetched_runs:
         if ctx.obj.get("json"):
             click.echo(
                 json_dumps(
@@ -178,8 +178,8 @@ def export_runs(
         return
 
     # Apply limit across all projects
-    if len(all_runs) > limit:
-        all_runs = all_runs[:limit]
+    if len(fetched_runs) > limit:
+        fetched_runs = fetched_runs[:limit]
 
     include_fields = parse_fields_option(fields)
 
@@ -205,7 +205,7 @@ def export_runs(
     exported_files: list[str] = []
     errors: list[dict[str, str]] = []
 
-    for index, run in enumerate(all_runs):
+    for index, run in enumerate(fetched_runs):
         try:
             # Build filename from pattern
             safe_name = _sanitize_filename(run.name or "unnamed")
