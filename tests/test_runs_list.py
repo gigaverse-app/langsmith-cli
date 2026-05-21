@@ -51,6 +51,18 @@ class TestRunsListBasic:
         _, kwargs = mock_client.list_runs.call_args
         assert kwargs["is_root"] is False
 
+    def test_count_defaults_to_unlimited_and_selects_id(self, runner, mock_client):
+        """--count should count all runs by default and request only IDs."""
+        mock_client.list_runs.return_value = [create_run(name="counted")]
+
+        result = runner.invoke(cli, ["runs", "list", "--count"])
+
+        assert result.exit_code == 0
+        assert result.output.strip() == "1"
+        _, kwargs = mock_client.list_runs.call_args
+        assert kwargs["limit"] is None
+        assert kwargs["select"] == ["id"]
+
     def test_list_table_includes_tokens_and_model(self, runner, mock_client):
         """Table output includes tokens and model columns."""
         mock_client.list_runs.return_value = [
@@ -794,6 +806,50 @@ class TestTraceAlias:
         call_kwargs = mock_client.list_runs.call_args[1]
         assert call_kwargs.get("trace_id") == SOME_TRACE
 
+    def test_exact_name_pattern_pushes_server_filter(self, runner, mock_client):
+        """Exact --name-pattern should become an FQL equality filter."""
+        mock_client.list_runs.return_value = iter([])
+
+        result = runner.invoke(
+            cli,
+            ["--json", "runs", "list", "--name-pattern", "Exact Run", "--fields", "id"],
+        )
+
+        assert result.exit_code == 0
+        call_kwargs = mock_client.list_runs.call_args[1]
+        assert 'eq(name, "Exact Run")' in call_kwargs["filter"]
+        assert call_kwargs["select"] == ["id"]
+
+    def test_unlimited_client_filtering_uses_fetch_cap(self, runner, mock_client):
+        """Client-side filters with --limit 0 should still cap API fetches."""
+        mock_client.list_runs.return_value = iter([])
+
+        result = runner.invoke(
+            cli,
+            ["runs", "list", "--name-regex", "worker-.+", "--limit", "0"],
+        )
+
+        assert result.exit_code == 0
+        call_kwargs = mock_client.list_runs.call_args[1]
+        # The CLI computes a 1000-run cap, then _make_fetch_runs omits SDK
+        # limits above the API max and caps locally with islice.
+        assert call_kwargs["limit"] is None
+
+    def test_grep_fields_are_added_to_machine_readable_select(
+        self, runner, mock_client
+    ):
+        """--fields with grep must still fetch fields needed for filtering."""
+        mock_client.list_runs.return_value = iter([create_run(name="grep-me")])
+
+        result = runner.invoke(
+            cli,
+            ["--json", "runs", "list", "--fields", "id", "--grep", "timeout"],
+        )
+
+        assert result.exit_code == 0
+        call_kwargs = mock_client.list_runs.call_args[1]
+        assert call_kwargs["select"] == ["error", "id", "inputs", "outputs"]
+
 
 class TestRunsListQueryFallback:
     """INVARIANTS for the freeform --query fallback to FQL search().
@@ -835,15 +891,33 @@ class TestRunsListQueryFallback:
         import requests
         from langsmith_cli.commands.runs.list_cmd import (
             _all_failures_are_query_rejection,
+            _error_body_detail,
             _is_query_rejection,
         )
 
+        assert _error_body_detail(None) is False
+        assert _error_body_detail("[]") is False
         assert _is_query_rejection(requests.HTTPError("400", "not-json")) is False
         assert (
             _is_query_rejection(requests.HTTPError("400", '{"detail":"other"}'))
             is False
         )
         assert _all_failures_are_query_rejection({}) is False
+
+    def test_query_rejection_helper_accepts_response_detail(self):
+        """SDK errors with the known server detail trigger the fallback."""
+        import requests
+        from langsmith_cli.commands.runs.list_cmd import _is_query_rejection
+
+        response = requests.Response()
+        response.status_code = 400
+        response._content = (  # noqa: SLF001 - requests exposes text through content.
+            b'{"detail":"Failed to generate filter from freeform query"}'
+        )
+        error = requests.HTTPError("400 Client Error")
+        error.response = response
+
+        assert _is_query_rejection(error) is True
 
     def test_wrapped_langsmith_query_rejection_triggers_retry(
         self, runner, mock_client

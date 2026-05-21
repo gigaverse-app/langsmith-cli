@@ -372,6 +372,32 @@ class TestRunsGetLatest:
         assert "No runs found" in data["message"]
         assert "Aborted" not in result.output
 
+    def test_get_latest_project_id_failure_reports_structured_error(
+        self, runner, mock_client
+    ):
+        """--project-id fetch failures should surface details without aborting."""
+        mock_client.list_runs.side_effect = RuntimeError(
+            "permission denied for run list"
+        )
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "get-latest",
+                "--project-id",
+                "8dc9fb82-ee48-4815-a0b0-c0fbabaa1887",
+            ],
+        )
+
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert data["error"] == "ClickException"
+        assert "Some projects failed to fetch" in data["message"]
+        assert "id:8dc9fb82-ee48-4815-a0b0-c0fbabaa1887" in data["message"]
+        assert "permission denied" in data["message"]
+
     def test_get_latest_with_multiple_projects(self, runner, mock_client):
         """Get-latest searches multiple projects with pattern."""
         mock_client.list_projects.return_value = [

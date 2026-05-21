@@ -1372,7 +1372,7 @@ class TestWriteOutputToFile:
 
         console = Console()
 
-        with pytest.raises(click.Abort):
+        with pytest.raises(click.ClickException):
             write_output_to_file(
                 [{"id": "123"}],
                 "/nonexistent/path/output.jsonl",
@@ -1413,17 +1413,41 @@ class TestWriteOutputToFile:
         assert "id,name" in csv_path.read_text()
         assert "123,alpha" in csv_path.read_text()
 
-    def test_unsupported_file_format_raises_abort(self, tmp_path):
-        """Unsupported file formats fail through the standard abort path."""
+    def test_unsupported_file_format_raises_click_exception(self, tmp_path):
+        """Unsupported file formats fail through the standard Click error path."""
         from rich.console import Console
 
-        with pytest.raises(click.Abort):
+        with pytest.raises(click.ClickException):
             write_output_to_file(
                 [{"id": "123"}],
                 str(tmp_path / "items.bad"),
                 Console(),
                 format_type="bad",
             )
+
+
+class TestOutputSingleItem:
+    """Tests for output_single_item default rendering."""
+
+    def test_human_default_pretty_prints_json(self, runner):
+        """Without JSON/output/render_fn, single items render as JSON syntax."""
+        from rich.console import Console
+        from langsmith_cli.output import output_single_item
+
+        @click.command()
+        @click.pass_context
+        def command(ctx):
+            ctx.obj = {"json": False}
+            output_single_item(
+                ctx,
+                {"id": "123", "name": "pretty"},
+                Console(),
+            )
+
+        result = runner.invoke(command)
+
+        assert result.exit_code == 0
+        assert '"name": "pretty"' in result.output
 
 
 class TestLooksLikeUuid:

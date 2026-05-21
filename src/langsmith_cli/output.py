@@ -304,7 +304,7 @@ def write_output_to_file(
         format_type: Output format ("jsonl" for newline-delimited JSON, "json" for JSON array/object)
 
     Raises:
-        click.Abort: If file writing fails
+        click.ClickException: If file writing fails
 
     Example:
         # List output
@@ -359,12 +359,12 @@ def write_output_to_file(
             stderr_console.print(
                 f"[green]Wrote {len(data)} items to {output_path}[/green]"
             )
-    except Exception as e:
+    except (OSError, TypeError, ValueError) as e:
         from rich.console import Console as RichConsole
 
         stderr_console = RichConsole(stderr=True)
         stderr_console.print(f"[red]Error writing to file {output_path}: {e}[/red]")
-        raise click.Abort()
+        raise click.ClickException(f"Error writing to file {output_path}: {e}") from e
 
 
 def output_single_item(

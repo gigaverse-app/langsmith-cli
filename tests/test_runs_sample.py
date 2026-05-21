@@ -287,3 +287,20 @@ class TestRunsSampleMultiDimensional:
 
         assert result.exit_code != 0
         assert "requires --values or --dimension-values" in result.output
+
+    def test_single_dimensional_requires_values(self, runner):
+        """Single-dimensional stratification requires explicit values."""
+        result = runner.invoke(
+            cli,
+            [
+                "runs",
+                "sample",
+                "--stratify-by",
+                "tag:length",
+                "--samples-per-stratum",
+                "1",
+            ],
+        )
+
+        assert result.exit_code != 0
+        assert "Single-dimensional stratification requires --values" in result.output

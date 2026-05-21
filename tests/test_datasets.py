@@ -407,6 +407,28 @@ def test_datasets_push(runner, tmp_path):
         assert call_kwargs["dataset_name"] == "target-dataset"
 
 
+def test_datasets_push_skips_blank_jsonl_lines(runner, tmp_path):
+    """Blank JSONL lines are ignored without shifting valid examples."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.read_dataset.return_value = create_dataset(name="target-dataset")
+
+        jsonl_file = tmp_path / "examples.jsonl"
+        jsonl_file.write_text(
+            "\n"
+            + json.dumps({"inputs": {"text": "hello"}, "outputs": {"result": "world"}})
+            + "\n\n"
+        )
+
+        result = runner.invoke(
+            cli, ["datasets", "push", str(jsonl_file), "--dataset", "target-dataset"]
+        )
+
+        assert result.exit_code == 0
+        call_kwargs = mock_client.create_examples.call_args[1]
+        assert call_kwargs["inputs"] == [{"text": "hello"}]
+
+
 def test_datasets_push_creates_dataset_if_not_exists(runner, tmp_path):
     """INVARIANT: datasets push should create dataset if it doesn't exist."""
     from langsmith.utils import LangSmithNotFoundError
