@@ -1,5 +1,6 @@
 import click
 from langsmith_cli.utils import (
+    ConsoleProtocol,
     LazyConsole,
     apply_exclude_filter,
     configure_logger_streams,
@@ -181,7 +182,7 @@ def get_example(ctx, example_id, as_of, fields, output):
 
     data = filter_fields(example, fields)
 
-    def render_example_details(data: dict, console: object) -> None:
+    def render_example_details(data: dict, console: ConsoleProtocol) -> None:
         from rich.syntax import Syntax
 
         console.print(f"[bold]Example ID:[/bold] {data.get('id')}")

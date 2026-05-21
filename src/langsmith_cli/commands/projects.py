@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 
 import click
 from langsmith_cli.utils import (
+    ConsoleProtocol,
     LazyConsole,
     resolve_by_name_or_id,
     sort_items,
@@ -334,7 +335,7 @@ def get_project(ctx, name_or_id, include_stats, fields, output):
 
     data = filter_fields(project, fields)
 
-    def render_project_details(data: dict, console: object) -> None:
+    def render_project_details(data: dict, console: ConsoleProtocol) -> None:
         console.print(f"[bold]Project:[/bold] {data.get('name')}")
         console.print(f"[bold]ID:[/bold] {data.get('id')}")
         if data.get("description"):

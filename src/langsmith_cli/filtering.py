@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import TYPE_CHECKING, Any, Callable, TypeVar, overload
+from typing import TYPE_CHECKING, Any, Callable, Protocol, TypeVar, overload
 
 import click
 
@@ -14,7 +14,15 @@ if TYPE_CHECKING:
     from langsmith.schemas import Run
 
 T = TypeVar("T")
-ModelT = TypeVar("ModelT")
+
+
+class ModelDumpable(Protocol):
+    def model_dump(
+        self, *, include: set[str] | None = None, mode: str = "json"
+    ) -> dict[str, Any]: ...
+
+
+ModelT = TypeVar("ModelT", bound=ModelDumpable)
 
 
 @overload

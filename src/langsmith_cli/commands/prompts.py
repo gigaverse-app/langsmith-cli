@@ -1,5 +1,6 @@
 import click
 from langsmith_cli.utils import (
+    ConsoleProtocol,
     LazyConsole,
     apply_exclude_filter,
     configure_logger_streams,
@@ -191,7 +192,7 @@ def get_prompt(ctx, name, commit, fields, output):
     # Capture prompt_obj for rich rendering closure
     prompt_str = str(prompt_obj)
 
-    def render_prompt_details(data: dict, console: object) -> None:
+    def render_prompt_details(data: dict, console: ConsoleProtocol) -> None:
         console.print(f"[bold]Prompt:[/bold] {name}")
         console.print("-" * 20)
         console.print(prompt_str)
@@ -287,7 +288,7 @@ def pull_prompt(ctx, name, commit, include_model, fields, output):
 
     data = filter_fields(prompt_commit, fields)
 
-    def render_commit_details(data: dict, console: object) -> None:
+    def render_commit_details(data: dict, console: ConsoleProtocol) -> None:
         from rich.syntax import Syntax
 
         console.print(f"[bold]Prompt:[/bold] {data.get('owner')}/{data.get('repo')}")

@@ -1,5 +1,6 @@
 import click
 from langsmith_cli.utils import (
+    ConsoleProtocol,
     LazyConsole,
     configure_logger_streams,
     confirm_option,
@@ -109,7 +110,7 @@ def get_queue(ctx, queue_id, fields, output):
 
     data = filter_fields(queue, fields)
 
-    def render_queue_details(data: dict, console: object) -> None:
+    def render_queue_details(data: dict, console: ConsoleProtocol) -> None:
         console.print(f"[bold]ID:[/bold] {data.get('id')}")
         console.print(f"[bold]Name:[/bold] {data.get('name')}")
         if data.get("description"):

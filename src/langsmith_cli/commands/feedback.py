@@ -1,5 +1,6 @@
 import click
 from langsmith_cli.utils import (
+    ConsoleProtocol,
     LazyConsole,
     configure_logger_streams,
     confirm_option,
@@ -137,7 +138,7 @@ def get_feedback(ctx, feedback_id, fields, output):
 
     data = filter_fields(fb, fields)
 
-    def render_feedback_details(data: dict, console: object) -> None:
+    def render_feedback_details(data: dict, console: ConsoleProtocol) -> None:
         console.print(f"[bold]ID:[/bold] {data.get('id')}")
         console.print(f"[bold]Key:[/bold] {data.get('key')}")
         console.print(f"[bold]Score:[/bold] {data.get('score')}")

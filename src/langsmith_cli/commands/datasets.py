@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, TypedDict
 
 import click
 from langsmith_cli.utils import (
+    ConsoleProtocol,
     LazyConsole,
     add_name_filter_options,
     apply_exclude_filter,
@@ -204,7 +205,7 @@ def get_dataset(ctx, dataset_id, fields, output):
 
     data = filter_fields(dataset, fields)
 
-    def render_dataset_details(data: dict, console: object) -> None:
+    def render_dataset_details(data: dict, console: ConsoleProtocol) -> None:
         console.print(f"[bold]Name:[/bold] {data.get('name')}")
         console.print(f"[bold]ID:[/bold] {data.get('id')}")
         console.print(f"[bold]Description:[/bold] {data.get('description')}")
