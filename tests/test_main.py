@@ -260,6 +260,9 @@ def test_not_found_error_handling_json_mode(runner):
         error_data = json.loads(result.output)
         assert error_data["error"] == "NotFoundError"
         assert "not found" in error_data["message"].lower()
+        # INVARIANT: structured errors carry the invoked command path so
+        # callers can correlate the failure with the call that produced it.
+        assert error_data["command"].endswith("runs get")
 
 
 def test_conflict_error_handling(runner):
@@ -566,7 +569,9 @@ class TestCLIFetchErrorHandling:
 
     def test_json_mode_includes_structured_fields(self, runner, mock_client):
         """INVARIANT: JSON error output includes failed_sources and suggestions fields."""
-        mock_client.list_runs.side_effect = Exception("Project not found")
+        from langsmith.utils import LangSmithError
+
+        mock_client.list_runs.side_effect = LangSmithError("Project not found")
         mock_client.list_projects.return_value = []
 
         result = runner.invoke(
@@ -584,8 +589,9 @@ class TestCLIFetchErrorHandling:
     def test_json_mode_includes_suggestions(self, runner, mock_client):
         """INVARIANT: JSON error includes similar project names when available."""
         from unittest.mock import MagicMock
+        from langsmith.utils import LangSmithError
 
-        mock_client.list_runs.side_effect = Exception("Project not found")
+        mock_client.list_runs.side_effect = LangSmithError("Project not found")
         proj = MagicMock()
         proj.name = "prd/promotion_service"
         mock_client.list_projects.return_value = [proj]
@@ -603,7 +609,9 @@ class TestCLIFetchErrorHandling:
 
     def test_json_mode_failed_sources_have_name_and_error(self, runner, mock_client):
         """INVARIANT: Each failed_source has name and error fields."""
-        mock_client.list_runs.side_effect = Exception("SDK error message")
+        from langsmith.utils import LangSmithError
+
+        mock_client.list_runs.side_effect = LangSmithError("SDK error message")
         mock_client.list_projects.return_value = []
 
         result = runner.invoke(
@@ -620,7 +628,9 @@ class TestCLIFetchErrorHandling:
 
     def test_human_mode_shows_error_message(self, runner, mock_client):
         """INVARIANT: Human mode shows readable error with failure details."""
-        mock_client.list_runs.side_effect = Exception("Project not found")
+        from langsmith.utils import LangSmithError
+
+        mock_client.list_runs.side_effect = LangSmithError("Project not found")
         mock_client.list_projects.return_value = []
 
         result = runner.invoke(cli, ["runs", "list", "--project", "nonexistent"])

@@ -26,6 +26,7 @@ from langsmith_cli.utils import (
 
 if TYPE_CHECKING:
     from langsmith.schemas import Run
+    from langsmith_cli.cli_logging import CLILogger
 
 # Backward-compat alias for tests that import this name from pricing_cmd.
 # The real implementation lives in run_helpers.get_full_model_name so
@@ -349,7 +350,7 @@ def _render_pricing_tables(
 
 def _fetch_openrouter_pricing(
     model_names: list[str],
-    logger: Any,
+    logger: CLILogger,
 ) -> dict[str, dict[str, Any]]:
     """Fetch pricing from OpenRouter API for given model names.
 

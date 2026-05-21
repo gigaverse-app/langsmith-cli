@@ -214,12 +214,18 @@ def get_latest_run(
         run_type=run_type,
     )
 
+    # Lazy: SDK exception imports are cold-path for `get-latest`.
+    from langsmith.utils import LangSmithError
+    import httpx
+
+    _fetch_errors = (LangSmithError, httpx.HTTPError)
+
     if pq.use_id:
         # Direct project ID lookup - no iteration needed
         try:
             runs_iter = client.list_runs(project_id=pq.project_id, **run_kwargs)
             latest_run = next(runs_iter, None)
-        except Exception as e:
+        except _fetch_errors as e:
             failed_projects.append((f"id:{pq.project_id}", str(e)))
     else:
         for proj_name in projects_to_query:
@@ -228,7 +234,7 @@ def get_latest_run(
                 latest_run = next(runs_iter, None)
                 if latest_run:
                     break  # Found a run, stop searching
-            except Exception as e:
+            except _fetch_errors as e:
                 failed_projects.append((proj_name, str(e)))
                 continue
 
@@ -302,6 +308,7 @@ def view_file(ctx, pattern, no_truncate, fields):
     # Lazy import: view-file is a cold-path command and we don't want
     # `from langsmith.schemas import Run` running for every CLI startup.
     from langsmith.schemas import Run as _Run
+    from pydantic import ValidationError
 
     all_runs: list[Run] = []
     for file_path in sorted(file_paths):
@@ -318,11 +325,11 @@ def view_file(ctx, pattern, no_truncate, fields):
                         all_runs.append(run)
                     except json.JSONDecodeError as e:
                         logger.warning(f"Invalid JSON at {file_path}:{line_num} - {e}")
-                    except Exception as e:
+                    except ValidationError as e:
                         logger.warning(
                             f"Failed to parse run at {file_path}:{line_num} - {e}"
                         )
-        except Exception as e:
+        except OSError as e:
             logger.error(f"Error reading {file_path}: {e}")
             continue
 

@@ -44,6 +44,9 @@ def run_stats(
     )
 
     # Resolve to project IDs for the stats API
+    # Lazy: SDK exception import is cold-path for stats.
+    from langsmith.utils import LangSmithError, LangSmithNotFoundError
+
     resolved_project_ids: list[Any] = []
     if pq.use_id:
         resolved_project_ids.append(pq.project_id)
@@ -52,8 +55,12 @@ def run_stats(
             try:
                 p = client.read_project(project_name=proj_name)
                 resolved_project_ids.append(p.id)
-            except Exception:
-                # Fallback: use project name as ID (user might have passed ID directly)
+            except (LangSmithNotFoundError, LangSmithError):
+                # Fallback: pass the raw name through. The stats API may still
+                # resolve it (e.g. when the user passed an ID rather than a name).
+                # Narrowing to LangSmith errors lets unrelated bugs (TypeError,
+                # AttributeError) surface immediately instead of silently
+                # ending up here.
                 resolved_project_ids.append(proj_name)
 
     if not resolved_project_ids:

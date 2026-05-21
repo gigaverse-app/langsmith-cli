@@ -180,6 +180,7 @@ def read_cached_runs(
 
     import logging
     from langsmith.schemas import Run
+    from pydantic import ValidationError
 
     logger = logging.getLogger(__name__)
     runs: list[Run] = []
@@ -189,7 +190,7 @@ def read_cached_runs(
             continue
         try:
             run = Run.model_validate(json.loads(line))
-        except Exception as e:
+        except (json.JSONDecodeError, ValidationError) as e:
             logger.warning("Skipping corrupt cache line in %s: %s", cache_path, e)
             continue
         start = ensure_aware_datetime(run.start_time)
@@ -361,14 +362,14 @@ def repair_cache_metadata(project_name: str) -> CacheMetadata:
             continue
         try:
             data = json.loads(line)
-        except Exception:
+        except json.JSONDecodeError:
             continue
         t_str = data.get("start_time")
         if t_str:
             try:
                 t = datetime.fromisoformat(str(t_str).replace("Z", "+00:00"))
                 _update_meta_times(meta, t)
-            except Exception as e:
+            except (TypeError, ValueError) as e:
                 logger.debug("Could not parse start_time %r: %s", t_str, e)
         meta.run_count += 1
 
@@ -420,7 +421,7 @@ def sample_raw_json_lines(
             continue
         try:
             samples.append(json.loads(line))
-        except Exception:
+        except json.JSONDecodeError:
             continue
         if len(samples) >= n:
             break

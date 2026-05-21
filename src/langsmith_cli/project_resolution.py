@@ -15,6 +15,7 @@ from langsmith_cli.filtering import apply_regex_filter, apply_wildcard_filter
 
 if TYPE_CHECKING:
     from langsmith import Client
+    from langsmith_cli.cli_logging import CLILogger
 
 T = TypeVar("T")
 
@@ -180,7 +181,7 @@ class FetchResult(Generic[T]):
             remaining = len(self.failed_sources) - max_show
             console.print(f"  ... and {remaining} more")
 
-    def report_failures_to_logger(self, logger: Any, max_show: int = 3) -> None:
+    def report_failures_to_logger(self, logger: CLILogger, max_show: int = 3) -> None:
         """Report failures using the CLI logger.
 
         Use this instead of report_failures() when you need proper
@@ -209,7 +210,7 @@ class FetchResult(Generic[T]):
 
     def raise_if_all_failed(
         self,
-        logger: Any | None = None,
+        logger: CLILogger | None = None,
         entity_name: str = "runs",
         suggestions: list[str] | None = None,
     ) -> None:
@@ -778,7 +779,7 @@ def raise_if_all_failed_with_suggestions(
     result: FetchResult[Any],
     client: Client,
     project_query: ProjectQuery,
-    logger: Any | None = None,
+    logger: CLILogger | None = None,
     entity_name: str = "runs",
 ) -> None:
     """Raise if all sources failed, with project name suggestions.

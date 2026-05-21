@@ -376,7 +376,9 @@ class TestRunsGetLatest:
         self, runner, mock_client
     ):
         """--project-id fetch failures should surface details without aborting."""
-        mock_client.list_runs.side_effect = RuntimeError(
+        from langsmith.utils import LangSmithError
+
+        mock_client.list_runs.side_effect = LangSmithError(
             "permission denied for run list"
         )
 
@@ -536,7 +538,9 @@ class TestRunsStats:
 
     def test_stats_fallback_to_project_id(self, runner, mock_client):
         """Stats falls back to using project name as ID on error."""
-        mock_client.read_project.side_effect = Exception("Not found")
+        from langsmith.utils import LangSmithNotFoundError
+
+        mock_client.read_project.side_effect = LangSmithNotFoundError("Not found")
         mock_client.get_run_stats.return_value = {"run_count": 10}
 
         result = runner.invoke(
@@ -807,12 +811,13 @@ class TestRunsWatch:
     def test_watch_failed_project_shows_count(self, runner, mock_client):
         """INVARIANT: When projects fail to fetch runs, failed count appears in title."""
         from conftest import create_project
+        from langsmith.utils import LangSmithError
 
         mock_client.list_projects.return_value = [
             create_project(name="svc-a"),
             create_project(name="svc-b"),
         ]
-        mock_client.list_runs.side_effect = Exception("API error")
+        mock_client.list_runs.side_effect = LangSmithError("API error")
 
         with patch("time.sleep") as mock_sleep:
             mock_sleep.side_effect = KeyboardInterrupt()

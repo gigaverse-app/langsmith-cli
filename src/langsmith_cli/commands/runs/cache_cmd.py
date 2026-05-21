@@ -120,12 +120,22 @@ def cache_download(
     import time
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
+    import httpx
+    from langsmith.utils import LangSmithError
+    from pydantic import ValidationError
+
     from langsmith_cli.cache import (
         append_runs_streaming,
         get_cache_path,
         get_existing_run_ids,
         read_cache_metadata,
     )
+
+    # Failures we expect during a download:
+    #  - LangSmithError / httpx.HTTPError: network or API contract issues.
+    #  - ValidationError: a row failed Pydantic validation (corrupt payload).
+    #  - OSError: local filesystem failures while writing the cache.
+    _download_errors = (LangSmithError, httpx.HTTPError, ValidationError, OSError)
 
     logger = ctx.obj["logger"]
     is_json = is_json_context(ctx)
@@ -273,8 +283,9 @@ def cache_download(
             if new_count == 0:
                 result["status"] = "no_new_runs"
 
-        except Exception as e:
+        except _download_errors as e:
             result["status"] = "error"
+            result["error_type"] = type(e).__name__
             result["error"] = str(e)[:200]
 
         result["elapsed_s"] = round(time.monotonic() - proj_start, 1)
@@ -594,7 +605,9 @@ def cache_repair(ctx: click.Context, project: str | None) -> None:
             )
         except FileNotFoundError as e:
             logger.warning(f"Skipping '{stem}': {e}")
-        except Exception as e:
+        except (OSError, ValueError) as e:
+            # OSError covers permission/disk issues; ValueError covers any
+            # parse failure surfaced by repair_cache_metadata.
             logger.warning(f"Failed to repair '{stem}': {e}")
 
 

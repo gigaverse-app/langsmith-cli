@@ -73,6 +73,79 @@ def _close_cached_client(ctx: click.Context) -> None:
     ctx.obj["client"].close()
 
 
+def _command_path_for_ctx(ctx: click.Context) -> str:
+    """Reconstruct the user-facing command path from a Click context.
+
+    Used to stamp the ``command`` field on structured JSON errors. We walk
+    up the context chain so that nested subcommand groups (``runs cache
+    grep``) are reported in full instead of just the leaf name.
+    """
+    parts: list[str] = []
+    cur: click.Context | None = ctx
+    while cur is not None:
+        if cur.info_name:
+            parts.append(cur.info_name)
+        cur = cur.parent
+    return " ".join(reversed(parts))
+
+
+def _command_path_from_args(
+    root_name: str | None,
+    root_command: click.Command,
+    args: list[str],
+) -> str:
+    """Infer nested command path from argv tokens before invocation."""
+    parts = [root_name or "langsmith-cli"]
+    command = root_command
+    for token in args:
+        if token.startswith("-"):
+            continue
+        if not isinstance(command, click.Group):
+            break
+        if token not in command.commands:
+            break
+        parts.append(token)
+        command = command.commands[token]
+    return " ".join(parts)
+
+
+def _command_path_from_exception(exc: BaseException) -> str | None:
+    """Recover the deepest subcommand path by inspecting an exception's
+    traceback frames.
+
+    By the time our top-level Group.invoke catches the error, Click has
+    already popped the leaf context, so ``click.get_current_context()``
+    only sees the root group. The traceback still has the failed
+    subcommand's stack frame, which carries Click's ``ctx`` local —
+    that's where we recover the full ``runs cache grep`` path from.
+
+    Returns None when no frame carries a Click Context (e.g. for errors
+    raised before any subcommand was entered).
+    """
+    deepest: click.Context | None = None
+    tb = exc.__traceback__
+    while tb is not None:
+        for value in tb.tb_frame.f_locals.values():
+            if isinstance(value, click.Context):
+                # Pick the *deepest* (most-nested) ctx we see. We keep
+                # walking so a wrapping group ctx doesn't overwrite the
+                # leaf subcommand ctx.
+                if deepest is None or _ctx_depth(value) >= _ctx_depth(deepest):
+                    deepest = value
+        tb = tb.tb_next
+    return _command_path_for_ctx(deepest) if deepest is not None else None
+
+
+def _ctx_depth(ctx: click.Context) -> int:
+    """Number of ancestors above this context (root = 0)."""
+    depth = 0
+    cur = ctx.parent
+    while cur is not None:
+        depth += 1
+        cur = cur.parent
+    return depth
+
+
 class LangSmithCLIGroup(click.Group):
     """Custom Click Group that handles LangSmith exceptions gracefully."""
 
@@ -82,6 +155,7 @@ class LangSmithCLIGroup(click.Group):
         # hoist --json to the front before normal parsing begins.
         if "--json" in args:
             args = ["--json"] + [a for a in args if a != "--json"]
+        ctx.meta["command_path"] = _command_path_from_args(ctx.info_name, self, args)
         return super().parse_args(ctx, args)
 
     def invoke(self, ctx):
@@ -89,6 +163,27 @@ class LangSmithCLIGroup(click.Group):
         try:
             return super().invoke(ctx)
         except Exception as e:
+            # Tag every JSON error payload with the command path so callers
+            # (especially agents) can correlate errors with what they ran.
+            # Click pops the inner ctx before the exception reaches us, so
+            # walking ``click.get_current_context()`` here only sees the
+            # root group. Walk the *traceback* instead — the deepest frame
+            # with a Click ``Context`` local is the subcommand that blew up.
+            command_path = str(
+                ctx.meta.get("command_path")
+                or _command_path_from_exception(e)
+                or _command_path_for_ctx(ctx)
+            )
+
+            def _emit_error(payload: dict[str, Any]) -> None:
+                """Stamp ``command`` and emit a structured error payload.
+
+                Centralizing the dump means new fields (e.g. ``partial``)
+                can be added once instead of at every branch below.
+                """
+                payload.setdefault("command", command_path)
+                click.echo(json_lib.dumps(payload))
+
             # Import SDK exceptions inside handler (lazy loading)
             from langsmith.utils import (
                 LangSmithAuthError,
@@ -111,7 +206,7 @@ class LangSmithCLIGroup(click.Group):
                         "message": error_msg,
                         "help": help_msg,
                     }
-                    click.echo(json_lib.dumps(error_data))
+                    _emit_error(error_data)
                 else:
                     console = _get_console()
                     console.print(f"[red]Error:[/red] {error_msg}")
@@ -123,7 +218,7 @@ class LangSmithCLIGroup(click.Group):
                 error_msg = str(e)
                 if json_mode:
                     error_data = {"error": "NotFoundError", "message": error_msg}
-                    click.echo(json_lib.dumps(error_data))
+                    _emit_error(error_data)
                 else:
                     console = _get_console()
                     console.print(f"[red]Error:[/red] {error_msg}")
@@ -133,7 +228,7 @@ class LangSmithCLIGroup(click.Group):
                 error_msg = str(e)
                 if json_mode:
                     error_data = {"error": "ConflictError", "message": error_msg}
-                    click.echo(json_lib.dumps(error_data))
+                    _emit_error(error_data)
                 else:
                     console = _get_console()
                     console.print(f"[yellow]Warning:[/yellow] {error_msg}")
@@ -157,7 +252,7 @@ class LangSmithCLIGroup(click.Group):
                             "help": help_msg,
                             "details": error_str,
                         }
-                        click.echo(json_lib.dumps(error_data))
+                        _emit_error(error_data)
                     else:
                         console = _get_console()
                         console.print(f"[red]Error:[/red] {error_msg}")
@@ -182,7 +277,7 @@ class LangSmithCLIGroup(click.Group):
                             "message": error_msg,
                             "help": help_msg,
                         }
-                        click.echo(json_lib.dumps(error_data))
+                        _emit_error(error_data)
                     else:
                         console = _get_console()
                         console.print(f"[red]Error:[/red] {error_msg}")
@@ -194,7 +289,7 @@ class LangSmithCLIGroup(click.Group):
                 else:
                     if json_mode:
                         error_data = {"error": "LangSmithError", "message": error_str}
-                        click.echo(json_lib.dumps(error_data))
+                        _emit_error(error_data)
                     else:
                         console = _get_console()
                         console.print(f"[red]Error:[/red] {error_str}")
@@ -230,7 +325,7 @@ class LangSmithCLIGroup(click.Group):
                             "message": str(e),
                         }
                         exit_code = 1
-                    click.echo(json_lib.dumps(error_data))
+                    _emit_error(error_data)
                     sys.exit(exit_code)
                 else:
                     # In human mode, re-raise for Click's default formatting

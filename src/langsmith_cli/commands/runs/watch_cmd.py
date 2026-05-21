@@ -111,6 +111,12 @@ def watch_runs(
         # Store runs with their project names as tuples
         all_runs: list[tuple[str, Run]] = []
         failed_count = 0
+        # Lazy: SDK / httpx exception imports are cold-path for watch's poll loop.
+        import httpx
+        from langsmith.utils import LangSmithError
+
+        _fetch_errors = (LangSmithError, httpx.HTTPError)
+
         if pq.use_id:
             try:
                 runs_list = list(
@@ -122,7 +128,7 @@ def watch_runs(
                 )
                 label = f"id:{pq.project_id}"
                 all_runs.extend((label, run) for run in runs_list)
-            except Exception:
+            except _fetch_errors:
                 failed_count += 1
         else:
             for proj_name in pq.names:
@@ -135,7 +141,7 @@ def watch_runs(
                         )
                     )
                     all_runs.extend((proj_name, run) for run in runs_list)
-                except Exception:
+                except _fetch_errors:
                     failed_count += 1
 
         # Sort by start time (most recent first) and limit to 10

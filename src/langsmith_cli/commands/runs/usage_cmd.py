@@ -36,6 +36,7 @@ from langsmith_cli.utils import (
 
 if TYPE_CHECKING:
     from langsmith.schemas import Run
+    from langsmith_cli.cli_logging import CLILogger
 
 
 @dataclass
@@ -112,7 +113,7 @@ def _get_provider(run: Run) -> str:
     return "unknown"
 
 
-def _load_pricing_file(path: str, logger: Any) -> dict[str, dict[str, float]]:
+def _load_pricing_file(path: str, logger: CLILogger) -> dict[str, dict[str, float]]:
     """Load model pricing from a YAML file.
 
     Expected format:
@@ -209,7 +210,9 @@ def _extract_input_context(run: Run) -> dict[str, str]:
     return result
 
 
-def _emit_empty_usage_json(output_format: str | None, ctx: Any, interval: str) -> None:
+def _emit_empty_usage_json(
+    output_format: str | None, ctx: click.Context, interval: str
+) -> None:
     """Emit an empty usage JSON summary when no data matches filters."""
     format_type = determine_output_format(output_format, is_json_context(ctx))
     if format_type == "table":

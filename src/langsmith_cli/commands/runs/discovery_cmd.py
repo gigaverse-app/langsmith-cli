@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import click
 
@@ -23,6 +23,7 @@ from langsmith_cli.utils import (
 
 if TYPE_CHECKING:
     from langsmith.schemas import Run
+    from langsmith_cli.cli_logging import CLILogger
 
 
 @dataclass
@@ -31,7 +32,7 @@ class DiscoveryContext:
 
     runs: list[Run]
     projects: list[str]
-    logger: Any  # CLILogger
+    logger: CLILogger
 
 
 def _fetch_runs_for_discovery(
