@@ -964,9 +964,6 @@ class TestExtractModelName:
             (None, "-"),
             ({}, "-"),
             ({"invocation_params": {"other_param": "value"}}, "-"),
-            # Malformed cases
-            ({"invocation_params": "not-a-dict"}, "-"),
-            ({"metadata": "not-a-dict"}, "-"),
         ],
     )
     def test_extract_model_name_scenarios(self, extra, expected_result):
@@ -981,6 +978,26 @@ class TestExtractModelName:
 
         result = extract_model_name(run)
         assert result == expected_result
+
+    @pytest.mark.parametrize(
+        "extra,field_path",
+        [
+            ({"invocation_params": "not-a-dict"}, "run.extra.invocation_params"),
+            ({"metadata": "not-a-dict"}, "run.extra.metadata"),
+        ],
+    )
+    def test_extract_model_name_fails_fast_on_malformed_extra(self, extra, field_path):
+        """Malformed SDK payloads should surface as contract errors."""
+        run = Run(
+            id=UUID("12345678-1234-5678-1234-567812345678"),
+            name="test-run",
+            run_type="llm",
+            start_time=datetime.now(timezone.utc),
+            extra=extra,
+        )
+
+        with pytest.raises(TypeError, match=field_path):
+            extract_model_name(run)
 
     @pytest.mark.parametrize(
         "model_name,max_length,expected",

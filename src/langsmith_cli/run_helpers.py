@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Protocol
 
 import click
@@ -17,6 +18,60 @@ from langsmith_cli.time_parsing import (
 
 if TYPE_CHECKING:
     from langsmith.schemas import Run
+
+
+def _as_mapping(value: object, field_path: str) -> Mapping[str, object]:
+    """Validate a dynamic LangSmith payload field before reading from it."""
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise TypeError(
+            f"Expected {field_path} to be a mapping, got {type(value).__name__}"
+        )
+    return value
+
+
+def _nested_mapping(
+    parent: Mapping[str, object], key: str, field_path: str
+) -> Mapping[str, object]:
+    if key not in parent:
+        return {}
+    return _as_mapping(parent[key], f"{field_path}.{key}")
+
+
+def run_extra_mapping(run: Run) -> Mapping[str, object]:
+    """Return ``run.extra`` as a validated mapping."""
+    return _as_mapping(run.extra, "run.extra")
+
+
+def run_extra_metadata(run: Run) -> Mapping[str, object]:
+    """Return ``run.extra.metadata`` as a validated mapping."""
+    return _nested_mapping(run_extra_mapping(run), "metadata", "run.extra")
+
+
+def run_invocation_params(run: Run) -> Mapping[str, object]:
+    """Return ``run.extra.invocation_params`` as a validated mapping."""
+    return _nested_mapping(run_extra_mapping(run), "invocation_params", "run.extra")
+
+
+def run_metadata_mapping(run: Run) -> Mapping[str, object]:
+    """Return the SDK-level ``run.metadata`` as a validated mapping."""
+    return _as_mapping(run.metadata, "run.metadata")
+
+
+def run_inputs_mapping(run: Run) -> Mapping[str, object]:
+    """Return ``run.inputs`` as a validated mapping."""
+    return _as_mapping(run.inputs, "run.inputs")
+
+
+def mapping_string_value(mapping: Mapping[str, object], key: str) -> str | None:
+    """Read a dynamic mapping value and normalize present values to strings."""
+    if key not in mapping:
+        return None
+    value = mapping[key]
+    if value is None:
+        return None
+    return str(value)
 
 
 def resolve_root_scope(
@@ -79,18 +134,14 @@ def extract_model_name(run: Run, max_length: int = 20) -> str:
     """
     model_name = "-"
 
-    if run.extra and isinstance(run.extra, dict):
-        # Try invocation_params first
-        if "invocation_params" in run.extra:
-            inv_params = run.extra["invocation_params"]
-            if isinstance(inv_params, dict) and "model_name" in inv_params:
-                model_name = inv_params["model_name"]
+    invocation = run_invocation_params(run)
+    if "model_name" in invocation:
+        model_name = str(invocation["model_name"])
 
-        # Try metadata as fallback
-        if model_name == "-" and "metadata" in run.extra:
-            metadata = run.extra["metadata"]
-            if isinstance(metadata, dict) and "ls_model_name" in metadata:
-                model_name = metadata["ls_model_name"]
+    if model_name == "-":
+        metadata = run_extra_metadata(run)
+        if "ls_model_name" in metadata:
+            model_name = str(metadata["ls_model_name"])
 
     # Truncate long model names
     if len(model_name) > max_length:
@@ -113,13 +164,15 @@ def get_full_model_name(run: Run) -> str:
 
     Returns ``"unknown"`` when no model name is present (e.g. chain/tool runs).
     """
-    extra = run.extra or {}
-    metadata = extra.get("metadata", {}) or {}
-    model = metadata.get("ls_model_name")
+    metadata = run_extra_metadata(run)
+    model = metadata["ls_model_name"] if "ls_model_name" in metadata else None
     if model:
         return str(model)
-    invocation = extra.get("invocation_params", {}) or {}
-    model = invocation.get("model") or invocation.get("model_name")
+
+    invocation = run_invocation_params(run)
+    model = invocation["model"] if "model" in invocation else None
+    if model is None and "model_name" in invocation:
+        model = invocation["model_name"]
     if model:
         return str(model)
     return "unknown"

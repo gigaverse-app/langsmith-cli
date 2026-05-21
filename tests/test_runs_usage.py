@@ -1484,6 +1484,31 @@ class TestUsageApplyPricing:
         bucket = data["buckets"][0]
         assert bucket["total_cost"] == pytest.approx(0.0)
 
+    def test_apply_pricing_missing_required_key_fails_fast(
+        self, runner, mock_client, tmp_path
+    ):
+        """INVARIANT: Malformed pricing rows are rejected instead of defaulted."""
+        mock_client.list_runs.return_value = [_create_llm_run(1, model="gpt-4")]
+
+        pricing_file = tmp_path / "pricing.yaml"
+        pricing_file.write_text("gpt-4:\n  input_per_million: 2.5\n")
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "usage",
+                "--last",
+                "24h",
+                "--apply-pricing",
+                str(pricing_file),
+            ],
+        )
+
+        assert result.exit_code != 0
+        assert "missing: output_per_million" in result.output
+
 
 class TestGetServiceTier:
     """Unit tests for _get_service_tier helper."""

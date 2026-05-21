@@ -4,13 +4,21 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import datetime as _datetime
-from typing import TYPE_CHECKING, Any
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any, TypedDict
 
 import click
 
 from langsmith_cli.commands.runs._group import console, runs
 from langsmith_cli.time_parsing import ensure_aware_datetime
 from langsmith_cli.output import json_dumps
+from langsmith_cli.run_helpers import (
+    mapping_string_value,
+    run_extra_metadata,
+    run_inputs_mapping,
+    run_invocation_params,
+    run_metadata_mapping,
+)
 from langsmith_cli.utils import (
     add_grep_options,
     add_metadata_filter_options,
@@ -52,6 +60,16 @@ class UsageBucket:
     run_count: int = 0
 
 
+class UsagePrice(TypedDict):
+    """Pricing row loaded from a user-provided YAML file."""
+
+    input_per_million: float
+    output_per_million: float
+
+
+PricingTable = dict[str, UsagePrice]
+
+
 # Backward-compat alias for tests that import this name from usage_cmd.
 # The real implementation lives in run_helpers.get_full_model_name so
 # pricing and usage stay in sync.
@@ -60,9 +78,9 @@ _get_model_name = get_full_model_name
 
 def _get_gateway(run: Run) -> str:
     """Extract gateway/API provider from ls_provider metadata."""
-    extra = run.extra or {}
-    metadata = extra.get("metadata", {}) or {}
-    return str(metadata.get("ls_provider", "unknown"))
+    metadata = run_extra_metadata(run)
+    provider = mapping_string_value(metadata, "ls_provider")
+    return provider or "unknown"
 
 
 def _get_service_tier(run: Run) -> str:
@@ -72,11 +90,10 @@ def _get_service_tier(run: Run) -> str:
     Known values: 'priority' (~2x cost), 'default' (1x), 'flex' (~0.5x).
     Returns 'unknown' when not set.
     """
-    extra = run.extra or {}
-    invocation = extra.get("invocation_params", {}) or {}
-    tier = invocation.get("service_tier")
+    invocation = run_invocation_params(run)
+    tier = mapping_string_value(invocation, "service_tier")
     if tier:
-        return str(tier)
+        return tier
     return "unknown"
 
 
@@ -113,7 +130,7 @@ def _get_provider(run: Run) -> str:
     return "unknown"
 
 
-def _load_pricing_file(path: str, logger: CLILogger) -> dict[str, dict[str, float]]:
+def _load_pricing_file(path: str, logger: CLILogger) -> PricingTable:
     """Load model pricing from a YAML file.
 
     Expected format:
@@ -136,14 +153,24 @@ def _load_pricing_file(path: str, logger: CLILogger) -> dict[str, dict[str, floa
             f"Pricing file must be a YAML dict, got {type(raw).__name__}"
         )
 
-    table: dict[str, dict[str, float]] = {}
+    table: PricingTable = {}
     for model_name, prices in raw.items():
-        if not isinstance(prices, dict):
+        if not isinstance(prices, Mapping):
             logger.warning(f"Skipping invalid pricing entry for {model_name}")
             continue
+        missing = [
+            key
+            for key in ("input_per_million", "output_per_million")
+            if key not in prices
+        ]
+        if missing:
+            missing_keys = ", ".join(missing)
+            raise click.ClickException(
+                f"Pricing entry for {model_name} is missing: {missing_keys}"
+            )
         table[str(model_name).lower()] = {
-            "input_per_million": float(prices.get("input_per_million", 0.0)),
-            "output_per_million": float(prices.get("output_per_million", 0.0)),
+            "input_per_million": float(prices["input_per_million"]),
+            "output_per_million": float(prices["output_per_million"]),
         }
 
     logger.info(f"Loaded pricing for {len(table)} models from {path}")
@@ -152,7 +179,7 @@ def _load_pricing_file(path: str, logger: CLILogger) -> dict[str, dict[str, floa
 
 def _estimate_run_cost(
     run: Run,
-    pricing_table: dict[str, dict[str, float]],
+    pricing_table: PricingTable,
 ) -> tuple[float, float] | None:
     """Estimate prompt/completion cost using an external pricing table.
 
@@ -162,14 +189,16 @@ def _estimate_run_cost(
     model = _get_model_name(run).lower()
     tier = _get_service_tier(run)
     tier_key = f"{model}+{tier}" if tier != "unknown" else None
-    pricing = (pricing_table.get(tier_key) if tier_key else None) or pricing_table.get(
-        model
-    )
+    pricing = None
+    if tier_key and tier_key in pricing_table:
+        pricing = pricing_table[tier_key]
+    elif model in pricing_table:
+        pricing = pricing_table[model]
     if pricing is None:
         return None
 
-    input_per_m = pricing.get("input_per_million", 0.0)
-    output_per_m = pricing.get("output_per_million", 0.0)
+    input_per_m = pricing["input_per_million"]
+    output_per_m = pricing["output_per_million"]
     prompt_tokens = run.prompt_tokens or 0
     completion_tokens = run.completion_tokens or 0
 
@@ -187,23 +216,23 @@ def _extract_input_context(run: Run) -> dict[str, str]:
     import json as json_mod
 
     result: dict[str, str] = {}
-    inputs = run.inputs or {}
+    inputs = run_inputs_mapping(run)
 
     # Look for channel_info (common pattern: JSON string in inputs)
-    channel_info = inputs.get("channel_info", "")
+    channel_info = inputs["channel_info"] if "channel_info" in inputs else ""
     if isinstance(channel_info, str) and channel_info.strip().startswith("{"):
         try:
             parsed = json_mod.loads(channel_info)
-            if isinstance(parsed, dict):
+            if isinstance(parsed, Mapping):
                 for key in ("community_name", "channel_id", "channel_name"):
-                    val = parsed.get(key)
+                    val = parsed[key] if key in parsed else None
                     if val:
                         result[key] = str(val)
         except (json_mod.JSONDecodeError, ValueError):
             pass
-    elif isinstance(channel_info, dict):
+    elif isinstance(channel_info, Mapping):
         for key in ("community_name", "channel_id", "channel_name"):
-            val = channel_info.get(key)
+            val = channel_info[key] if key in channel_info else None
             if val:
                 result[key] = str(val)
 
@@ -480,11 +509,8 @@ def usage_runs(
                 if not tid:
                     continue
                 # Extract context from metadata
-                meta = {}
-                if run.extra and isinstance(run.extra, dict):
-                    meta = run.extra.get("metadata", {}) or {}
-                if run.metadata and isinstance(run.metadata, dict):
-                    meta.update(run.metadata)
+                meta: dict[str, object] = dict(run_extra_metadata(run))
+                meta.update(run_metadata_mapping(run))
                 # Extract context from inputs (e.g. channel_info JSON)
                 input_ctx = _extract_input_context(run)
                 # Merge (prefer root/chain data = runs with no parent)
@@ -536,14 +562,20 @@ def usage_runs(
                         # Fallback to trace context
                         tid = str(r.trace_id) if r.trace_id else None
                         if tid and _metadata_value_matches(
-                            trace_context.get(tid, {}).get(key), value
+                            trace_context[tid][key]
+                            if tid in trace_context and key in trace_context[tid]
+                            else None,
+                            value,
                         ):
                             filtered.append(r)
                 else:
                     # No tags — check trace context
                     tid = str(r.trace_id) if r.trace_id else None
                     if tid and _metadata_value_matches(
-                        trace_context.get(tid, {}).get(key), value
+                        trace_context[tid][key]
+                        if tid in trace_context and key in trace_context[tid]
+                        else None,
+                        value,
                     ):
                         filtered.append(r)
             all_runs = filtered
@@ -664,7 +696,7 @@ def usage_runs(
     buckets: dict[tuple[str, ...], UsageBucket] = defaultdict(UsageBucket)
 
     # Load external pricing table if provided
-    pricing_table: dict[str, dict[str, float]] = {}
+    pricing_table: PricingTable = {}
     if apply_pricing:
         pricing_table = _load_pricing_file(apply_pricing, logger)
 
@@ -679,7 +711,12 @@ def usage_runs(
                 # Fallback: look up from trace context (root/chain runs)
                 tid = str(run.trace_id) if run.trace_id else None
                 if tid and tid in trace_context:
-                    extracted = trace_context[tid].get(group_field)
+                    trace_fields = trace_context[tid]
+                    extracted = (
+                        trace_fields[group_field]
+                        if group_field in trace_fields
+                        else None
+                    )
             group_val = extracted or "ungrouped"
 
         # Breakdown values
@@ -866,7 +903,7 @@ def _build_usage_table(
         if group_by:
             row_values.append(str(r["group"]))
         for dim in breakdown:
-            row_values.append(str(r.get(dim, "")))
+            row_values.append(str(r[dim] if dim in r else ""))
         row_values.extend(
             [
                 str(r["run_count"]),

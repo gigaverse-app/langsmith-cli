@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 import click
 
 from langsmith_cli.commands.runs._group import runs, console, _make_fetch_runs
+from langsmith_cli.run_helpers import run_extra_metadata, run_metadata_mapping
 from langsmith_cli.utils import (
     add_project_filter_options,
     add_time_filter_options,
@@ -190,16 +191,18 @@ def extract_group_value(run: Run, grouping_type: str, field_name: str) -> str | 
     else:  # metadata
         # Look up field_name in metadata dict
         # Check both run.metadata and run.extra["metadata"]
-        if run.metadata and isinstance(run.metadata, dict):
-            value = run.metadata.get(field_name)
+        metadata = run_metadata_mapping(run)
+        if field_name in metadata:
+            value = metadata[field_name]
             if value is not None:
-                return value
+                return str(value)
 
         # Fallback to checking run.extra["metadata"]
-        if run.extra and isinstance(run.extra, dict):
-            metadata = run.extra.get("metadata")
-            if metadata and isinstance(metadata, dict):
-                return metadata.get(field_name)
+        extra_metadata = run_extra_metadata(run)
+        if field_name in extra_metadata:
+            value = extra_metadata[field_name]
+            if value is not None:
+                return str(value)
 
         return None
 
@@ -321,7 +324,7 @@ def _render_analyze_table(
     for result in results:
         row_values: list[str] = [str(result["group"])]
         for metric in requested_metrics:
-            value = result.get(metric, 0)
+            value = result[metric] if metric in result else 0
             if isinstance(value, float):
                 if metric == "error_rate":
                     row_values.append(f"{value:.2%}")
