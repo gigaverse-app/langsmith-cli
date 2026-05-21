@@ -155,11 +155,27 @@ def detect_installation() -> dict[str, str]:
     return result
 
 
+# `--refresh` is the answer to issue #119's root cause: `uv tool upgrade` reads
+# the package's available-version list from ~/.cache/uv/simple-v*/pypi/<name>.rkyv,
+# which is invalidated using HTTP cache semantics from PyPI's simple index. For
+# minutes after a new release ships, uv can resolve against a stale view and
+# silently no-op exit 0. `--refresh` forces a fresh index fetch every time, so
+# `self update` never relies on a cache that hasn't seen the new version yet.
+# Verification (`_verify_installed_version`) still guards the post-condition for
+# any *other* reason the installer might no-op.
 _UPDATE_COMMANDS: dict[str, str] = {
-    "uv tool": "uv tool upgrade langsmith-cli",
+    "uv tool": "uv tool upgrade --refresh langsmith-cli",
     "pipx": "pipx upgrade langsmith-cli",
     "pip (virtualenv)": "pip install --upgrade langsmith-cli",
     "pip (system)": "pip install --upgrade langsmith-cli",
+}
+
+
+_REMEDIATION_COMMANDS: dict[str, str] = {
+    "uv tool": "uv tool install --force langsmith-cli && hash -r",
+    "pipx": "pipx install --force langsmith-cli && hash -r",
+    "pip (virtualenv)": "pip install --upgrade --force-reinstall langsmith-cli",
+    "pip (system)": "pip install --upgrade --force-reinstall langsmith-cli",
 }
 
 
@@ -171,6 +187,45 @@ def get_update_command(install_method: str) -> str | None:
     if install_method in _UPDATE_COMMANDS:
         return _UPDATE_COMMANDS[install_method]
     return None
+
+
+def get_remediation_command(install_method: str) -> str:
+    """Return a force-reinstall fallback for when an upgrade subprocess no-ops."""
+    return _REMEDIATION_COMMANDS.get(
+        install_method, "Reinstall langsmith-cli manually."
+    )
+
+
+def _verify_installed_version() -> str | None:
+    """Read the installed CLI version by invoking the executable as a fresh subprocess.
+
+    The running Python process has the *old* install's metadata pinned on sys.path,
+    so importlib.metadata cannot see the upgraded version. A fresh subprocess loads
+    whatever is currently at the resolved executable path on disk.
+
+    Returns the parsed version string, or None if verification cannot be performed.
+    """
+    import re
+    import subprocess
+
+    exe = shutil.which("langsmith-cli")
+    if exe is None:
+        return None
+    try:
+        result = subprocess.run(
+            [exe, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    # Click's default --version output: "<prog>, version X.Y.Z" — require a
+    # digit-led token so garbage output doesn't masquerade as a version.
+    match = re.search(r"version\s+(\d\S*)", result.stdout)
+    return match.group(1) if match else None
 
 
 def check_latest_version() -> str | None:
@@ -377,23 +432,7 @@ def update(ctx: click.Context) -> None:
 
     result = subprocess.run(shlex.split(cmd), capture_output=True, text=True)
 
-    if result.returncode == 0:
-        if json_mode:
-            click.echo(
-                json_dumps(
-                    {
-                        "status": "updated",
-                        "current_version": current,
-                        "latest_version": latest,
-                        "command": cmd,
-                    }
-                )
-            )
-        else:
-            if result.stdout.strip():
-                click.echo(result.stdout.strip())
-            click.echo("Update complete.")
-    else:
+    if result.returncode != 0:
         if json_mode:
             click.echo(
                 json_dumps(
@@ -410,4 +449,67 @@ def update(ctx: click.Context) -> None:
             click.echo(f"Update failed (exit code {result.returncode}).")
             if result.stderr.strip():
                 click.echo(result.stderr.strip())
-        ctx.exit(1)
+        # See note below: sys.exit avoids the root JSON-error handler double-emitting.
+        sys.exit(1)
+
+    # Upgrade subprocess exited 0 — verify the installed version actually moved.
+    # The running process still has the *old* install pinned on sys.path, so we
+    # spawn the installed executable as a fresh subprocess to read the new version.
+    new_version = _verify_installed_version()
+    verified = new_version is not None and (
+        (latest is not None and new_version == latest)
+        or (latest is None and new_version != current)
+    )
+
+    if verified:
+        if json_mode:
+            click.echo(
+                json_dumps(
+                    {
+                        "status": "updated",
+                        "previous_version": current,
+                        "current_version": new_version,
+                        "latest_version": latest,
+                        "command": cmd,
+                    }
+                )
+            )
+        else:
+            if result.stdout.strip():
+                click.echo(result.stdout.strip())
+            click.echo(f"Update complete (v{current} -> v{new_version}).")
+        return
+
+    # Verification failed: subprocess succeeded but the installed version did
+    # not move to the expected target. This is the #119 false-success case.
+    exe_path = info["executable_path"]
+    remediation = get_remediation_command(method)
+    if json_mode:
+        click.echo(
+            json_dumps(
+                {
+                    "status": "verification_failed",
+                    "previous_version": current,
+                    "current_version": new_version,
+                    "expected_version": latest,
+                    "executable_path": exe_path,
+                    "install_method": method,
+                    "command": cmd,
+                    "remediation": remediation,
+                }
+            )
+        )
+    else:
+        observed = new_version if new_version is not None else "unknown"
+        expected = f"v{latest}" if latest else "a newer version"
+        click.echo(
+            f"Warning: '{cmd}' exited successfully but the installed CLI "
+            f"is still at v{observed} (expected {expected})."
+        )
+        click.echo(f"  Executable: {exe_path}")
+        click.echo(f"  Install method: {method}")
+        click.echo("Try the following to force a clean reinstall:")
+        click.echo(f"  {remediation}")
+    # sys.exit (SystemExit) bypasses the root group's JSON-error handler, which
+    # otherwise would append a second {"error":"Exit"...} line after our payload.
+    sys.exit(1)
