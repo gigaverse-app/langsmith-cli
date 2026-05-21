@@ -525,6 +525,38 @@ class TestCacheCommands:
         assert len(projects) == 1
         assert projects[0].project_name == "proj-b"
 
+    def test_cache_clear_json_outputs_status(self, runner, tmp_path, monkeypatch):
+        """INVARIANT: cache clear returns sparse status JSON in --json mode."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+
+        append_runs_to_cache("proj-a", [_make_run(1)])
+
+        result = runner.invoke(
+            cli, ["--json", "runs", "cache", "clear", "--project", "proj-a"]
+        )
+
+        assert result.exit_code == 0
+        assert json.loads(result.output) == {
+            "status": "success",
+            "deleted_files": 2,
+            "project": "proj-a",
+        }
+
+    def test_cache_clear_json_outputs_noop_status(self, runner, tmp_path, monkeypatch):
+        """INVARIANT: cache clear reports noop status when nothing was deleted."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+
+        result = runner.invoke(
+            cli, ["--json", "runs", "cache", "clear", "--project", "ghost"]
+        )
+
+        assert result.exit_code == 0
+        assert json.loads(result.output) == {
+            "status": "noop",
+            "deleted_files": 0,
+            "project": "ghost",
+        }
+
     def test_cache_clear_cancel_reports_click_error(
         self, runner, tmp_path, monkeypatch
     ):
@@ -1617,6 +1649,34 @@ class TestCacheRepairCommand:
         assert (
             "healthy" in result.output.lower() or "no orphaned" in result.output.lower()
         )
+
+    def test_repair_no_orphans_json_outputs_status(self, runner, tmp_path, monkeypatch):
+        """INVARIANT: repair returns sparse status JSON when no work is needed."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+
+        result = runner.invoke(cli, ["--json", "runs", "cache", "repair"])
+
+        assert result.exit_code == 0
+        assert json.loads(result.output) == {
+            "status": "ok",
+            "repaired": 0,
+            "results": [],
+        }
+
+    def test_repair_json_outputs_results(self, runner, tmp_path, monkeypatch):
+        """INVARIANT: repair returns per-target structured JSON in --json mode."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+        self._make_orphaned(tmp_path, "proj-a")
+
+        result = runner.invoke(cli, ["--json", "runs", "cache", "repair"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["status"] == "ok"
+        assert payload["repaired"] == 1
+        assert payload["results"][0]["target"] == "proj-a"
+        assert payload["results"][0]["status"] == "success"
+        assert payload["results"][0]["run_count"] == 1
 
     def test_repair_missing_project_exits_with_error(
         self, runner, tmp_path, monkeypatch

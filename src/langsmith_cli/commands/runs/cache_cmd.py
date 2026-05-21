@@ -46,6 +46,26 @@ class CacheDownloadProjectResult(TypedDict):
     error: NotRequired[str]
 
 
+class CacheClearResult(TypedDict):
+    """Result emitted by ``runs cache clear`` in JSON mode."""
+
+    status: str
+    deleted_files: int
+    project: str | None
+
+
+class CacheRepairResult(TypedDict):
+    """Per-target result emitted by ``runs cache repair`` in JSON mode."""
+
+    target: str
+    status: str
+    run_count: NotRequired[int]
+    oldest_run_start_time: NotRequired[str | None]
+    newest_run_start_time: NotRequired[str | None]
+    error_type: NotRequired[str]
+    error: NotRequired[str]
+
+
 def _cache_download_error_message(result: CacheDownloadProjectResult) -> str:
     """Return the required error message for a failed cache download result."""
     if "error" not in result:
@@ -608,11 +628,21 @@ def cache_clear(ctx: click.Context, project: str | None, confirm: bool) -> None:
     from langsmith_cli.cache import clear_cache as do_clear
 
     logger = ctx.obj["logger"]
+    configure_logger_streams(ctx, logger)
 
     if not project:
         require_confirmation(confirm, "Clear ALL cached run data?")
 
     deleted = do_clear(project)
+    if is_json_context(ctx):
+        payload: CacheClearResult = {
+            "status": "success" if deleted else "noop",
+            "deleted_files": deleted,
+            "project": project,
+        }
+        click.echo(json.dumps(payload))
+        return
+
     if deleted:
         target = project or "all projects"
         logger.success(f"Cleared cache for {target} ({deleted} files)")
@@ -647,6 +677,8 @@ def cache_repair(ctx: click.Context, project: str | None) -> None:
     )
 
     logger = ctx.obj["logger"]
+    is_json = is_json_context(ctx)
+    configure_logger_streams(ctx, logger)
 
     if project:
         # Check if the project actually has an orphaned file or just needs repair
@@ -657,9 +689,13 @@ def cache_repair(ctx: click.Context, project: str | None) -> None:
     else:
         targets = find_orphaned_cache_files()
         if not targets:
+            if is_json:
+                click.echo(json.dumps({"status": "ok", "repaired": 0, "results": []}))
+                return
             logger.info("No orphaned cache files found. Everything looks healthy.")
             return
 
+    results: list[CacheRepairResult] = []
     for stem in targets:
         try:
             meta = repair_cache_metadata(stem)
@@ -673,15 +709,57 @@ def cache_repair(ctx: click.Context, project: str | None) -> None:
                 if meta.newest_run_start_time
                 else "?"
             )
-            logger.success(
-                f"Repaired '{stem}': {meta.run_count} runs, {oldest} → {newest}"
+            results.append(
+                {
+                    "target": stem,
+                    "status": "success",
+                    "run_count": meta.run_count,
+                    "oldest_run_start_time": (
+                        meta.oldest_run_start_time.isoformat()
+                        if meta.oldest_run_start_time
+                        else None
+                    ),
+                    "newest_run_start_time": (
+                        meta.newest_run_start_time.isoformat()
+                        if meta.newest_run_start_time
+                        else None
+                    ),
+                }
             )
+            if not is_json:
+                logger.success(
+                    f"Repaired '{stem}': {meta.run_count} runs, {oldest} -> {newest}"
+                )
         except FileNotFoundError as e:
-            logger.warning(f"Skipping '{stem}': {e}")
+            results.append(
+                {
+                    "target": stem,
+                    "status": "skipped",
+                    "error_type": type(e).__name__,
+                    "error": str(e),
+                }
+            )
+            if not is_json:
+                logger.warning(f"Skipping '{stem}': {e}")
         except (OSError, ValueError) as e:
             # OSError covers permission/disk issues; ValueError covers any
             # parse failure surfaced by repair_cache_metadata.
-            logger.warning(f"Failed to repair '{stem}': {e}")
+            results.append(
+                {
+                    "target": stem,
+                    "status": "error",
+                    "error_type": type(e).__name__,
+                    "error": str(e),
+                }
+            )
+            if not is_json:
+                logger.warning(f"Failed to repair '{stem}': {e}")
+
+    if is_json:
+        repaired = sum(1 for result in results if result["status"] == "success")
+        click.echo(
+            json.dumps({"status": "ok", "repaired": repaired, "results": results})
+        )
 
 
 @cache_group.command("schema")
