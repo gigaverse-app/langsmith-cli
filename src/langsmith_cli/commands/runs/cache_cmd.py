@@ -1,10 +1,9 @@
 """Cache subcommands for runs (download, list, clear, grep)."""
 
-from typing import Any
+from typing import Any, NotRequired, TypedDict
 import json
 
 import click
-from rich.table import Table
 
 from langsmith_cli.commands.runs._group import console, runs
 from langsmith_cli.utils import (
@@ -17,17 +16,63 @@ from langsmith_cli.utils import (
     build_runs_table,
     build_time_fql_filters,
     combine_fql_filters,
+    configure_logger_streams,
+    confirm_option,
     count_option,
     fields_option,
-    filter_fields,
     get_or_create_client,
+    is_json_context,
     output_option,
     parse_fields_option,
     partition_metadata_filters,
     render_output,
+    require_confirmation,
     resolve_project_filters,
-    write_output_to_file,
 )
+
+
+class CacheDownloadProjectResult(TypedDict):
+    """Per-project result emitted by ``runs cache download``."""
+
+    project: str
+    status: str
+    new_runs: int
+    total_runs: int
+    size_mb: float
+    mode: str
+    elapsed_s: float
+    incremental_from: NotRequired[str]
+    error_type: NotRequired[str]
+    error: NotRequired[str]
+
+
+class CacheClearResult(TypedDict):
+    """Result emitted by ``runs cache clear`` in JSON mode."""
+
+    status: str
+    deleted_files: int
+    project: str | None
+
+
+class CacheRepairResult(TypedDict):
+    """Per-target result emitted by ``runs cache repair`` in JSON mode."""
+
+    target: str
+    status: str
+    run_count: NotRequired[int]
+    oldest_run_start_time: NotRequired[str | None]
+    newest_run_start_time: NotRequired[str | None]
+    error_type: NotRequired[str]
+    error: NotRequired[str]
+
+
+def _cache_download_error_message(result: CacheDownloadProjectResult) -> str:
+    """Return the required error message for a failed cache download result."""
+    if "error" not in result:
+        raise RuntimeError(
+            f"Cache download error result for {result['project']} is missing error"
+        )
+    return result["error"]
 
 
 @runs.group("cache")
@@ -91,33 +136,31 @@ def cache_download(
     Uses parallel workers to fetch multiple projects simultaneously.
     Use --full to re-download everything.
 
+    \b
     Examples:
         # Cache all runs from prd/* for last 7 days
         langsmith-cli runs cache download --project-name-pattern "prd/*" --last 7d
-
         # Incremental update (only new runs since last download)
         langsmith-cli runs cache download --project-name-pattern "prd/*"
-
         # Full re-download with 4 workers
         langsmith-cli runs cache download --project prd/video_moderation_service --full --workers 4
-
         # Cache only LLM runs
         langsmith-cli runs cache download --project-name-pattern "prd/*" --run-type llm
-
         # Cache only runs with a specific run name (exact → server-side FQL)
         langsmith-cli runs cache download --project dev/namedrop_service --name-pattern "FACTCHECK" --since 2026-01-15 --before 2026-01-29
-
         # Cache runs whose name matches a wildcard (client-side, downloads all then filters)
         langsmith-cli runs cache download --project dev/namedrop_service --name-pattern "*CHECK*"
-
         # Download only runs from a specific channel (metadata, exact → server-side FQL)
         langsmith-cli runs cache download --project dev/namedrop_service --metadata channel_id=Gigaverse_Daily_Standup
-
         # Download runs from channels matching a wildcard (metadata wildcard → client-side)
         langsmith-cli runs cache download --project dev/namedrop_service --metadata "channel_id=Gigaverse*"
     """
     import time
     from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    import httpx
+    from langsmith.utils import LangSmithError
+    from pydantic import ValidationError
 
     from langsmith_cli.cache import (
         append_runs_streaming,
@@ -126,9 +169,15 @@ def cache_download(
         read_cache_metadata,
     )
 
+    # Failures we expect during a download:
+    #  - LangSmithError / httpx.HTTPError: network or API contract issues.
+    #  - ValidationError: a row failed Pydantic validation (corrupt payload).
+    #  - OSError: local filesystem failures while writing the cache.
+    _download_errors = (LangSmithError, httpx.HTTPError, ValidationError, OSError)
+
     logger = ctx.obj["logger"]
-    is_json = ctx.obj.get("json", False)
-    logger.use_stderr = is_json
+    is_json = is_json_context(ctx)
+    configure_logger_streams(ctx, logger)
 
     client = get_or_create_client(ctx)
 
@@ -170,13 +219,13 @@ def cache_download(
         base_filters.extend(build_metadata_fql_filters(server_meta))
 
     # Results tracking
-    results: list[dict[str, Any]] = []
+    results: list[CacheDownloadProjectResult] = []
     overall_start = time.monotonic()
 
-    def download_project(proj_name: str) -> dict[str, Any]:
+    def download_project(proj_name: str) -> CacheDownloadProjectResult:
         """Download runs for a single project. Runs in thread pool."""
         proj_start = time.monotonic()
-        result: dict[str, Any] = {
+        result: CacheDownloadProjectResult = {
             "project": proj_name,
             "status": "success",
             "new_runs": 0,
@@ -272,8 +321,9 @@ def cache_download(
             if new_count == 0:
                 result["status"] = "no_new_runs"
 
-        except Exception as e:
+        except _download_errors as e:
             result["status"] = "error"
+            result["error_type"] = type(e).__name__
             result["error"] = str(e)[:200]
 
         result["elapsed_s"] = round(time.monotonic() - proj_start, 1)
@@ -296,7 +346,6 @@ def cache_download(
                 }
             )
         )
-
         # No Rich Progress in JSON mode - use simple callbacks
         with ThreadPoolExecutor(max_workers=num_workers) as executor:
             futures = {
@@ -351,7 +400,6 @@ def cache_download(
             f"[cyan]Downloading from {num_projects} project(s) ({num_workers} workers)",
             total=None,
         )
-
         # Create per-project tasks
         for name in project_names:
             task_id = progress.add_task(f"  {name}", total=None)
@@ -392,7 +440,6 @@ def cache_download(
                     progress.update(task_id, completed=r["new_runs"])
 
             progress.update(overall_task, completed=num_projects, total=num_projects)
-
         # Print summary
         elapsed = round(time.monotonic() - overall_start, 1)
         total_new = sum(r["new_runs"] for r in results)
@@ -405,7 +452,7 @@ def cache_download(
         if errors:
             for e in errors:
                 logger.warning(
-                    f"  Failed: {e['project']} - {e.get('error', 'unknown')}"
+                    f"  Failed: {e['project']} - {_cache_download_error_message(e)}"
                 )
 
 
@@ -416,6 +463,7 @@ def cache_dir(ctx: click.Context) -> None:
 
     Useful for piping to other tools:
 
+    \b
     Examples:
         langsmith-cli runs cache dir
         duckdb -c "SELECT * FROM read_ndjson_auto('$(langsmith-cli runs cache dir)/*.jsonl')"
@@ -427,13 +475,30 @@ def cache_dir(ctx: click.Context) -> None:
 
 
 @cache_group.command("list")
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["table", "json", "jsonl", "csv", "yaml"]),
+    help="Output format.",
+)
+@fields_option()
+@count_option()
+@output_option()
 @click.pass_context
-def cache_list(ctx: click.Context) -> None:
+def cache_list(
+    ctx: click.Context,
+    output_format: str | None,
+    fields: str | None,
+    count: bool,
+    output: str | None,
+) -> None:
     """Show cached projects and their stats.
 
+    \b
     Examples:
-        langsmith-cli runs cache list
-        langsmith-cli --json runs cache list
+      langsmith-cli runs cache list
+      langsmith-cli --json runs cache list --fields project_name,run_count,path
+      langsmith-cli runs cache list --count
     """
     from langsmith_cli.cache import (
         find_orphaned_cache_files,
@@ -442,90 +507,134 @@ def cache_list(ctx: click.Context) -> None:
     )
 
     logger = ctx.obj["logger"]
+    configure_logger_streams(
+        ctx,
+        logger,
+        output=output,
+        output_format=output_format,
+        count=count,
+        fields=fields,
+    )
 
     projects = list_cached_projects()
     orphaned = find_orphaned_cache_files()
 
-    if not projects and not orphaned:
-        logger.info("No cached projects. Use 'runs cache download' to cache runs.")
-        return
-
-    if ctx.obj.get("json"):
-        data = []
-        for p in projects:
-            entry = p.model_dump(mode="json")
-            entry["path"] = str(get_cache_path(p.project_name))
-            data.append(entry)
-        click.echo(json.dumps(data, default=str))
-        if orphaned:
-            logger.warning(
-                f"{len(orphaned)} orphaned JSONL file(s) have no metadata "
-                f"(run 'runs cache repair' to fix): {', '.join(orphaned)}"
-            )
-        return
-
-    table = Table(title="Cached Projects")
-    table.add_column("Project", style="cyan")
-    table.add_column("Runs", justify="right")
-    table.add_column("Time Range", style="green")
-    table.add_column("Size", justify="right")
-    table.add_column("Last Updated", style="yellow")
-
+    entries: list[dict[str, Any]] = []
     for p in projects:
         cache_path = get_cache_path(p.project_name)
         size_mb = (
             cache_path.stat().st_size / (1024 * 1024) if cache_path.exists() else 0
         )
+        entry = p.model_dump(mode="json")
+        entry["size_mb"] = round(size_mb, 3)
+        entry["path"] = str(cache_path)
+        entries.append(entry)
 
-        time_range = ""
-        if p.oldest_run_start_time and p.newest_run_start_time:
-            oldest = p.oldest_run_start_time.strftime("%m-%d %H:%M")
-            newest = p.newest_run_start_time.strftime("%m-%d %H:%M")
-            time_range = f"{oldest} → {newest}"
+    include_fields = parse_fields_option(fields)
 
-        updated = p.last_updated.strftime("%Y-%m-%d %H:%M") if p.last_updated else ""
+    def build_cache_table(items: list[dict[str, Any]]) -> Any:
+        from rich.table import Table
 
-        table.add_row(
-            p.project_name,
-            str(p.run_count),
-            time_range,
-            f"{size_mb:.1f}MB",
-            updated,
-        )
+        if include_fields is not None:
+            table = Table(title="Cached Projects")
+            labels = {
+                "project_name": "Project",
+                "project_id": "Project ID",
+                "oldest_run_start_time": "Oldest Run",
+                "newest_run_start_time": "Newest Run",
+                "run_count": "Runs",
+                "last_updated": "Last Updated",
+                "filters_used": "Filters",
+                "size_mb": "Size MB",
+                "path": "Path",
+            }
+            selected = [field for field in labels if field in include_fields]
+            for field in selected:
+                table.add_column(labels[field])
+            for item in items:
+                table.add_row(*(str(item[field]) for field in selected))
+            return table
 
-    console.print(table)
+        table = Table(title="Cached Projects")
+        table.add_column("Project", style="cyan")
+        table.add_column("Runs", justify="right")
+        table.add_column("Time Range", style="green")
+        table.add_column("Size", justify="right")
+        table.add_column("Last Updated", style="yellow")
+
+        for item in items:
+            time_range = ""
+            if item["oldest_run_start_time"] and item["newest_run_start_time"]:
+                oldest = str(item["oldest_run_start_time"])[5:16].replace("T", " ")
+                newest = str(item["newest_run_start_time"])[5:16].replace("T", " ")
+                time_range = f"{oldest} -> {newest}"
+
+            updated = (
+                str(item["last_updated"])[:16].replace("T", " ")
+                if item["last_updated"]
+                else ""
+            )
+
+            table.add_row(
+                str(item["project_name"]),
+                str(item["run_count"]),
+                time_range,
+                f"{item['size_mb']:.1f}MB",
+                updated,
+            )
+
+        return table
+
+    render_output(
+        entries,
+        build_cache_table,
+        ctx,
+        include_fields=include_fields,
+        empty_message="No cached projects. Use 'runs cache download' to cache runs.",
+        output_format=output_format,
+        count_flag=count,
+        output_path=output,
+    )
 
     if orphaned:
         logger.warning(
-            f"\n⚠️  {len(orphaned)} orphaned cache file(s) found (JSONL without metadata):"
+            f"{len(orphaned)} orphaned JSONL file(s) have no metadata "
+            f"(run 'runs cache repair' to fix): {', '.join(orphaned)}"
         )
-        for name in orphaned:
-            logger.warning(f"  • {name}")
-        logger.warning("Run 'langsmith-cli runs cache repair' to regenerate metadata.")
 
 
 @cache_group.command("clear")
 @click.option("--project", help="Clear cache for a specific project only.")
-@click.option("--yes", is_flag=True, help="Skip confirmation prompt.")
+@confirm_option()
 @click.pass_context
-def cache_clear(ctx: click.Context, project: str | None, yes: bool) -> None:
+def cache_clear(ctx: click.Context, project: str | None, confirm: bool) -> None:
     """Clear cached run data.
 
+    \b
     Examples:
         # Clear specific project
         langsmith-cli runs cache clear --project prd/video_moderation_service
-
         # Clear all cached data
         langsmith-cli runs cache clear --yes
     """
     from langsmith_cli.cache import clear_cache as do_clear
 
     logger = ctx.obj["logger"]
+    configure_logger_streams(ctx, logger)
 
-    if not project and not yes:
-        click.confirm("Clear ALL cached run data?", abort=True)
+    if not project:
+        require_confirmation(confirm, "Clear ALL cached run data?")
 
     deleted = do_clear(project)
+    if is_json_context(ctx):
+        payload: CacheClearResult = {
+            "status": "success" if deleted else "noop",
+            "deleted_files": deleted,
+            "project": project,
+        }
+        click.echo(json.dumps(payload))
+        return
+
     if deleted:
         target = project or "all projects"
         logger.success(f"Cleared cache for {target} ({deleted} files)")
@@ -545,10 +654,10 @@ def cache_repair(ctx: click.Context, project: str | None) -> None:
     before the final write. This command scans each orphaned JSONL file and
     rebuilds the metadata (run count, time range) from its contents.
 
+    \b
     Examples:
         # Repair all orphaned cache files
         langsmith-cli runs cache repair
-
         # Repair a specific project
         langsmith-cli runs cache repair --project dev/namedrop_service
     """
@@ -560,6 +669,8 @@ def cache_repair(ctx: click.Context, project: str | None) -> None:
     )
 
     logger = ctx.obj["logger"]
+    is_json = is_json_context(ctx)
+    configure_logger_streams(ctx, logger)
 
     if project:
         # Check if the project actually has an orphaned file or just needs repair
@@ -570,9 +681,13 @@ def cache_repair(ctx: click.Context, project: str | None) -> None:
     else:
         targets = find_orphaned_cache_files()
         if not targets:
+            if is_json:
+                click.echo(json.dumps({"status": "ok", "repaired": 0, "results": []}))
+                return
             logger.info("No orphaned cache files found. Everything looks healthy.")
             return
 
+    results: list[CacheRepairResult] = []
     for stem in targets:
         try:
             meta = repair_cache_metadata(stem)
@@ -586,13 +701,57 @@ def cache_repair(ctx: click.Context, project: str | None) -> None:
                 if meta.newest_run_start_time
                 else "?"
             )
-            logger.success(
-                f"Repaired '{stem}': {meta.run_count} runs, {oldest} → {newest}"
+            results.append(
+                {
+                    "target": stem,
+                    "status": "success",
+                    "run_count": meta.run_count,
+                    "oldest_run_start_time": (
+                        meta.oldest_run_start_time.isoformat()
+                        if meta.oldest_run_start_time
+                        else None
+                    ),
+                    "newest_run_start_time": (
+                        meta.newest_run_start_time.isoformat()
+                        if meta.newest_run_start_time
+                        else None
+                    ),
+                }
             )
+            if not is_json:
+                logger.success(
+                    f"Repaired '{stem}': {meta.run_count} runs, {oldest} -> {newest}"
+                )
         except FileNotFoundError as e:
-            logger.warning(f"Skipping '{stem}': {e}")
-        except Exception as e:
-            logger.warning(f"Failed to repair '{stem}': {e}")
+            results.append(
+                {
+                    "target": stem,
+                    "status": "skipped",
+                    "error_type": type(e).__name__,
+                    "error": str(e),
+                }
+            )
+            if not is_json:
+                logger.warning(f"Skipping '{stem}': {e}")
+        except (OSError, ValueError) as e:
+            # OSError covers permission/disk issues; ValueError covers any
+            # parse failure surfaced by repair_cache_metadata.
+            results.append(
+                {
+                    "target": stem,
+                    "status": "error",
+                    "error_type": type(e).__name__,
+                    "error": str(e),
+                }
+            )
+            if not is_json:
+                logger.warning(f"Failed to repair '{stem}': {e}")
+
+    if is_json:
+        repaired = sum(1 for result in results if result["status"] == "success")
+        click.echo(
+            json.dumps({"status": "ok", "repaired": repaired, "results": results})
+        )
 
 
 @cache_group.command("schema")
@@ -628,13 +787,12 @@ def cache_schema(
     showing types, presence counts, and sample values. Useful for
     understanding the structure of inputs/outputs before writing queries.
 
+    \b
     Examples:
         # Show full schema
         langsmith-cli runs cache schema --project dev/namedrop_service
-
         # Show only inputs and outputs structure
         langsmith-cli runs cache schema --project dev/namedrop_service --include inputs,outputs
-
         # JSON output for agents
         langsmith-cli --json runs cache schema --project dev/namedrop_service --include outputs
     """
@@ -647,8 +805,8 @@ def cache_schema(
     )
 
     logger = ctx.obj["logger"]
-    is_json = ctx.obj.get("json", False)
-    logger.use_stderr = is_json
+    is_json = is_json_context(ctx)
+    configure_logger_streams(ctx, logger)
 
     try:
         samples = sample_raw_json_lines(project, n=sample_size)
@@ -748,6 +906,12 @@ def cache_schema(
 )
 @click.option("--limit", default=20, help="Max results to return (default 20).")
 @add_time_filter_options
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["table", "json", "csv", "yaml"]),
+    help="Output format (default: table, or json if --json flag used).",
+)
 @fields_option()
 @count_option()
 @output_option()
@@ -764,6 +928,7 @@ def cache_grep(
     since: str | None,
     before: str | None,
     last: str | None,
+    output_format: str | None,
     fields: str | None,
     count: bool,
     output: str | None,
@@ -771,13 +936,12 @@ def cache_grep(
 ) -> None:
     """Search cached runs for a text pattern in inputs/outputs/error.
 
+    \b
     Examples:
         # Search all cached projects for "hello"
         langsmith-cli runs cache grep "hello"
-
         # Case-insensitive regex search in a specific project
         langsmith-cli runs cache grep -i -E "\\\\buser_id\\\\b" --project my-proj
-
         # Search only inputs field, output as JSON
         langsmith-cli --json runs cache grep "error" --grep-in inputs
     """
@@ -790,8 +954,27 @@ def cache_grep(
     from langsmith_cli.filters import parse_time_filter
 
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json") or bool(output) or bool(fields)
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(
+        ctx,
+        logger,
+        output=output,
+        output_format=output_format,
+        count=count,
+        fields=fields,
+    )
+
+    def render_matches(matches: list[Any]) -> None:
+        include_fields = parse_fields_option(fields)
+        render_output(
+            matches,
+            lambda runs: build_runs_table(runs, f"Runs matching '{pattern}'"),
+            ctx,
+            include_fields=include_fields,
+            empty_message=f"No runs matching '{pattern}' found",
+            output_format=output_format,
+            count_flag=count,
+            output_path=output,
+        )
 
     # Determine which projects to search
     if project:
@@ -819,8 +1002,7 @@ def cache_grep(
 
     if not project_names:
         logger.warning("No cached projects. Run 'runs cache download' first.")
-        if ctx.obj.get("json"):
-            click.echo(json.dumps([]))
+        render_matches([])
         return
 
     # Parse time filters
@@ -831,8 +1013,7 @@ def cache_grep(
 
     if not result.items:
         logger.warning("No cached runs found.")
-        if ctx.obj.get("json"):
-            click.echo(json.dumps([]))
+        render_matches([])
         return
 
     # Apply metadata filter (always client-side for cached data)
@@ -840,8 +1021,7 @@ def cache_grep(
 
     if not filtered_items:
         logger.warning("No cached runs matched the metadata filter.")
-        if ctx.obj.get("json"):
-            click.echo(json.dumps([]))
+        render_matches([])
         return
 
     # Parse grep-in fields
@@ -862,19 +1042,4 @@ def cache_grep(
     if limit and len(matched) > limit:
         matched = matched[:limit]
 
-    # Handle file output
-    if output:
-        data = filter_fields(matched, fields)
-        write_output_to_file(data, output, console, format_type="jsonl")
-        return
-
-    include_fields = parse_fields_option(fields)
-
-    render_output(
-        matched,
-        lambda runs: build_runs_table(runs, f"Runs matching '{pattern}'"),
-        ctx,
-        include_fields=include_fields,
-        empty_message=f"No runs matching '{pattern}' found",
-        count_flag=count,
-    )
+    render_matches(matched)

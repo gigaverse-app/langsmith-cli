@@ -1,28 +1,32 @@
 import click
-from rich.console import Console
-from rich.table import Table
 from langsmith_cli.utils import (
+    ConsoleProtocol,
+    LazyConsole,
     apply_exclude_filter,
     configure_logger_streams,
+    confirm_option,
     count_option,
+    emit_action_result,
     exclude_option,
     fields_option,
     filter_fields,
     get_or_create_client,
+    is_json_context,
     json_dumps,
+    not_found_as_click_exception,
     output_option,
     output_single_item,
     parse_comma_separated_list,
     parse_fields_option,
     parse_json_string,
+    render_detail_fields,
     render_output,
-    safe_model_dump,
+    require_confirmation,
     sort_by_option,
     sort_items,
-    write_output_to_file,
 )
 
-console = Console()
+console = LazyConsole()
 
 
 def normalize_split(split: str | None) -> list[str] | None:
@@ -46,10 +50,24 @@ def examples():
 @click.option("--filter", "filter_", help="LangSmith query filter.")
 @click.option("--metadata", help="Filter by metadata (JSON string).")
 @click.option("--splits", help="Filter by dataset splits (comma-separated).")
-@click.option("--inline-s3-urls", type=bool, help="Include S3 URLs inline.")
-@click.option("--include-attachments", type=bool, help="Include attachments.")
+@click.option(
+    "--inline-s3-urls/--no-inline-s3-urls",
+    default=None,
+    help="Include S3 URLs inline.",
+)
+@click.option(
+    "--include-attachments/--no-include-attachments",
+    default=None,
+    help="Include attachments.",
+)
 @click.option("--as-of", help="Dataset version tag or ISO timestamp.")
 @sort_by_option(fields="created_at, modified_at")
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["table", "json", "csv", "yaml"]),
+    help="Output format (default: table, or json if --json flag used).",
+)
 @exclude_option()
 @fields_option()
 @count_option()
@@ -68,6 +86,7 @@ def list_examples(
     include_attachments,
     as_of,
     sort_by,
+    output_format,
     exclude,
     fields,
     count,
@@ -75,7 +94,9 @@ def list_examples(
 ):
     """List examples for a dataset."""
     logger = ctx.obj["logger"]
-    configure_logger_streams(ctx, logger, output=output, fields=fields)
+    configure_logger_streams(
+        ctx, logger, output=output, output_format=output_format, fields=fields
+    )
 
     logger.debug(
         f"Listing examples: dataset={dataset}, limit={limit}, "
@@ -109,16 +130,19 @@ def list_examples(
 
     # Client-side sorting
     if sort_by:
-        examples_list = sort_items(examples_list, sort_by)
-
-    # Handle file output - short circuit if writing to file
-    if output:
-        data = filter_fields(examples_list, fields)
-        write_output_to_file(data, output, console, format_type="jsonl")
-        return
+        examples_list = sort_items(
+            examples_list,
+            sort_by,
+            {
+                "created_at": lambda e: e.created_at,
+                "modified_at": lambda e: e.modified_at,
+            },
+        )
 
     # Define table builder function
     def build_examples_table(examples):
+        from rich.table import Table
+
         table = Table(title=f"Examples: {dataset}")
         table.add_column("ID", style="dim")
         table.add_column("Inputs")
@@ -136,14 +160,16 @@ def list_examples(
 
     include_fields = parse_fields_option(fields)
 
-    # Unified output rendering
+    # Unified output rendering (handles --json, --format, --output, --count uniformly)
     render_output(
         examples_list,
         build_examples_table,
         ctx,
         include_fields=include_fields,
         empty_message="No examples found",
+        output_format=output_format,
         count_flag=count,
+        output_path=output,
     )
 
 
@@ -165,12 +191,10 @@ def get_example(ctx, example_id, as_of, fields, output):
 
     data = filter_fields(example, fields)
 
-    def render_example_details(data: dict, console: object) -> None:
+    def render_example_details(data: dict, console: ConsoleProtocol) -> None:
         from rich.syntax import Syntax
-        from rich.console import Console as RichConsole
 
-        assert isinstance(console, RichConsole)
-        console.print(f"[bold]Example ID:[/bold] {data.get('id')}")
+        render_detail_fields(data, console, [("id", "Example ID")])
         if "inputs" in data:
             console.print("\n[bold]Inputs:[/bold]")
             console.print(Syntax(json_dumps(data["inputs"], indent=2), "json"))
@@ -193,8 +217,7 @@ def get_example(ctx, example_id, as_of, fields, output):
 def create_example(ctx, dataset, inputs, outputs, metadata, split):
     """Create a new example in a dataset."""
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json")
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger)
 
     logger.debug(f"Creating example in dataset: {dataset}")
 
@@ -212,12 +235,12 @@ def create_example(ctx, dataset, inputs, outputs, metadata, split):
         split=normalize_split(split),
     )
 
-    if ctx.obj.get("json"):
-        data = safe_model_dump(example)
-        click.echo(json_dumps(data))
-        return
-
-    logger.success(f"Created example (ID: {example.id}) in dataset {dataset}")
+    emit_action_result(
+        ctx,
+        logger,
+        model=example,
+        success_message=f"Created example (ID: {example.id}) in dataset {dataset}",
+    )
 
 
 @examples.command("update")
@@ -230,8 +253,7 @@ def create_example(ctx, dataset, inputs, outputs, metadata, split):
 def update_example(ctx, example_id, inputs, outputs, metadata, split):
     """Update an existing example's inputs, outputs, or metadata."""
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json")
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger)
 
     if not any([inputs, outputs, metadata, split]):
         raise click.UsageError(
@@ -254,27 +276,27 @@ def update_example(ctx, example_id, inputs, outputs, metadata, split):
         split=normalize_split(split),
     )
 
-    if ctx.obj.get("json"):
-        click.echo(json_dumps(result))
-    else:
-        logger.success(f"Updated example {example_id}")
+    emit_action_result(
+        ctx,
+        logger,
+        payload=result,
+        success_message=f"Updated example {example_id}",
+    )
 
 
 @examples.command("delete")
 @click.argument("example_ids", nargs=-1, required=True)
-@click.option("--confirm", is_flag=True, help="Skip confirmation prompt.")
+@confirm_option()
 @click.pass_context
 def delete_examples(ctx, example_ids, confirm):
     """Delete one or more examples by ID."""
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json")
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger)
 
-    if not confirm:
-        count = len(example_ids)
-        click.confirm(
-            f"Are you sure you want to delete {count} example(s)?", abort=True
-        )
+    require_confirmation(
+        confirm,
+        f"Are you sure you want to delete {len(example_ids)} example(s)?",
+    )
 
     logger.debug(f"Deleting {len(example_ids)} example(s)")
 
@@ -291,7 +313,7 @@ def delete_examples(ctx, example_ids, confirm):
         except (LangSmithNotFoundError, LangSmithError) as e:
             errors.append({"id": eid, "error": str(e)})
 
-    if ctx.obj.get("json"):
+    if is_json_context(ctx):
         click.echo(
             json_dumps({"status": "success", "deleted": deleted, "errors": errors})
         )
@@ -310,28 +332,24 @@ def delete_examples(ctx, example_ids, confirm):
 def example_from_run(ctx, run_id, dataset):
     """Create an example from a run's inputs/outputs."""
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json")
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger)
 
     logger.debug(f"Creating example from run {run_id} in dataset {dataset}")
 
     client = get_or_create_client(ctx)
 
-    from langsmith.utils import LangSmithNotFoundError
-
     # Read the run first
-    try:
+    with not_found_as_click_exception("Run", run_id):
         run = client.read_run(run_id)
-    except LangSmithNotFoundError:
-        raise click.ClickException(f"Run '{run_id}' not found.")
 
     # Create example from the run
     example = client.create_example_from_run(run, dataset_name=dataset)
 
-    if ctx.obj.get("json"):
-        data = safe_model_dump(example)
-        click.echo(json_dumps(data))
-    else:
-        logger.success(
+    emit_action_result(
+        ctx,
+        logger,
+        model=example,
+        success_message=(
             f"Created example (ID: {example.id}) from run {run_id} in dataset '{dataset}'"
-        )
+        ),
+    )

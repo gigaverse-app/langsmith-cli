@@ -1,16 +1,19 @@
+from __future__ import annotations
+
 import os
+from typing import TYPE_CHECKING, Any, TypedDict
 
 import click
-import langsmith
-from langsmith.schemas import Dataset
-from rich.console import Console
-from rich.table import Table
 from langsmith_cli.utils import (
+    ConsoleProtocol,
+    LazyConsole,
     add_name_filter_options,
     apply_exclude_filter,
     apply_name_filters,
     configure_logger_streams,
+    confirm_option,
     count_option,
+    emit_action_result,
     exclude_option,
     fields_option,
     filter_fields,
@@ -19,17 +22,53 @@ from langsmith_cli.utils import (
     sort_by_option,
     sort_items,
     parse_fields_option,
-    json_dumps,
     output_option,
     output_single_item,
     parse_comma_separated_list,
     parse_json_string,
+    render_detail_fields,
     render_output,
-    safe_model_dump,
-    write_output_to_file,
+    require_confirmation,
 )
 
-console = Console()
+if TYPE_CHECKING:
+    from langsmith import Client
+    from langsmith.schemas import Dataset
+
+console = LazyConsole()
+
+
+class DatasetPushRow(TypedDict):
+    """Validated JSONL row for datasets push.
+
+    Both ``inputs`` and ``outputs`` are populated by the validator;
+    ``outputs`` may be ``None`` if the source row omitted it.
+    """
+
+    inputs: dict[str, Any]
+    outputs: dict[str, Any] | None
+
+
+def _validate_dataset_push_row(raw_row: Any, line_number: int) -> DatasetPushRow:
+    if not isinstance(raw_row, dict):
+        raise click.ClickException(
+            f"{line_number}: expected a JSON object with 'inputs' and optional 'outputs'."
+        )
+    if "inputs" not in raw_row:
+        raise click.ClickException(f"{line_number}: missing required field 'inputs'.")
+    inputs = raw_row["inputs"]
+    if not isinstance(inputs, dict):
+        raise click.ClickException(f"{line_number}: field 'inputs' must be an object.")
+
+    outputs: dict[str, Any] | None = None
+    if "outputs" in raw_row:
+        raw_outputs = raw_row["outputs"]
+        if raw_outputs is not None and not isinstance(raw_outputs, dict):
+            raise click.ClickException(
+                f"{line_number}: field 'outputs' must be an object or null."
+            )
+        outputs = raw_outputs
+    return DatasetPushRow(inputs=inputs, outputs=outputs)
 
 
 @click.group()
@@ -47,6 +86,12 @@ def datasets():
 @click.option("--metadata", help="Filter by metadata (JSON string).")
 @add_name_filter_options
 @sort_by_option(fields="name, created_at, example_count")
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["table", "json", "csv", "yaml"]),
+    help="Output format (default: table, or json if --json flag used).",
+)
 @exclude_option()
 @fields_option()
 @count_option()
@@ -63,6 +108,7 @@ def list_datasets(
     name_pattern,
     name_regex,
     sort_by,
+    output_format,
     exclude,
     fields,
     count,
@@ -70,7 +116,9 @@ def list_datasets(
 ):
     """List all available datasets."""
     logger = ctx.obj["logger"]
-    configure_logger_streams(ctx, logger, output=output, fields=fields)
+    configure_logger_streams(
+        ctx, logger, output=output, output_format=output_format, fields=fields
+    )
 
     logger.debug(
         f"Listing datasets: limit={limit}, data_type={data_type}, "
@@ -112,16 +160,20 @@ def list_datasets(
 
     # Client-side sorting
     if sort_by:
-        datasets_list = sort_items(datasets_list, sort_by)
-
-    # Handle file output - short circuit if writing to file
-    if output:
-        data = filter_fields(datasets_list, fields)
-        write_output_to_file(data, output, console, format_type="jsonl")
-        return
+        datasets_list = sort_items(
+            datasets_list,
+            sort_by,
+            {
+                "name": lambda d: d.name,
+                "created_at": lambda d: d.created_at,
+                "example_count": lambda d: d.example_count,
+            },
+        )
 
     # Define table builder function
     def build_datasets_table(datasets):
+        from rich.table import Table
+
         table = Table(title="Datasets")
         table.add_column("Name", style="cyan")
         table.add_column("ID", style="dim")
@@ -132,14 +184,16 @@ def list_datasets(
 
     include_fields = parse_fields_option(fields)
 
-    # Unified output rendering
+    # Unified output rendering (handles --json, --format, --output, --count uniformly)
     render_output(
         datasets_list,
         build_datasets_table,
         ctx,
         include_fields=include_fields,
         empty_message="No datasets found",
+        output_format=output_format,
         count_flag=count,
+        output_path=output,
     )
 
 
@@ -160,13 +214,16 @@ def get_dataset(ctx, dataset_id, fields, output):
 
     data = filter_fields(dataset, fields)
 
-    def render_dataset_details(data: dict, console: object) -> None:
-        from rich.console import Console as RichConsole
-
-        assert isinstance(console, RichConsole)
-        console.print(f"[bold]Name:[/bold] {data.get('name')}")
-        console.print(f"[bold]ID:[/bold] {data.get('id')}")
-        console.print(f"[bold]Description:[/bold] {data.get('description')}")
+    def render_dataset_details(data: dict, console: ConsoleProtocol) -> None:
+        render_detail_fields(
+            data,
+            console,
+            [
+                ("name", "Name"),
+                ("id", "ID"),
+                ("description", "Description"),
+            ],
+        )
 
     output_single_item(
         ctx, data, console, output=output, render_fn=render_dataset_details
@@ -189,8 +246,7 @@ def create_dataset(ctx, name, description, dataset_type):
     from langsmith.schemas import DataType
 
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json")
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger)
 
     logger.debug(f"Creating dataset: name={name}, type={dataset_type}")
 
@@ -203,12 +259,12 @@ def create_dataset(ctx, name, description, dataset_type):
         dataset_name=name, description=description, data_type=data_type_enum
     )
 
-    if ctx.obj.get("json"):
-        data = safe_model_dump(dataset)
-        click.echo(json_dumps(data))
-        return
-
-    logger.success(f"Created dataset {dataset.name} (ID: {dataset.id})")
+    emit_action_result(
+        ctx,
+        logger,
+        model=dataset,
+        success_message=f"Created dataset {dataset.name} (ID: {dataset.id})",
+    )
 
 
 @datasets.command("push")
@@ -220,8 +276,7 @@ def push_dataset(ctx, file_path, dataset):
     import json
 
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json")
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger)
 
     logger.debug(f"Pushing dataset from file: {file_path}")
 
@@ -239,37 +294,40 @@ def push_dataset(ctx, file_path, dataset):
         logger.warning(f"Dataset '{dataset}' not found. Creating it...")
         client.create_dataset(dataset_name=dataset)
 
-    examples = []
+    examples: list[DatasetPushRow] = []
     with open(file_path, "r", encoding="utf-8") as f:
-        for line in f:
-            if line.strip():
-                examples.append(json.loads(line))
+        for line_number, line in enumerate(f, start=1):
+            if not line.strip():
+                continue
+            try:
+                raw_row = json.loads(line)
+            except json.JSONDecodeError as e:
+                raise click.ClickException(
+                    f"{line_number}: invalid JSON: {e.msg}."
+                ) from e
+            examples.append(_validate_dataset_push_row(raw_row, line_number))
 
     # Expecting examples in [{"inputs": {...}, "outputs": {...}}, ...] format
     client.create_examples(
-        inputs=[e.get("inputs", {}) for e in examples],
-        outputs=[e.get("outputs") for e in examples],
+        inputs=[e["inputs"] for e in examples],
+        outputs=[e["outputs"] for e in examples],
         dataset_name=dataset,
     )
 
-    if ctx.obj.get("json"):
-        click.echo(
-            json_dumps(
-                {
-                    "status": "success",
-                    "dataset": dataset,
-                    "examples_count": len(examples),
-                }
-            )
-        )
-    else:
-        logger.success(
-            f"Successfully pushed {len(examples)} examples to dataset '{dataset}'"
-        )
+    emit_action_result(
+        ctx,
+        logger,
+        payload={
+            "status": "success",
+            "dataset": dataset,
+            "examples_count": len(examples),
+        },
+        success_message=f"Successfully pushed {len(examples)} examples to dataset '{dataset}'",
+    )
 
 
 def resolve_dataset(
-    client: langsmith.Client,
+    client: Client,
     name_or_id: str,
 ) -> Dataset:
     """Resolve a dataset by name or UUID, with smart UUID auto-detection."""
@@ -283,18 +341,16 @@ def resolve_dataset(
 
 @datasets.command("delete")
 @click.argument("name_or_id")
-@click.option("--confirm", is_flag=True, help="Skip confirmation prompt.")
+@confirm_option()
 @click.pass_context
 def delete_dataset(ctx, name_or_id, confirm):
     """Delete a dataset by name or ID."""
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json")
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger)
 
-    if not confirm:
-        click.confirm(
-            f"Are you sure you want to delete dataset '{name_or_id}'?", abort=True
-        )
+    require_confirmation(
+        confirm, f"Are you sure you want to delete dataset '{name_or_id}'?"
+    )
 
     logger.debug(f"Deleting dataset: {name_or_id}")
 
@@ -304,7 +360,9 @@ def delete_dataset(ctx, name_or_id, confirm):
     dataset = resolve_dataset(client, name_or_id)
     client.delete_dataset(dataset_id=str(dataset.id))
 
-    if ctx.obj.get("json"):
-        click.echo(json_dumps({"status": "success", "name": dataset.name}))
-    else:
-        logger.success(f"Deleted dataset '{dataset.name}'")
+    emit_action_result(
+        ctx,
+        logger,
+        payload={"status": "success", "name": dataset.name},
+        success_message=f"Deleted dataset '{dataset.name}'",
+    )

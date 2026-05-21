@@ -1,16 +1,24 @@
 """Usage analysis command for runs."""
 
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass
 from datetime import datetime as _datetime
-from typing import Any
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any, TypedDict
 
 import click
-from langsmith.schemas import Run
-from pydantic import BaseModel
-from rich.table import Table
 
 from langsmith_cli.commands.runs._group import console, runs
 from langsmith_cli.time_parsing import ensure_aware_datetime
 from langsmith_cli.output import json_dumps
+from langsmith_cli.run_helpers import (
+    mapping_string_value,
+    run_extra_metadata,
+    run_inputs_mapping,
+    run_invocation_params,
+    run_metadata_mapping,
+)
 from langsmith_cli.utils import (
     add_grep_options,
     add_metadata_filter_options,
@@ -20,18 +28,27 @@ from langsmith_cli.utils import (
     build_metadata_fql_filters,
     build_tag_fql_filters,
     build_time_fql_filters,
+    collect_runs_streaming,
     combine_fql_filters,
+    configure_logger_streams,
     determine_output_format,
     filter_runs_by_tags,
+    get_full_model_name,
     get_or_create_client,
+    is_json_context,
     output_formatted_data,
     output_option,
     resolve_project_filters,
     write_output_to_file,
 )
 
+if TYPE_CHECKING:
+    from langsmith.schemas import Run
+    from langsmith_cli.cli_logging import CLILogger
 
-class UsageBucket(BaseModel):
+
+@dataclass
+class UsageBucket:
     """Accumulated token/cost metrics for a single time+group+breakdown bucket."""
 
     total_tokens: int = 0
@@ -43,31 +60,27 @@ class UsageBucket(BaseModel):
     run_count: int = 0
 
 
-def _get_model_name(run: Run) -> str:
-    """Extract model name from a run, checking multiple locations."""
-    extra = run.extra or {}
-    metadata = extra.get("metadata", {}) or {}
-    model = metadata.get("ls_model_name")
-    if model:
-        return str(model)
-    invocation = extra.get("invocation_params", {}) or {}
-    model = invocation.get("model") or invocation.get("model_name")
-    if model:
-        return str(model)
-    return "unknown"
+class UsagePrice(TypedDict):
+    """Pricing row loaded from a user-provided YAML file."""
+
+    input_per_million: float
+    output_per_million: float
 
 
-def _get_project_name(run: Run) -> str:
-    """Extract project name from a run, handling missing attribute when using select."""
-    name: str | None = getattr(run, "session_name", None)
-    return name if name else "unknown"
+PricingTable = dict[str, UsagePrice]
+
+
+# Backward-compat alias for tests that import this name from usage_cmd.
+# The real implementation lives in run_helpers.get_full_model_name so
+# pricing and usage stay in sync.
+_get_model_name = get_full_model_name
 
 
 def _get_gateway(run: Run) -> str:
     """Extract gateway/API provider from ls_provider metadata."""
-    extra = run.extra or {}
-    metadata = extra.get("metadata", {}) or {}
-    return str(metadata.get("ls_provider", "unknown"))
+    metadata = run_extra_metadata(run)
+    provider = mapping_string_value(metadata, "ls_provider")
+    return provider or "unknown"
 
 
 def _get_service_tier(run: Run) -> str:
@@ -77,11 +90,10 @@ def _get_service_tier(run: Run) -> str:
     Known values: 'priority' (~2x cost), 'default' (1x), 'flex' (~0.5x).
     Returns 'unknown' when not set.
     """
-    extra = run.extra or {}
-    invocation = extra.get("invocation_params", {}) or {}
-    tier = invocation.get("service_tier")
+    invocation = run_invocation_params(run)
+    tier = mapping_string_value(invocation, "service_tier")
     if tier:
-        return str(tier)
+        return tier
     return "unknown"
 
 
@@ -118,7 +130,7 @@ def _get_provider(run: Run) -> str:
     return "unknown"
 
 
-def _load_pricing_file(path: str, logger: Any) -> dict[str, dict[str, float]]:
+def _load_pricing_file(path: str, logger: CLILogger) -> PricingTable:
     """Load model pricing from a YAML file.
 
     Expected format:
@@ -141,14 +153,24 @@ def _load_pricing_file(path: str, logger: Any) -> dict[str, dict[str, float]]:
             f"Pricing file must be a YAML dict, got {type(raw).__name__}"
         )
 
-    table: dict[str, dict[str, float]] = {}
+    table: PricingTable = {}
     for model_name, prices in raw.items():
-        if not isinstance(prices, dict):
+        if not isinstance(prices, Mapping):
             logger.warning(f"Skipping invalid pricing entry for {model_name}")
             continue
+        missing = [
+            key
+            for key in ("input_per_million", "output_per_million")
+            if key not in prices
+        ]
+        if missing:
+            missing_keys = ", ".join(missing)
+            raise click.ClickException(
+                f"Pricing entry for {model_name} is missing: {missing_keys}"
+            )
         table[str(model_name).lower()] = {
-            "input_per_million": float(prices.get("input_per_million", 0.0)),
-            "output_per_million": float(prices.get("output_per_million", 0.0)),
+            "input_per_million": float(prices["input_per_million"]),
+            "output_per_million": float(prices["output_per_million"]),
         }
 
     logger.info(f"Loaded pricing for {len(table)} models from {path}")
@@ -157,7 +179,7 @@ def _load_pricing_file(path: str, logger: Any) -> dict[str, dict[str, float]]:
 
 def _estimate_run_cost(
     run: Run,
-    pricing_table: dict[str, dict[str, float]],
+    pricing_table: PricingTable,
 ) -> tuple[float, float] | None:
     """Estimate prompt/completion cost using an external pricing table.
 
@@ -167,14 +189,16 @@ def _estimate_run_cost(
     model = _get_model_name(run).lower()
     tier = _get_service_tier(run)
     tier_key = f"{model}+{tier}" if tier != "unknown" else None
-    pricing = (pricing_table.get(tier_key) if tier_key else None) or pricing_table.get(
-        model
-    )
+    pricing = None
+    if tier_key and tier_key in pricing_table:
+        pricing = pricing_table[tier_key]
+    elif model in pricing_table:
+        pricing = pricing_table[model]
     if pricing is None:
         return None
 
-    input_per_m = pricing.get("input_per_million", 0.0)
-    output_per_m = pricing.get("output_per_million", 0.0)
+    input_per_m = pricing["input_per_million"]
+    output_per_m = pricing["output_per_million"]
     prompt_tokens = run.prompt_tokens or 0
     completion_tokens = run.completion_tokens or 0
 
@@ -192,32 +216,34 @@ def _extract_input_context(run: Run) -> dict[str, str]:
     import json as json_mod
 
     result: dict[str, str] = {}
-    inputs = run.inputs or {}
+    inputs = run_inputs_mapping(run)
 
     # Look for channel_info (common pattern: JSON string in inputs)
-    channel_info = inputs.get("channel_info", "")
+    channel_info = inputs["channel_info"] if "channel_info" in inputs else ""
     if isinstance(channel_info, str) and channel_info.strip().startswith("{"):
         try:
             parsed = json_mod.loads(channel_info)
-            if isinstance(parsed, dict):
+            if isinstance(parsed, Mapping):
                 for key in ("community_name", "channel_id", "channel_name"):
-                    val = parsed.get(key)
+                    val = parsed[key] if key in parsed else None
                     if val:
                         result[key] = str(val)
         except (json_mod.JSONDecodeError, ValueError):
             pass
-    elif isinstance(channel_info, dict):
+    elif isinstance(channel_info, Mapping):
         for key in ("community_name", "channel_id", "channel_name"):
-            val = channel_info.get(key)
+            val = channel_info[key] if key in channel_info else None
             if val:
                 result[key] = str(val)
 
     return result
 
 
-def _emit_empty_usage_json(output_format: str | None, ctx: Any, interval: str) -> None:
+def _emit_empty_usage_json(
+    output_format: str | None, ctx: click.Context, interval: str
+) -> None:
     """Emit an empty usage JSON summary when no data matches filters."""
-    format_type = determine_output_format(output_format, ctx.obj.get("json"))
+    format_type = determine_output_format(output_format, is_json_context(ctx))
     if format_type == "table":
         return
     empty_data: dict[str, Any] = {
@@ -389,29 +415,26 @@ def usage_runs(
     Only counts run_type="llm" runs with ls_model_name set to avoid
     double-counting tokens from parent chain runs.
 
+    \b
     Examples:
         # Token usage per hour across all prd/* projects
         langsmith-cli runs usage --project-name-pattern "prd/*" --last 7d
-
         # Per channel_id breakdown with model detail
         langsmith-cli runs usage \\
           --project-name-pattern "prd/*" \\
           --group-by metadata:channel_id \\
           --breakdown model \\
           --last 7d --active-only
-
         # Session analysis: filter by specific channel_id
         langsmith-cli runs usage \\
           --project-name-pattern "prd/*" \\
           --metadata channel_id=chat:MyRoom-abc123 \\
           --breakdown model --breakdown project
-
         # From cache (fast, offline)
         langsmith-cli runs usage \\
           --project-name-pattern "prd/*" \\
           --from-cache --group-by metadata:channel_id \\
           --breakdown model --active-only
-
         # JSON output for further processing
         langsmith-cli --json runs usage \\
           --project-name-pattern "prd/*" \\
@@ -424,8 +447,7 @@ def usage_runs(
     from langsmith_cli.commands.runs import extract_group_value, parse_grouping_field
 
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json") or output_format in ["csv", "yaml"]
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger, output_format=output_format)
 
     # Build filters: only LLM runs (to avoid double-counting from chains)
     time_filters = build_time_fql_filters(since=since, last=last, before=before)
@@ -464,7 +486,6 @@ def usage_runs(
             name_regex=project_name_regex,
         )
         project_names = pq.names if not pq.use_id else [f"id:{pq.project_id}"]
-
         # Parse time filters for client-side filtering
         from langsmith_cli.filters import parse_time_filter
 
@@ -475,7 +496,6 @@ def usage_runs(
         if result.has_failures:
             for src, err in result.failed_sources[:3]:
                 logger.warning(f"  {src}: {err}")
-
         # Build trace context map from all runs (for group-by/metadata propagation)
         # When LLM runs lack a metadata field, we can look it up from root/chain runs
         if group_by or metadata_filters:
@@ -484,11 +504,8 @@ def usage_runs(
                 if not tid:
                     continue
                 # Extract context from metadata
-                meta = {}
-                if run.extra and isinstance(run.extra, dict):
-                    meta = run.extra.get("metadata", {}) or {}
-                if run.metadata and isinstance(run.metadata, dict):
-                    meta.update(run.metadata)
+                meta: dict[str, object] = dict(run_extra_metadata(run))
+                meta.update(run_metadata_mapping(run))
                 # Extract context from inputs (e.g. channel_info JSON)
                 input_ctx = _extract_input_context(run)
                 # Merge (prefer root/chain data = runs with no parent)
@@ -499,7 +516,6 @@ def usage_runs(
                 for k, v in {**meta, **input_ctx}.items():
                     if v and (is_root or k not in trace_context[tid]):
                         trace_context[tid][k] = str(v)
-
         # Client-side filter: only LLM runs
         for run in result.items:
             if run.run_type != "llm":
@@ -509,11 +525,9 @@ def usage_runs(
             run_id = str(run.id)
             if run_id in result.item_source_map:
                 run_project_map[run_id] = result.item_source_map[run_id]
-
         # Apply tag filters client-side
         if tag:
             all_runs = filter_runs_by_tags(all_runs, tag)
-
         # Apply metadata filters client-side (check metadata, tags, and trace context)
         # Supports exact match, wildcards (*/?), and regex (/pattern/)
         for mf in metadata_filters:
@@ -540,14 +554,20 @@ def usage_runs(
                         # Fallback to trace context
                         tid = str(r.trace_id) if r.trace_id else None
                         if tid and _metadata_value_matches(
-                            trace_context.get(tid, {}).get(key), value
+                            trace_context[tid][key]
+                            if tid in trace_context and key in trace_context[tid]
+                            else None,
+                            value,
                         ):
                             filtered.append(r)
                 else:
                     # No tags — check trace context
                     tid = str(r.trace_id) if r.trace_id else None
                     if tid and _metadata_value_matches(
-                        trace_context.get(tid, {}).get(key), value
+                        trace_context[tid][key]
+                        if tid in trace_context and key in trace_context[tid]
+                        else None,
+                        value,
                     ):
                         filtered.append(r)
             all_runs = filtered
@@ -584,34 +604,28 @@ def usage_runs(
         if grep:
             select_fields.extend(["inputs", "outputs", "error"])
 
-        failed_projects: list[tuple[str, str]] = []
-        sources: list[tuple[str, dict[str, Any]]] = []
-        if pq.use_id:
-            sources = [(f"id:{pq.project_id}", {"project_id": pq.project_id})]
-        else:
-            sources = [(name, {"project_name": name}) for name in pq.names]
+        def _record_project(run: Run, source_label: str) -> None:
+            # Side-channel: keep an authoritative run.id → project map so
+            # later breakdowns by project don't have to fall back to the
+            # session_name attribute (which select=... strips off the Run).
+            run_project_map[str(run.id)] = source_label
 
-        for source_label, proj_kwargs in sources:
-            try:
-                runs_iter = client.list_runs(
-                    **proj_kwargs,
-                    filter=combined_filter,
-                    limit=None,
-                    select=select_fields,
-                )
-                collected = 0
-                for run in runs_iter:
-                    all_runs.append(run)
-                    run_project_map[str(run.id)] = source_label
-                    collected += 1
-                    if sample_size > 0 and collected >= sample_size:
-                        break
-            except Exception as e:
-                failed_projects.append((source_label, str(e)))
-
-        if failed_projects and len(all_runs) == 0:
+        stream_result = collect_runs_streaming(
+            client,
+            pq,
+            filter=combined_filter,
+            select=select_fields,
+            sample_size=sample_size,
+            on_run=_record_project,
+        )
+        all_runs = stream_result.items
+        # Match prior behavior: complain when any project failed and we got
+        # zero runs total (covers both "every project failed" and the more
+        # subtle "one project succeeded but returned nothing while another
+        # failed" case).
+        if stream_result.has_failures and not all_runs:
             logger.warning("All projects failed to fetch:")
-            for proj, error_msg in failed_projects[:3]:
+            for proj, error_msg in stream_result.failed_sources[:3]:
                 short = error_msg[:100] + "..." if len(error_msg) > 100 else error_msg
                 logger.warning(f"  {proj}: {short}")
             raise click.ClickException(
@@ -673,13 +687,12 @@ def usage_runs(
     buckets: dict[tuple[str, ...], UsageBucket] = defaultdict(UsageBucket)
 
     # Load external pricing table if provided
-    pricing_table: dict[str, dict[str, float]] = {}
+    pricing_table: PricingTable = {}
     if apply_pricing:
         pricing_table = _load_pricing_file(apply_pricing, logger)
 
     for run in model_runs:
         time_key = _bucket_key(run)
-
         # Group value (with trace context fallback for cached runs)
         group_val = "all"
         if group_type and group_field:
@@ -688,18 +701,21 @@ def usage_runs(
                 # Fallback: look up from trace context (root/chain runs)
                 tid = str(run.trace_id) if run.trace_id else None
                 if tid and tid in trace_context:
-                    extracted = trace_context[tid].get(group_field)
+                    trace_fields = trace_context[tid]
+                    extracted = (
+                        trace_fields[group_field]
+                        if group_field in trace_fields
+                        else None
+                    )
             group_val = extracted or "ungrouped"
-
         # Breakdown values
         breakdown_vals: list[str] = []
         for dim in breakdown:
             if dim == "model":
                 breakdown_vals.append(_get_model_name(run))
             elif dim == "project":
-                breakdown_vals.append(
-                    run_project_map.get(str(run.id), _get_project_name(run))
-                )
+                run_id = str(run.id)
+                breakdown_vals.append(run_project_map[run_id])
             elif dim == "provider":
                 breakdown_vals.append(_get_provider(run))
             elif dim == "gateway":
@@ -717,7 +733,6 @@ def usage_runs(
         run_total = float(run.total_cost or 0.0)
         run_prompt = float(run.prompt_cost or 0.0)
         run_completion = float(run.completion_cost or 0.0)
-
         # Estimate costs for runs with tokens but no pricing from LangSmith
         if pricing_table and run_total == 0.0 and (run.total_tokens or 0) > 0:
             estimated = _estimate_run_cost(run, pricing_table)
@@ -741,7 +756,7 @@ def usage_runs(
         for i, dim in enumerate(breakdown):
             row[dim] = key[2 + i]
 
-        row.update(metrics.model_dump())
+        row.update(asdict(metrics))
         results.append(row)
 
     # Sort by time, then group
@@ -756,7 +771,37 @@ def usage_runs(
         _emit_empty_usage_json(output_format, ctx, interval)
         return
 
-    # Compute summary stats
+    summary = _summarize_usage(results, interval)
+
+    # Determine output format
+    format_type = determine_output_format(output_format, is_json_context(ctx))
+
+    # Handle file output — write results to file and return
+    if output:
+        file_format = output_format if output_format is not None else "jsonl"
+        write_output_to_file(results, output, console, format_type=file_format)
+        return
+
+    if format_type != "table":
+        if format_type in ("csv", "yaml"):
+            # Flat formats only get the per-bucket rows; the summary doesn't
+            # fit a tabular layout cleanly.
+            output_formatted_data(results, format_type)
+        else:
+            click.echo(json_dumps({"summary": summary, "buckets": results}))
+        return
+
+    _print_usage_summary(summary, group_by=group_by, group_field=group_field)
+    console.print(
+        _build_usage_table(results, interval, group_by, group_field, breakdown)
+    )
+
+
+def _summarize_usage(results: list[dict[str, Any]], interval: str) -> dict[str, Any]:
+    """Roll per-bucket rows up into the summary block emitted in JSON mode and
+    rendered above the human-mode table. Pure data — no I/O."""
+    from collections import defaultdict
+
     unique_groups = {r["group"] for r in results}
     unique_times = {r["time"] for r in results}
     total_tokens_all = sum(r["total_tokens"] for r in results)
@@ -764,7 +809,6 @@ def usage_runs(
     prompt_cost_all = sum(r["prompt_cost"] for r in results)
     completion_cost_all = sum(r["completion_cost"] for r in results)
 
-    # Concurrent groups per time bucket
     groups_per_bucket: dict[str, set[str]] = defaultdict(set)
     for r in results:
         groups_per_bucket[r["time"]].add(r["group"])
@@ -777,52 +821,57 @@ def usage_runs(
         else 0
     )
 
-    # Determine output format
-    format_type = determine_output_format(output_format, ctx.obj.get("json"))
+    return {
+        "total_tokens": total_tokens_all,
+        "total_cost": round(total_cost_all, 6),
+        "prompt_cost": round(prompt_cost_all, 6),
+        "completion_cost": round(completion_cost_all, 6),
+        "active_buckets": len(unique_times),
+        "unique_groups": len(unique_groups),
+        "max_concurrent_groups": max_concurrent,
+        "avg_concurrent_groups": round(avg_concurrent, 1),
+        "interval": interval,
+        "run_count": sum(r["run_count"] for r in results),
+    }
 
-    # Handle file output — write results to file and return
-    if output:
-        write_output_to_file(results, output, console, format_type="jsonl")
-        return
 
-    if format_type != "table":
-        # CSV/YAML need a flat list; JSON gets the full nested structure
-        if format_type in ("csv", "yaml"):
-            output_formatted_data(results, format_type)
-        else:
-            output_data: dict[str, Any] = {
-                "summary": {
-                    "total_tokens": total_tokens_all,
-                    "total_cost": round(total_cost_all, 6),
-                    "prompt_cost": round(prompt_cost_all, 6),
-                    "completion_cost": round(completion_cost_all, 6),
-                    "active_buckets": len(unique_times),
-                    "unique_groups": len(unique_groups),
-                    "max_concurrent_groups": max_concurrent,
-                    "avg_concurrent_groups": round(avg_concurrent, 1),
-                    "interval": interval,
-                    "run_count": sum(r["run_count"] for r in results),
-                },
-                "buckets": results,
-            }
-            click.echo(json_dumps(output_data))
-        return
-
-    # Print summary
+def _print_usage_summary(
+    summary: dict[str, Any], *, group_by: str | None, group_field: str | None
+) -> None:
+    """Print the human-mode summary block above the usage table."""
     group_label = group_field or "group"
     console.print("\n[bold]Token Usage Summary[/bold]")
-    console.print(f"  Total tokens: [cyan]{total_tokens_all:,}[/cyan]")
-    console.print(f"  Total cost: [cyan]${total_cost_all:.4f}[/cyan]")
-    console.print(f"  Active {interval}s: [cyan]{len(unique_times)}[/cyan]")
+    console.print(f"  Total tokens: [cyan]{summary['total_tokens']:,}[/cyan]")
+    console.print(f"  Total cost: [cyan]${summary['total_cost']:.4f}[/cyan]")
+    console.print(
+        f"  Active {summary['interval']}s: [cyan]{summary['active_buckets']}[/cyan]"
+    )
     if group_by:
-        console.print(f"  Unique {group_label}s: [cyan]{len(unique_groups)}[/cyan]")
-        console.print(f"  Max concurrent {group_label}s: [cyan]{max_concurrent}[/cyan]")
         console.print(
-            f"  Avg concurrent {group_label}s: [cyan]{avg_concurrent:.1f}[/cyan]"
+            f"  Unique {group_label}s: [cyan]{summary['unique_groups']}[/cyan]"
+        )
+        console.print(
+            f"  Max concurrent {group_label}s: "
+            f"[cyan]{summary['max_concurrent_groups']}[/cyan]"
+        )
+        console.print(
+            f"  Avg concurrent {group_label}s: "
+            f"[cyan]{summary['avg_concurrent_groups']:.1f}[/cyan]"
         )
     console.print()
 
-    # Build table
+
+def _build_usage_table(
+    results: list[dict[str, Any]],
+    interval: str,
+    group_by: str | None,
+    group_field: str | None,
+    breakdown: tuple[str, ...],
+) -> Any:
+    """Render usage rows as a Rich Table. View layer only — no console.print."""
+    from rich.table import Table
+
+    group_label = group_field or "group"
     table = Table(title=f"Token Usage by {interval.title()}")
     table.add_column("Time", style="cyan")
     if group_by:
@@ -838,11 +887,11 @@ def usage_runs(
     table.add_column("Out $", justify="right")
 
     for r in results:
-        row_values = [r["time"]]
+        row_values: list[str] = [r["time"]]
         if group_by:
             row_values.append(str(r["group"]))
         for dim in breakdown:
-            row_values.append(str(r.get(dim, "")))
+            row_values.append(str(r[dim] if dim in r else ""))
         row_values.extend(
             [
                 str(r["run_count"]),
@@ -855,5 +904,4 @@ def usage_runs(
             ]
         )
         table.add_row(*row_values)
-
-    console.print(table)
+    return table

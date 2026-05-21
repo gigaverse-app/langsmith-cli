@@ -2,6 +2,7 @@
 
 import pytest
 import json
+from typing import Any
 from unittest.mock import MagicMock
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -40,6 +41,7 @@ from langsmith_cli.utils import (
     build_time_fql_filters,
     combine_fql_filters,
     parse_time_range,
+    resolve_root_scope,
     write_output_to_file,
 )
 from langsmith_cli.time_parsing import ensure_aware_datetime
@@ -167,18 +169,13 @@ class TestSortItems:
         assert result[2].value == 10
 
     def test_sort_unknown_field_warning(self):
-        """Test warning for unknown sort field."""
+        """Test fail-fast error for unknown sort field."""
         items = [MockItem(name="test")]
         sort_key_map = {"name": lambda x: x.name}
         console = MagicMock()
 
-        result = sort_items(items, "unknown_field", sort_key_map, console)
-
-        # Should return original list unchanged
-        assert result == items
-        # Should print warning
-        console.print.assert_called_once()
-        assert "Unknown sort field" in str(console.print.call_args)
+        with pytest.raises(click.BadParameter, match="Unknown sort field"):
+            sort_items(items, "unknown_field", sort_key_map, console)
 
     def test_sort_empty_list(self):
         """Test sorting empty list."""
@@ -190,22 +187,24 @@ class TestSortItems:
         assert result == []
 
     def test_sort_error_handling(self):
-        """Test error handling during sort."""
+        """Test typed sort failures become CLI errors."""
         items = [
             MockItem(name="test1"),
             MockItem(name=None),  # Will cause error in comparison
         ]
         # Key function that will raise error
-        sort_key_map = {"name": lambda x: x.name.lower()}
+        sort_key_map = {"name": lambda x: x.name}
         console = MagicMock()
 
-        result = sort_items(items, "name", sort_key_map, console)
+        with pytest.raises(click.ClickException, match="Could not sort"):
+            sort_items(items, "name", sort_key_map, console)
 
-        # Should return original list on error
-        assert result == items
-        # Should print warning
-        console.print.assert_called_once()
-        assert "Could not sort" in str(console.print.call_args)
+    def test_sort_requires_explicit_key_map(self):
+        """Test non-empty sort requests must define typed key maps."""
+        items = [MockItem(name="test")]
+
+        with pytest.raises(RuntimeError, match="explicit sort_key_map"):
+            sort_items(items, "name")
 
     def test_sort_no_sort_by(self):
         """Test that None or empty sort_by returns original list."""
@@ -610,26 +609,11 @@ class TestSafeModelDump:
             include={"name", "id"}, mode="json"
         )
 
-    def test_pydantic_v1_model(self):
-        """Test with Pydantic v1 model (has dict method)."""
-        mock_model = MagicMock()
-        mock_model.dict.return_value = {"name": "test", "id": "123"}
-        del mock_model.model_dump  # Simulate v1 model
-
-        result = safe_model_dump(mock_model)
-
-        assert result == {"name": "test", "id": "123"}
-
-    def test_pydantic_v1_model_with_include(self):
-        """Test with Pydantic v1 model with field selection."""
-        mock_model = MagicMock()
-        mock_model.dict.return_value = {"name": "test", "id": "123", "extra": "field"}
-        del mock_model.model_dump  # Simulate v1 model
-
-        result = safe_model_dump(mock_model, include={"name", "id"})
-
-        assert result == {"name": "test", "id": "123"}
-        assert "extra" not in result
+    def test_unknown_object_fails_fast(self):
+        """Unknown objects should not be silently coerced or treated as Pydantic v1."""
+        unknown: Any = object()
+        with pytest.raises(AttributeError):
+            safe_model_dump(unknown)
 
     def test_plain_dict(self):
         """Test with plain dictionary."""
@@ -980,9 +964,6 @@ class TestExtractModelName:
             (None, "-"),
             ({}, "-"),
             ({"invocation_params": {"other_param": "value"}}, "-"),
-            # Malformed cases
-            ({"invocation_params": "not-a-dict"}, "-"),
-            ({"metadata": "not-a-dict"}, "-"),
         ],
     )
     def test_extract_model_name_scenarios(self, extra, expected_result):
@@ -997,6 +978,26 @@ class TestExtractModelName:
 
         result = extract_model_name(run)
         assert result == expected_result
+
+    @pytest.mark.parametrize(
+        "extra,field_path",
+        [
+            ({"invocation_params": "not-a-dict"}, "run.extra.invocation_params"),
+            ({"metadata": "not-a-dict"}, "run.extra.metadata"),
+        ],
+    )
+    def test_extract_model_name_fails_fast_on_malformed_extra(self, extra, field_path):
+        """Malformed SDK payloads should surface as contract errors."""
+        run = Run(
+            id=UUID("12345678-1234-5678-1234-567812345678"),
+            name="test-run",
+            run_type="llm",
+            start_time=datetime.now(timezone.utc),
+            extra=extra,
+        )
+
+        with pytest.raises(TypeError, match=field_path):
+            extract_model_name(run)
 
     @pytest.mark.parametrize(
         "model_name,max_length,expected",
@@ -1372,7 +1373,7 @@ class TestWriteOutputToFile:
 
         console = Console()
 
-        with pytest.raises(click.Abort):
+        with pytest.raises(click.ClickException):
             write_output_to_file(
                 [{"id": "123"}],
                 "/nonexistent/path/output.jsonl",
@@ -1383,6 +1384,72 @@ class TestWriteOutputToFile:
         captured = capsys.readouterr()
         # Error message must NOT appear on stdout
         assert "Error" not in captured.out
+
+    def test_writes_single_item_json(self, tmp_path):
+        """Single-object output writes one JSON object."""
+        from rich.console import Console
+
+        output_path = tmp_path / "item.json"
+        write_output_to_file(
+            {"id": "123", "name": "test"},
+            str(output_path),
+            Console(),
+            format_type="json",
+        )
+
+        assert json.loads(output_path.read_text()) == {"id": "123", "name": "test"}
+
+    def test_writes_yaml_and_csv_formats(self, tmp_path):
+        """Explicit file formats are honored for list output."""
+        from rich.console import Console
+
+        data = [{"id": "123", "name": "alpha"}]
+        yaml_path = tmp_path / "items.yaml"
+        csv_path = tmp_path / "items.csv"
+
+        write_output_to_file(data, str(yaml_path), Console(), format_type="yaml")
+        write_output_to_file(data, str(csv_path), Console(), format_type="csv")
+
+        assert "name: alpha" in yaml_path.read_text()
+        assert "id,name" in csv_path.read_text()
+        assert "123,alpha" in csv_path.read_text()
+
+    def test_unsupported_file_format_raises_click_exception(self, tmp_path):
+        """Unsupported file formats fail through the standard Click error path."""
+        from rich.console import Console
+
+        with pytest.raises(click.ClickException):
+            write_output_to_file(
+                [{"id": "123"}],
+                str(tmp_path / "items.bad"),
+                Console(),
+                format_type="bad",
+            )
+
+
+class TestOutputSingleItem:
+    """Tests for output_single_item default rendering."""
+
+    def test_human_default_pretty_prints_json(self, runner):
+        """Without JSON/output/render_fn, single items render as JSON syntax."""
+        from rich.console import Console
+        from langsmith_cli.output import output_single_item
+
+        @click.command()
+        @click.pass_context
+        def command(ctx):
+            ctx.obj = {"json": False}
+            output_single_item(
+                ctx,
+                {"id": "123", "name": "pretty"},
+                Console(),
+            )
+
+        result = runner.invoke(command)
+
+        assert result.exit_code == 0
+        assert '"name"' in result.output
+        assert '"pretty"' in result.output
 
 
 class TestLooksLikeUuid:
@@ -1526,12 +1593,22 @@ class TestGetProjectSuggestions:
 
     def test_api_failure_returns_empty(self):
         """INVARIANT: If listing projects fails, returns empty (no error)."""
+        from langsmith.utils import LangSmithError
+
         mock_client = MagicMock()
-        mock_client.list_projects.side_effect = Exception("API error")
+        mock_client.list_projects.side_effect = LangSmithError("API error")
 
         suggestions = get_project_suggestions(mock_client, "anything")
 
         assert suggestions == []
+
+    def test_programmer_error_propagates(self):
+        """INVARIANT: Unexpected local errors are not swallowed as API failures."""
+        mock_client = MagicMock()
+        mock_client.list_projects.side_effect = RuntimeError("bug")
+
+        with pytest.raises(RuntimeError, match="bug"):
+            get_project_suggestions(mock_client, "anything")
 
     def test_max_suggestions_respected(self):
         """INVARIANT: At most max_suggestions results returned."""
@@ -1863,6 +1940,7 @@ class TestFetchWithRateLimitRetry:
 
     def test_retries_on_429_and_succeeds(self):
         from unittest.mock import patch
+        from langsmith.utils import LangSmithRateLimitError
         from langsmith_cli.project_resolution import _fetch_with_rate_limit_retry
 
         items = [create_run(id_str="auto")]
@@ -1872,7 +1950,7 @@ class TestFetchWithRateLimitRetry:
             nonlocal call_count
             call_count += 1
             if call_count < 3:
-                raise Exception("429 Client Error: Too Many Requests")
+                raise LangSmithRateLimitError("Too Many Requests")
             return iter(items)
 
         with patch("langsmith_cli.project_resolution.time.sleep"):
@@ -1883,14 +1961,40 @@ class TestFetchWithRateLimitRetry:
 
     def test_raises_after_max_retries_exceeded(self):
         from unittest.mock import patch
+        from langsmith.utils import LangSmithRateLimitError
         from langsmith_cli.project_resolution import _fetch_with_rate_limit_retry
 
         def always_rate_limited():
-            raise Exception("429 Client Error: Too Many Requests")
+            raise LangSmithRateLimitError("Too Many Requests")
 
         with patch("langsmith_cli.project_resolution.time.sleep"):
-            with pytest.raises(Exception, match="429"):
+            with pytest.raises(LangSmithRateLimitError, match="Too Many Requests"):
                 _fetch_with_rate_limit_retry(always_rate_limited, max_retries=2)
+
+    def test_retries_on_httpx_429(self):
+        from unittest.mock import patch
+        import httpx
+        from langsmith_cli.project_resolution import _fetch_with_rate_limit_retry
+
+        items = [create_run(id_str="auto")]
+        call_count = 0
+
+        def flaky_fetch():
+            nonlocal call_count
+            call_count += 1
+            if call_count < 2:
+                request = httpx.Request("GET", "https://api.smith.langchain.com")
+                response = httpx.Response(429, request=request)
+                raise httpx.HTTPStatusError(
+                    "rate limited", request=request, response=response
+                )
+            return iter(items)
+
+        with patch("langsmith_cli.project_resolution.time.sleep"):
+            result = _fetch_with_rate_limit_retry(flaky_fetch, max_retries=2)
+
+        assert result == items
+        assert call_count == 2
 
     def test_does_not_retry_non_rate_limit_errors(self):
         from unittest.mock import patch
@@ -1912,6 +2016,7 @@ class TestFetchWithRateLimitRetry:
 
     def test_exponential_backoff_doubles_delay(self):
         from unittest.mock import call, patch
+        from langsmith.utils import LangSmithRateLimitError
         from langsmith_cli.project_resolution import _fetch_with_rate_limit_retry
 
         items = [create_run(id_str="auto")]
@@ -1921,7 +2026,7 @@ class TestFetchWithRateLimitRetry:
             nonlocal call_count
             call_count += 1
             if call_count < 3:
-                raise Exception("Too Many Requests rate limit exceeded")
+                raise LangSmithRateLimitError("Too Many Requests")
             return iter(items)
 
         with patch("langsmith_cli.project_resolution.time.sleep") as mock_sleep:
@@ -2033,6 +2138,14 @@ class TestApplyMetadataFilter:
         result = list(apply_metadata_filter([r1, r2], ("channel_id=Gigaverse*",)))
         assert result == [r2]
 
+    def test_malformed_metadata_fails_fast(self):
+        from langsmith_cli.utils import apply_metadata_filter
+
+        run = create_run(id_str="auto", name="bad-meta", extra={"metadata": "bad"})
+
+        with pytest.raises(TypeError, match="run.extra.metadata"):
+            list(apply_metadata_filter([run], ("channel_id=Gigaverse*",)))
+
 
 class TestEnsureAwareDatetime:
     """INVARIANT: ensure_aware_datetime always returns None or a timezone-aware datetime."""
@@ -2062,3 +2175,37 @@ class TestEnsureAwareDatetime:
         b = ensure_aware_datetime(aware)
         assert a is not None and b is not None
         assert a < b  # must not raise TypeError
+
+
+class TestResolveRootScope:
+    """Tests for shared --roots/--all-runs/--is-root resolution."""
+
+    @pytest.mark.parametrize(
+        "roots,all_runs,is_root,expected",
+        [
+            (False, False, None, None),
+            (True, False, None, True),
+            (False, True, None, False),
+            (False, False, True, True),
+            (False, False, False, False),
+            (True, False, True, True),
+            (False, True, False, False),
+        ],
+    )
+    def test_resolves_consistent_scope(self, roots, all_runs, is_root, expected):
+        assert (
+            resolve_root_scope(roots=roots, all_runs=all_runs, is_root=is_root)
+            is expected
+        )
+
+    @pytest.mark.parametrize(
+        "roots,all_runs,is_root,message",
+        [
+            (True, True, None, "Use only one of --roots or --all-runs"),
+            (True, False, False, "Use only one of --roots"),
+            (False, True, True, "Use only one of --all-runs"),
+        ],
+    )
+    def test_rejects_conflicting_scope(self, roots, all_runs, is_root, message):
+        with pytest.raises(click.UsageError, match=message):
+            resolve_root_scope(roots=roots, all_runs=all_runs, is_root=is_root)

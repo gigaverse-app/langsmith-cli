@@ -1,35 +1,45 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 import click
-import langsmith
-from langsmith.schemas import TracerSessionResult
-from rich.console import Console
-from rich.table import Table
 from langsmith_cli.utils import (
+    ConsoleProtocol,
+    LazyConsole,
     resolve_by_name_or_id,
     sort_items,
     apply_regex_filter,
     apply_wildcard_filter,
     apply_exclude_filter,
     apply_client_side_limit,
+    configure_logger_streams,
+    confirm_option,
+    emit_action_result,
     extract_wildcard_search_term,
     extract_regex_search_term,
     fields_option,
     filter_fields,
+    is_json_context,
     parse_fields_option,
     count_option,
     exclude_option,
     output_option,
     output_single_item,
+    render_detail_fields,
     render_output,
+    require_confirmation,
     get_or_create_client,
-    write_output_to_file,
-    json_dumps,
 )
 
-console = Console()
+if TYPE_CHECKING:
+    from langsmith import Client
+    from langsmith.schemas import TracerSessionResult
+
+console = LazyConsole()
 
 
 def resolve_project(
-    client: langsmith.Client,
+    client: Client,
     name_or_id: str,
     *,
     include_stats: bool = False,
@@ -105,8 +115,14 @@ def list_projects(
 ):
     """List all projects."""
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json") or bool(output) or bool(fields)
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(
+        ctx,
+        logger,
+        output=output,
+        output_format=output_format,
+        count=count,
+        fields=fields,
+    )
 
     # When --count is used, default to unlimited (0) unless user explicitly set limit
     # Check if limit was explicitly provided by checking if it's not the default
@@ -170,7 +186,7 @@ def list_projects(
         ]
 
     # Client-side sorting for table output
-    if sort_by and not ctx.obj.get("json"):
+    if sort_by and not is_json_context(ctx):
         # Map sort field to project attribute
         sort_key_map = {
             "name": lambda p: (p.name or "").lower(),
@@ -190,15 +206,11 @@ def list_projects(
     # Track if we hit the limit
     hit_limit = effective_limit is not None and total_count > effective_limit
 
-    # Handle file output - short circuit if writing to file
-    if output:
-        data = filter_fields(projects_list, fields)
-        write_output_to_file(data, output, console, format_type="jsonl")
-        return
-
     # Define table builder function
     def build_projects_table(projects):
         from datetime import datetime, timezone
+        from rich.table import Table
+
         from langsmith_cli.time_parsing import ensure_aware_datetime
 
         table = Table(title="Projects")
@@ -261,10 +273,14 @@ def list_projects(
         empty_message="No projects found",
         output_format=output_format,
         count_flag=count,
+        output_path=output,
     )
 
+    if output:
+        return
+
     # Show message if we hit the limit (not in count mode or JSON mode)
-    if hit_limit and not count and not ctx.obj.get("json"):
+    if hit_limit and not count and not is_json_context(ctx):
         # Show the exact number we know
         logger.info(
             f"Showing {len(projects_list)} of {total_count} projects. "
@@ -281,21 +297,19 @@ def create_project(ctx, name, description):
     from langsmith.utils import LangSmithConflictError
 
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json")
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger)
 
     logger.debug(f"Creating project: name={name}")
 
     client = get_or_create_client(ctx)
     try:
         project = client.create_project(project_name=name, description=description)
-        if ctx.obj.get("json"):
-            # Use SDK's Pydantic model directly
-            data = project.model_dump(mode="json")
-            click.echo(json_dumps(data))
-            return
-
-        logger.success(f"Created project {project.name} (ID: {project.id})")
+        emit_action_result(
+            ctx,
+            logger,
+            model=project,
+            success_message=f"Created project {project.name} (ID: {project.id})",
+        )
     except LangSmithConflictError:
         # Project already exists - handle gracefully for idempotency
         logger.warning(f"Project {name} already exists.")
@@ -314,8 +328,7 @@ def create_project(ctx, name, description):
 def get_project(ctx, name_or_id, include_stats, fields, output):
     """Get details of a single project by name or ID."""
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json") or bool(fields) or bool(output)
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger, output=output, fields=fields)
 
     logger.debug(f"Fetching project: {name_or_id}")
 
@@ -324,20 +337,25 @@ def get_project(ctx, name_or_id, include_stats, fields, output):
 
     data = filter_fields(project, fields)
 
-    def render_project_details(data: dict, console: object) -> None:
-        from rich.console import Console as RichConsole
-
-        assert isinstance(console, RichConsole)
-        console.print(f"[bold]Project:[/bold] {data.get('name')}")
-        console.print(f"[bold]ID:[/bold] {data.get('id')}")
-        if data.get("description"):
-            console.print(f"[bold]Description:[/bold] {data.get('description')}")
-        if data.get("run_count") is not None:
-            console.print(f"[bold]Runs:[/bold] {data.get('run_count')}")
-        if data.get("error_rate") is not None:
+    def render_project_details(data: dict, console: ConsoleProtocol) -> None:
+        render_detail_fields(
+            data,
+            console,
+            [
+                ("name", "Project"),
+                ("id", "ID"),
+                ("description", "Description"),
+                ("run_count", "Runs"),
+            ],
+        )
+        if "error_rate" in data and data["error_rate"] is not None:
             rate = data["error_rate"]
             console.print(f"[bold]Error Rate:[/bold] {rate * 100:.1f}%")
-        if data.get("total_cost") is not None and float(data["total_cost"]) > 0:
+        if (
+            "total_cost" in data
+            and data["total_cost"] is not None
+            and float(data["total_cost"]) > 0
+        ):
             console.print(f"[bold]Cost:[/bold] ${float(data['total_cost']):.4f}")
 
     output_single_item(
@@ -353,8 +371,7 @@ def get_project(ctx, name_or_id, include_stats, fields, output):
 def update_project(ctx, name_or_id, new_name, description):
     """Update a project's name or description."""
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json")
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger)
 
     if not new_name and not description:
         raise click.UsageError("At least one of --name or --description is required.")
@@ -366,27 +383,27 @@ def update_project(ctx, name_or_id, new_name, description):
 
     updated = client.update_project(project.id, name=new_name, description=description)
 
-    if ctx.obj.get("json"):
-        click.echo(json_dumps(updated.model_dump(mode="json")))
-    else:
-        display_name = new_name or project.name
-        logger.success(f"Updated project '{display_name}' (ID: {project.id})")
+    display_name = new_name or project.name
+    emit_action_result(
+        ctx,
+        logger,
+        model=updated,
+        success_message=f"Updated project '{display_name}' (ID: {project.id})",
+    )
 
 
 @projects.command("delete")
 @click.argument("name_or_id")
-@click.option("--confirm", is_flag=True, help="Skip confirmation prompt.")
+@confirm_option()
 @click.pass_context
 def delete_project(ctx, name_or_id, confirm):
     """Delete a project."""
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json")
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger)
 
-    if not confirm:
-        click.confirm(
-            f"Are you sure you want to delete project '{name_or_id}'?", abort=True
-        )
+    require_confirmation(
+        confirm, f"Are you sure you want to delete project '{name_or_id}'?"
+    )
 
     logger.debug(f"Deleting project: {name_or_id}")
 
@@ -396,7 +413,9 @@ def delete_project(ctx, name_or_id, confirm):
     project = resolve_project(client, name_or_id)
     client.delete_project(project_id=str(project.id))
 
-    if ctx.obj.get("json"):
-        click.echo(json_dumps({"status": "success", "name": name_or_id}))
-    else:
-        logger.success(f"Deleted project '{name_or_id}'")
+    emit_action_result(
+        ctx,
+        logger,
+        payload={"status": "success", "name": name_or_id},
+        success_message=f"Deleted project '{name_or_id}'",
+    )
