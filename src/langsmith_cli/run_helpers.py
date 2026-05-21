@@ -3,13 +3,111 @@
 from __future__ import annotations
 
 import datetime
-from typing import Any, Protocol
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any, Protocol
 
-from langsmith.schemas import Run
+import click
 
-from langsmith_cli.output import json_dumps
-from langsmith_cli.time_parsing import build_time_fql_filters, combine_fql_filters
-from langsmith_cli.utils import build_tag_fql_filters, parse_duration_to_seconds
+from langsmith_cli.filtering import build_tag_fql_filters
+from langsmith_cli.output import json_dumps, render_detail_fields
+from langsmith_cli.time_parsing import (
+    build_time_fql_filters,
+    combine_fql_filters,
+    parse_duration_to_seconds,
+)
+
+if TYPE_CHECKING:
+    from langsmith.schemas import Run
+
+
+def _as_mapping(value: object, field_path: str) -> Mapping[str, object]:
+    """Validate a dynamic LangSmith payload field before reading from it."""
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise TypeError(
+            f"Expected {field_path} to be a mapping, got {type(value).__name__}"
+        )
+    return value
+
+
+def _nested_mapping(
+    parent: Mapping[str, object], key: str, field_path: str
+) -> Mapping[str, object]:
+    if key not in parent:
+        return {}
+    return _as_mapping(parent[key], f"{field_path}.{key}")
+
+
+def run_extra_mapping(run: Run) -> Mapping[str, object]:
+    """Return ``run.extra`` as a validated mapping."""
+    return _as_mapping(run.extra, "run.extra")
+
+
+def run_extra_metadata(run: Run) -> Mapping[str, object]:
+    """Return ``run.extra.metadata`` as a validated mapping."""
+    return _nested_mapping(run_extra_mapping(run), "metadata", "run.extra")
+
+
+def run_invocation_params(run: Run) -> Mapping[str, object]:
+    """Return ``run.extra.invocation_params`` as a validated mapping."""
+    return _nested_mapping(run_extra_mapping(run), "invocation_params", "run.extra")
+
+
+def run_metadata_mapping(run: Run) -> Mapping[str, object]:
+    """Return the SDK-level ``run.metadata`` as a validated mapping."""
+    return _as_mapping(run.metadata, "run.metadata")
+
+
+def run_inputs_mapping(run: Run) -> Mapping[str, object]:
+    """Return ``run.inputs`` as a validated mapping."""
+    return _as_mapping(run.inputs, "run.inputs")
+
+
+def mapping_string_value(mapping: Mapping[str, object], key: str) -> str | None:
+    """Read a dynamic mapping value and normalize present values to strings."""
+    if key not in mapping:
+        return None
+    value = mapping[key]
+    if value is None:
+        return None
+    return str(value)
+
+
+def resolve_root_scope(
+    *, roots: bool, all_runs: bool, is_root: bool | None
+) -> bool | None:
+    """Resolve the ``--roots`` / ``--all-runs`` / ``--is-root`` triple to a
+    single ``is_root: bool | None`` value, rejecting contradictory combinations.
+
+    Multiple commands (``runs list``, ``runs export``) expose all three flags
+    as ergonomic ways to express the same intent — keeping the resolution in
+    one place stops them from drifting (e.g. one enforcing the conflict check
+    and the other silently letting last-write-wins).
+
+    Args:
+        roots: True if ``--roots`` was passed (shorthand for ``--is-root true``).
+        all_runs: True if ``--all-runs`` was passed (shorthand for ``--is-root false``).
+        is_root: Explicit ``--is-root`` value, or ``None`` if not specified.
+
+    Returns:
+        The resolved value to forward to the SDK as ``is_root=``.
+
+    Raises:
+        click.UsageError: If the user passed contradictory flags.
+    """
+    if roots and all_runs:
+        raise click.UsageError("Use only one of --roots or --all-runs.")
+    if roots and is_root is False:
+        raise click.UsageError("Use only one of --roots or --is-root false.")
+    if all_runs and is_root is True:
+        raise click.UsageError("Use only one of --all-runs or --is-root true.")
+
+    if roots:
+        return True
+    if all_runs:
+        return False
+    return is_root
 
 
 class ConsoleProtocol(Protocol):
@@ -36,24 +134,48 @@ def extract_model_name(run: Run, max_length: int = 20) -> str:
     """
     model_name = "-"
 
-    if run.extra and isinstance(run.extra, dict):
-        # Try invocation_params first
-        if "invocation_params" in run.extra:
-            inv_params = run.extra["invocation_params"]
-            if isinstance(inv_params, dict) and "model_name" in inv_params:
-                model_name = inv_params["model_name"]
+    invocation = run_invocation_params(run)
+    if "model_name" in invocation:
+        model_name = str(invocation["model_name"])
 
-        # Try metadata as fallback
-        if model_name == "-" and "metadata" in run.extra:
-            metadata = run.extra["metadata"]
-            if isinstance(metadata, dict) and "ls_model_name" in metadata:
-                model_name = metadata["ls_model_name"]
+    if model_name == "-":
+        metadata = run_extra_metadata(run)
+        if "ls_model_name" in metadata:
+            model_name = str(metadata["ls_model_name"])
 
     # Truncate long model names
     if len(model_name) > max_length:
         model_name = model_name[: max_length - 3] + "..."
 
     return model_name
+
+
+def get_full_model_name(run: Run) -> str:
+    """Extract the full (untruncated) model name from a run.
+
+    Distinct from :func:`extract_model_name`, which truncates and returns
+    ``"-"`` for missing values (table-rendering semantics). Aggregation
+    callers (``runs usage``, ``runs pricing``) need the full name and the
+    sentinel ``"unknown"`` so they can skip non-LLM wrappers cleanly.
+
+    Lookup order:
+        1. ``extra.metadata.ls_model_name`` — the LangSmith-canonical field.
+        2. ``extra.invocation_params.model`` / ``model_name`` — provider raw.
+
+    Returns ``"unknown"`` when no model name is present (e.g. chain/tool runs).
+    """
+    metadata = run_extra_metadata(run)
+    model = metadata["ls_model_name"] if "ls_model_name" in metadata else None
+    if model:
+        return str(model)
+
+    invocation = run_invocation_params(run)
+    model = invocation["model"] if "model" in invocation else None
+    if model is None and "model_name" in invocation:
+        model = invocation["model_name"]
+    if model:
+        return str(model)
+    return "unknown"
 
 
 def format_token_count(tokens: int | None) -> str:
@@ -95,8 +217,7 @@ def render_run_details(
     if title:
         console.print(f"[bold]{title}[/bold]")
 
-    console.print(f"[bold]ID:[/bold] {data.get('id')}")
-    console.print(f"[bold]Name:[/bold] {data.get('name')}")
+    render_detail_fields(data, console, [("id", "ID"), ("name", "Name")])
 
     # Print other fields
     for k, v in data.items():

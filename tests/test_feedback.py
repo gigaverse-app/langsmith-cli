@@ -5,6 +5,7 @@ INVARIANT: feedback list/get/create/delete commands must be reachable
 and produce valid output (table or JSON) backed by real Pydantic Feedback models.
 """
 
+import json
 from unittest.mock import patch
 
 from langsmith.utils import LangSmithNotFoundError
@@ -61,6 +62,55 @@ def test_feedback_list_json(runner):
         assert len(data) == 1
         assert data[0]["key"] == "correctness"
         assert data[0]["score"] == 0.9
+
+
+def test_feedback_list_count(runner):
+    """INVARIANT: feedback list supports the standard --count flag."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_feedback.return_value = iter(
+            [create_feedback(key="correctness"), create_feedback(key="helpfulness")]
+        )
+        result = runner.invoke(cli, ["feedback", "list", "--count"])
+        assert result.exit_code == 0
+        assert result.output.strip() == "2"
+
+
+def test_feedback_list_format_json_without_global_flag(runner):
+    """INVARIANT: feedback list supports the standard --format json flag."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_feedback.return_value = iter([create_feedback(key="quality")])
+        result = runner.invoke(cli, ["feedback", "list", "--format", "json"])
+        assert result.exit_code == 0
+        data = parse_json_output(result.output)
+        assert data[0]["key"] == "quality"
+
+
+def test_feedback_list_output_file(runner, tmp_path):
+    """INVARIANT: feedback list supports the standard --output file flag."""
+    out = tmp_path / "feedback.jsonl"
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_feedback.return_value = iter([create_feedback(key="quality")])
+        result = runner.invoke(cli, ["feedback", "list", "--output", str(out)])
+        assert result.exit_code == 0
+        assert "quality" in out.read_text()
+
+
+def test_feedback_list_output_file_respects_format(runner, tmp_path):
+    """INVARIANT: list --output respects explicit non-table --format."""
+    out = tmp_path / "feedback.json"
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_feedback.return_value = iter([create_feedback(key="quality")])
+        result = runner.invoke(
+            cli, ["feedback", "list", "--format", "json", "--output", str(out)]
+        )
+        assert result.exit_code == 0
+        data = parse_json_output(out.read_text())
+        assert isinstance(data, list)
+        assert data[0]["key"] == "quality"
 
 
 def test_feedback_list_with_run_id(runner):
@@ -120,6 +170,63 @@ def test_feedback_get_json(runner):
         assert data["score"] == 0.9
 
 
+def test_feedback_get_human_fields_skips_omitted_values(runner):
+    """INVARIANT: human --fields output does not render omitted fields as None."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        fb = create_feedback(
+            id_str="11111111-1111-1111-1111-111111111111",
+            key="correctness",
+            score=0.9,
+        )
+        mock_client.read_feedback.return_value = fb
+        result = runner.invoke(
+            cli,
+            [
+                "feedback",
+                "get",
+                "11111111-1111-1111-1111-111111111111",
+                "--fields",
+                "key",
+            ],
+        )
+
+        assert result.exit_code == 0
+        output = strip_ansi(result.output)
+        assert "Key: correctness" in output
+        assert "ID:" not in output
+        assert "None" not in output
+
+
+def test_feedback_get_output_file(runner, tmp_path):
+    """INVARIANT: feedback get supports the standard --output file flag."""
+    out = tmp_path / "feedback.json"
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        fb = create_feedback(
+            id_str="11111111-1111-1111-1111-111111111111",
+            key="correctness",
+            score=0.9,
+        )
+        mock_client.read_feedback.return_value = fb
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "feedback",
+                "get",
+                "11111111-1111-1111-1111-111111111111",
+                "--output",
+                str(out),
+            ],
+        )
+
+        assert result.exit_code == 0
+        data = parse_json_output(out.read_text())
+        assert data["key"] == "correctness"
+        assert data["score"] == 0.9
+
+
 def test_feedback_create_exits_zero(runner):
     """INVARIANT: feedback create calls create_feedback and exits 0."""
     with patch("langsmith.Client") as MockClient:
@@ -170,11 +277,14 @@ def test_feedback_delete_requires_confirm(runner):
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
         mock_client.delete_feedback.return_value = None
-        runner.invoke(
+        result = runner.invoke(
             cli,
             ["feedback", "delete", "11111111-1111-1111-1111-111111111111"],
             input="n\n",
         )
+        assert result.exit_code != 0
+        assert "Cancelled" in result.output
+        assert "Aborted" not in result.output
         mock_client.delete_feedback.assert_not_called()
 
 
@@ -190,6 +300,24 @@ def test_feedback_delete_with_confirm(runner):
                 "delete",
                 "11111111-1111-1111-1111-111111111111",
                 "--confirm",
+            ],
+        )
+        assert result.exit_code == 0
+        mock_client.delete_feedback.assert_called_once()
+
+
+def test_feedback_delete_yes_alias(runner):
+    """INVARIANT: feedback delete accepts --yes as confirmation alias."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.delete_feedback.return_value = None
+        result = runner.invoke(
+            cli,
+            [
+                "feedback",
+                "delete",
+                "11111111-1111-1111-1111-111111111111",
+                "--yes",
             ],
         )
         assert result.exit_code == 0
@@ -224,3 +352,43 @@ def test_feedback_delete_not_found(runner):
         )
         assert result.exit_code != 0
         assert "not found" in result.output.lower()
+
+
+def test_feedback_delete_yes_alias_skips_prompt(runner):
+    """INVARIANT: --yes is a working alias for --confirm on `feedback delete`.
+
+    Guards against drift where one delete command exposes --yes (via
+    confirm_option()) and another silently keeps the old --confirm-only flag.
+    """
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.delete_feedback.return_value = None
+        result = runner.invoke(
+            cli,
+            [
+                "feedback",
+                "delete",
+                "11111111-1111-1111-1111-111111111111",
+                "--yes",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        mock_client.delete_feedback.assert_called_once()
+
+
+def test_feedback_list_format_json_routes_diagnostics_to_stderr(runner):
+    """INVARIANT: `feedback list --format json` must not corrupt stdout with diagnostics.
+
+    `--format json` is by itself a machine-readable signal: a script doing
+    `langsmith-cli feedback list --format json | jq` would break if INFO/DEBUG
+    lines landed on stdout. Centralized via is_machine_readable_output.
+    """
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_feedback.return_value = []
+
+        result = runner.invoke(cli, ["feedback", "list", "--format", "json"])
+
+        assert result.exit_code == 0
+        # Output must be pure JSON (no debug/info preamble).
+        json.loads(result.output.strip())
