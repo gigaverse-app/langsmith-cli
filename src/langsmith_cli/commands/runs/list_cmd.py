@@ -17,6 +17,7 @@ from langsmith_cli.utils import (
     build_tag_fql_filters,
     build_time_fql_filters,
     combine_fql_filters,
+    configure_logger_streams,
     count_option,
     determine_output_format,
     exclude_option,
@@ -25,7 +26,6 @@ from langsmith_cli.utils import (
     filter_fields,
     get_matching_items,
     get_or_create_client,
-    is_machine_readable_output,
     output_formatted_data,
     output_option,
     parse_duration_to_seconds,
@@ -292,16 +292,14 @@ def list_runs(
     # Determine output format early so field selection can be pushed to the SDK
     # without starving table rendering of required columns.
     format_type = determine_output_format(output_format, ctx.obj.get("json"))
-
-    # Determine if output is machine-readable (use stderr for diagnostics)
-    is_machine_readable = is_machine_readable_output(
+    is_machine_readable = configure_logger_streams(
         ctx,
+        logger,
         output=output,
         output_format=format_type,
         count=count,
         fields=fields,
     )
-    logger.use_stderr = is_machine_readable
 
     # When --count is used, default to unlimited (0) unless user explicitly set limit
     # Check if limit was explicitly provided by checking if it's not the default

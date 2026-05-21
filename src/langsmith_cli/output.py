@@ -69,18 +69,20 @@ def configure_logger_streams(
     output_format: str | None = None,
     count: bool = False,
     fields: str | None = None,
-) -> None:
+) -> bool:
     """Set logger.use_stderr when output is machine-readable.
 
     See :func:`is_machine_readable_output` for the full set of signals.
     """
-    logger.use_stderr = is_machine_readable_output(
+    use_stderr = is_machine_readable_output(
         ctx,
         output=output,
         output_format=output_format,
         count=count,
         fields=fields,
     )
+    logger.use_stderr = use_stderr
+    return use_stderr
 
 
 class ConsoleProtocol(Protocol):
@@ -365,6 +367,48 @@ def write_output_to_file(
         stderr_console = RichConsole(stderr=True)
         stderr_console.print(f"[red]Error writing to file {output_path}: {e}[/red]")
         raise click.ClickException(f"Error writing to file {output_path}: {e}") from e
+
+
+def emit_action_result(
+    ctx: click.Context,
+    logger: Any,
+    *,
+    model: Any = None,
+    payload: dict[str, Any] | None = None,
+    success_message: str,
+) -> None:
+    """Emit the result of a create/update/delete-style command.
+
+    Every mutating command in the CLI has the same two-branch shape: in
+    machine mode (``--json``) it dumps a structured payload; in human mode it
+    writes a single rich success line. Routing both branches through this
+    helper prevents future commands from forgetting one half (the most
+    common drift mode — usually the JSON branch).
+
+    Args:
+        ctx: Click context (inspected for the ``--json`` flag).
+        logger: CLILogger used for the human-mode success message.
+        model: Optional Pydantic model to dump in JSON mode. If provided,
+            takes precedence over ``payload`` and is serialized via
+            :func:`safe_model_dump`. Use this for create/update commands
+            that return an SDK entity.
+        payload: Optional plain dict to emit in JSON mode. Use this for
+            delete commands or other operations without a model return,
+            e.g. ``{"status": "success", "deleted": id}``.
+        success_message: Human-readable confirmation line written via
+            ``logger.success()`` when ``--json`` is not active.
+
+    Raises:
+        ValueError: If neither ``model`` nor ``payload`` is provided.
+    """
+    if model is None and payload is None:
+        raise ValueError("emit_action_result requires either model= or payload=.")
+
+    if ctx.obj.get("json"):
+        data = safe_model_dump(model) if model is not None else payload
+        click.echo(json_dumps(data))
+        return
+    logger.success(success_message)
 
 
 def output_single_item(
