@@ -29,10 +29,12 @@ def test_runs_list_api_failure_returns_nonzero_exit_code_in_json_mode(runner):
 
     The user expects: if something goes wrong, tell me about it!
     """
+    from langsmith.utils import LangSmithError
+
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
         # Simulate API failure (timeout, network error, etc.)
-        mock_client.list_runs.side_effect = Exception("Connection timeout")
+        mock_client.list_runs.side_effect = LangSmithError("Connection timeout")
 
         result = runner.invoke(cli, ["--json", "runs", "list", "--project", "test"])
 
@@ -53,9 +55,11 @@ def test_runs_list_api_failure_shows_error_in_output_or_stderr(runner):
     1. JSON error object on stdout (for parseable output)
     2. Non-zero exit code (so scripts can detect failure)
     """
+    from langsmith.utils import LangSmithError
+
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
-        mock_client.list_runs.side_effect = Exception("API Error: Rate limited")
+        mock_client.list_runs.side_effect = LangSmithError("API Error: Rate limited")
 
         result = runner.invoke(cli, ["--json", "runs", "list", "--project", "test"])
 

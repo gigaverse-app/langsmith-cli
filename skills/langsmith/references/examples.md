@@ -17,8 +17,8 @@ langsmith-cli --json examples list [OPTIONS]
 - `--metadata JSON` - Filter by metadata (JSON object)
 - `--splits TEXT` - Comma-separated list of splits (e.g., "train,test")
 - `--as-of TEXT` - Version tag or ISO timestamp
-- `--inline-s3-urls BOOLEAN` - Inline S3 URLs: `true` or `false`
-- `--include-attachments BOOLEAN` - Include attachments: `true` or `false`
+- `--inline-s3-urls`, `--no-inline-s3-urls` - Include or omit S3 URLs inline
+- `--include-attachments`, `--no-include-attachments` - Include or omit attachments
 - `--exclude TEXT` - Exclude items containing substring (repeatable)
 - `--fields TEXT` - Comma-separated field names to include
 - `--count` - Output only the count of results
@@ -149,17 +149,17 @@ langsmith-cli --json examples delete <example-id> [<example-id>...] [OPTIONS]
 - `example-ids` (required) - One or more example UUIDs
 
 **Options:**
-- `--confirm` - Skip confirmation prompt
+- `--yes`, `--confirm` - Skip confirmation prompt
 
 **Output:** `{"status": "success", "deleted": [...], "errors": [...]}`
 
 **Examples:**
 ```bash
 # Delete single example
-langsmith-cli --json examples delete <uuid> --confirm
+langsmith-cli --json examples delete <uuid> --yes
 
 # Bulk delete
-langsmith-cli --json examples delete <uuid1> <uuid2> <uuid3> --confirm
+langsmith-cli --json examples delete <uuid1> <uuid2> <uuid3> --yes
 ```
 
 ### `examples from-run`
@@ -183,4 +183,3 @@ langsmith-cli --json examples from-run <run-id> --dataset <name>
 # Turn a good run into a training example
 langsmith-cli --json examples from-run <run-uuid> --dataset "training-data"
 ```
-

@@ -186,15 +186,26 @@ def resolve_dataset(client: langsmith.Client, name: str) -> Dataset:
 
 # ❌ BAD - using `object` or `Any` as type (loses all type safety)
 def resolve_dataset(client: object, name: str) -> object: ...
-
-# ❌ BAD - TYPE_CHECKING / __future__ annotations workaround (unnecessary complexity)
-from __future__ import annotations
-from typing import TYPE_CHECKING
-if TYPE_CHECKING:
-    import langsmith  # Don't do this
 ```
 
-**Note on CLI startup performance:** `utils.py` already imports `langsmith` at module level (needed for shared helpers), and every command module imports `utils.py`. Since the cost is already paid at startup, import langsmith types directly everywhere — no lazy loading workarounds needed for type annotations. If a module does NOT import utils.py and doesn't need langsmith at import time, keep heavy imports inside command functions.
+**Imports and CLI startup performance — read this carefully, there is real tension here.**
+
+There are two competing forces:
+
+- **Type safety wants top-level imports.** `TYPE_CHECKING` and `from __future__ import annotations` defer name resolution and lose IDE/pyright tooling on those names; quoted forward refs are easy to typo.
+- **Epic #117 (startup latency) wants lazy imports** in modules that are *cold paths* — command modules that aren't reached on a typical invocation, or that pull in heavy optional deps (`httpx`, `yaml`, network adapters). Every extra top-level `from rich.table import Table` runs on every CLI startup, including `--help`.
+
+**The rule that resolves the conflict:**
+
+1. **Default to top-level imports** when the module is already on the hot path. `utils.py` imports `langsmith` and `rich` at module level, and almost every command imports `utils.py` — so the cost is already paid. Adding `from rich.table import Table` to `commands/datasets.py` is free.
+2. **Use lazy (function-scope) imports** in command modules that (a) are themselves only loaded by their specific command and (b) pull in deps that `utils.py` does *not* already drag in (e.g. `httpx`, `yaml`, large third-party SDKs). `runs/pricing_cmd.py` is the canonical example — it's only loaded when the user runs `runs pricing`, and `httpx`/`yaml` are not on the global hot path. Keep its `import httpx` / `import yaml` inside the function body.
+3. **For type annotations only**, prefer the real import over `TYPE_CHECKING` when feasible. Use `TYPE_CHECKING` (paired with `from __future__ import annotations`) *only* when the type comes from a module you are deliberately keeping out of import-time — and document why in a comment near the `if TYPE_CHECKING:` block (e.g. `# Lazy: pricing command is a cold path; keep langsmith.schemas off the startup graph here.`).
+4. **Never** put a hot-path SDK import like `langsmith.Client` behind `TYPE_CHECKING` — `utils.py` already loaded it.
+
+Concrete checklist when adding a new command:
+- Does the module need only types that `utils.py` already imports? → Top-level import them.
+- Does the module need a heavy dep no other command uses (`httpx`, `pandas`, `yaml`)? → Lazy-import it inside the function, with a one-line comment naming the startup-latency tradeoff.
+- Are you introducing `from __future__ import annotations` purely to satisfy a `TYPE_CHECKING` block? → Add the comment explaining the cold-path tradeoff, or just use the real import.
 
 **2. Dual Output Pattern (JSON vs Rich Tables)**
 ```python

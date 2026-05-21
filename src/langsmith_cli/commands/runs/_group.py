@@ -4,9 +4,25 @@ from typing import Any
 
 import click
 
-from rich.console import Console
 
-console = Console()
+class LazyConsole:
+    """Defer Rich Console construction until a command actually renders text."""
+
+    def __init__(self) -> None:
+        self._console: Any | None = None
+
+    def _get_console(self) -> Any:
+        if self._console is None:
+            from rich.console import Console
+
+            self._console = Console()
+        return self._console
+
+    def print(self, *args: Any, **kwargs: Any) -> None:
+        self._get_console().print(*args, **kwargs)
+
+
+console = LazyConsole()
 
 
 @click.group()
