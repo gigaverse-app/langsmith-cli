@@ -60,12 +60,11 @@ def _is_query_rejection(exc: BaseException) -> bool:
         seen.add(id(current))
 
         if isinstance(current, (httpx.HTTPStatusError, requests.HTTPError)):
-            response = getattr(current, "response", None)
+            response = current.response
             if response is not None:
-                status_code = getattr(response, "status_code", None)
-                if status_code == 422:
+                if response.status_code == 422:
                     return True
-                if _error_body_detail(getattr(response, "text", None)):
+                if _error_body_detail(response.text):
                     return True
 
             if len(current.args) > 1 and _error_body_detail(current.args[1]):
