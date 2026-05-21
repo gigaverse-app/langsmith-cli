@@ -449,6 +449,32 @@ class TestRunsAnalyze:
         _, kwargs = mock_client.list_runs.call_args
         assert 'gte(start_time, "2026-01-01")' in kwargs["filter"]
 
+    def test_analyze_tag_filter_adds_fql(self, runner, mock_client):
+        """--tag should push server-side has(tags, ...) filters for analyze."""
+        mock_client.list_runs.return_value = []
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "analyze",
+                "--group-by",
+                "tag:category",
+                "--metrics",
+                "count",
+                "--tag",
+                "env:prod",
+                "--tag",
+                "team:ml",
+            ],
+        )
+
+        assert result.exit_code == 0
+        call_kwargs = mock_client.list_runs.call_args[1]
+        assert 'has(tags, "env:prod")' in call_kwargs["filter"]
+        assert 'has(tags, "team:ml")' in call_kwargs["filter"]
+
     def test_order_by_not_passed_to_api(self, runner, mock_client):
         """INVARIANT: order_by must NOT be passed to client.list_runs() — API rejects it with 400."""
         mock_client.list_runs.return_value = [
@@ -465,6 +491,31 @@ class TestRunsAnalyze:
             assert "order_by" not in call_kwargs, (
                 "order_by should not be passed to list_runs — LangSmith API rejects it with 400 Bad Request"
             )
+
+    def test_analyze_all_runs_uses_select(self, runner, mock_client):
+        """--sample-size 0 still uses SDK select for sparse all-run analysis."""
+        mock_client.list_runs.return_value = [
+            create_run("run1", tags=["category:test"])
+        ]
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "analyze",
+                "--group-by",
+                "tag:category",
+                "--metrics",
+                "count,error_rate",
+                "--sample-size",
+                "0",
+            ],
+        )
+
+        assert result.exit_code == 0
+        call_kwargs = mock_client.list_runs.call_args[1]
+        assert sorted(call_kwargs["select"]) == ["error", "start_time", "tags"]
 
     def test_analyze_invalid_group_by(self, runner):
         """Invalid group-by format produces error."""

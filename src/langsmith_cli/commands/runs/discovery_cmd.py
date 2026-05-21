@@ -1,22 +1,30 @@
 """Discovery commands: tags, metadata-keys, fields, describe."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING
 
 import click
-from langsmith.schemas import Run
 
 from langsmith_cli.commands.runs._group import _make_fetch_runs, console, runs
+from langsmith_cli.run_helpers import run_extra_metadata, run_metadata_mapping
 from langsmith_cli.utils import (
     add_project_filter_options,
     add_time_filter_options,
     build_time_fql_filters,
     combine_fql_filters,
+    configure_logger_streams,
     fetch_from_projects,
     get_or_create_client,
+    is_json_context,
     json_dumps,
     resolve_project_filters,
 )
+
+if TYPE_CHECKING:
+    from langsmith.schemas import Run
+    from langsmith_cli.cli_logging import CLILogger
 
 
 @dataclass
@@ -25,7 +33,7 @@ class DiscoveryContext:
 
     runs: list[Run]
     projects: list[str]
-    logger: Any  # CLILogger
+    logger: CLILogger
 
 
 def _fetch_runs_for_discovery(
@@ -70,8 +78,7 @@ def _fetch_runs_for_discovery(
     logger = ctx.obj["logger"]
 
     # Determine if output is machine-readable (use stderr for diagnostics)
-    is_machine_readable = ctx.obj.get("json")
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger)
 
     client = get_or_create_client(ctx)
     logger.debug(f"Running {cmd_name} with sample_size={sample_size}")
@@ -140,13 +147,12 @@ def discover_tags(
     Analyzes recent runs to extract structured tag patterns (key:value format).
     Useful for understanding available stratification dimensions.
 
+    \b
     Examples:
         # Discover tags in default project
         langsmith-cli runs tags
-
         # Discover tags in specific project with larger sample
         langsmith-cli --json runs tags --project my-project --sample-size 5000
-
         # Discover tags with pattern filtering
         langsmith-cli runs tags --project-name-pattern "prod/*"
     """
@@ -187,7 +193,7 @@ def discover_tags(
     }
 
     # Output
-    if ctx.obj.get("json"):
+    if is_json_context(ctx):
         click.echo(json_dumps(result))
     else:
         from rich.table import Table
@@ -239,13 +245,12 @@ def discover_metadata_keys(
     Analyzes recent runs to extract all metadata keys.
     Useful for understanding available metadata-based stratification dimensions.
 
+    \b
     Examples:
         # Discover metadata keys in default project
         langsmith-cli runs metadata-keys
-
         # Discover in specific project
         langsmith-cli --json runs metadata-keys --project my-project
-
         # Discover with pattern filtering
         langsmith-cli runs metadata-keys --project-name-pattern "prod/*"
     """
@@ -270,20 +275,13 @@ def discover_metadata_keys(
     metadata_keys: set[str] = set()
 
     for run in discovery.runs:
-        # Check run.metadata
-        if run.metadata and isinstance(run.metadata, dict):
-            metadata_keys.update(run.metadata.keys())
-
-        # Check run.extra["metadata"]
-        if run.extra and isinstance(run.extra, dict):
-            extra_metadata = run.extra.get("metadata")
-            if extra_metadata and isinstance(extra_metadata, dict):
-                metadata_keys.update(extra_metadata.keys())
+        metadata_keys.update(run_metadata_mapping(run).keys())
+        metadata_keys.update(run_extra_metadata(run).keys())
 
     result = {"metadata_keys": sorted(metadata_keys)}
 
     # Output
-    if ctx.obj.get("json"):
+    if is_json_context(ctx):
         click.echo(json_dumps(result))
     else:
         from rich.table import Table
@@ -369,7 +367,7 @@ def _field_analysis_common(
     )
 
     if not discovery.runs:
-        if ctx.obj.get("json"):
+        if is_json_context(ctx):
             click.echo(json_dumps({"fields": [], "total_runs": 0}))
         else:
             discovery.logger.warning("No runs found.")
@@ -388,7 +386,7 @@ def _field_analysis_common(
     stats_list = filter_fields_by_path(stats_list, include_paths, exclude_paths)
 
     # Output JSON (same format for both commands)
-    if ctx.obj.get("json"):
+    if is_json_context(ctx):
         output = {
             "fields": [s.to_dict() for s in stats_list],
             "total_runs": len(discovery.runs),
@@ -507,16 +505,14 @@ def discover_fields(
     Analyzes recent runs to extract all field paths, types, presence rates,
     and language distribution for text fields.
 
+    \b
     Examples:
         # Discover fields in default project
         langsmith-cli runs fields
-
         # Focus on inputs/outputs only
         langsmith-cli --json runs fields --include inputs,outputs
-
         # Skip language detection for speed
         langsmith-cli runs fields --no-language
-
         # Exclude verbose fields
         langsmith-cli runs fields --exclude extra,events,serialized
     """
@@ -567,13 +563,12 @@ def describe_fields(
     - Numeric fields: min/max/avg/p50/sum
     - List fields: min/max/avg/p50 element count
 
+    \b
     Examples:
         # Full statistics for all fields
         langsmith-cli runs describe
-
         # Focus on inputs/outputs with language detection
         langsmith-cli --json runs describe --include inputs,outputs
-
         # Quick analysis without language detection
         langsmith-cli runs describe --no-language --sample-size 50
     """

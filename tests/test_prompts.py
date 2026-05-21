@@ -11,6 +11,7 @@ langsmith.schemas, ensuring compatibility with the actual SDK.
 from langsmith_cli.main import cli
 from unittest.mock import patch
 import json
+import pytest
 from conftest import (
     create_prompt,
     create_prompt_commit,
@@ -121,6 +122,69 @@ def test_prompts_list_public_only(runner):
 
         result = runner.invoke(cli, ["prompts", "list"])
         assert result.exit_code == 0
+
+
+def test_prompts_list_public_private_aliases(runner):
+    """INVARIANT: --public/--private filter prompts without boolean values."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_prompts.return_value = ListPromptsResponse(repos=[], total=0)
+
+        result = runner.invoke(cli, ["prompts", "list", "--public"])
+        assert result.exit_code == 0
+        assert mock_client.list_prompts.call_args[1]["is_public"] is True
+
+        result = runner.invoke(cli, ["prompts", "list", "--private"])
+        assert result.exit_code == 0
+        assert mock_client.list_prompts.call_args[1]["is_public"] is False
+
+
+def test_prompts_legacy_is_public_still_works_but_is_hidden(runner, tmp_path):
+    """--is-public remains compatible but no longer clutters prompt help."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_prompts.return_value = ListPromptsResponse(repos=[], total=0)
+
+        result = runner.invoke(cli, ["prompts", "list", "--is-public", "true"])
+        assert result.exit_code == 0
+        assert mock_client.list_prompts.call_args[1]["is_public"] is True
+
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("Hello")
+        mock_client.push_prompt.return_value = None
+        result = runner.invoke(
+            cli,
+            ["prompts", "push", "my-prompt", str(prompt_file), "--is-public", "true"],
+        )
+        assert result.exit_code == 0
+        assert mock_client.push_prompt.call_args[1]["is_public"] is True
+
+        for command in (["list"], ["push"], ["create"]):
+            help_result = runner.invoke(cli, ["prompts", *command, "--help"])
+            assert help_result.exit_code == 0
+            assert "--is-public" not in help_result.output
+            assert "--public" in help_result.output
+            assert "--private" in help_result.output
+
+
+@pytest.mark.parametrize(
+    "args,message",
+    [
+        (["--public", "--private"], "Use only one of --public or --private"),
+        (["--public", "--is-public", "false"], "Use only one of --public"),
+        (["--private", "--is-public", "true"], "Use only one of --private"),
+    ],
+)
+def test_prompts_list_conflicting_visibility_flags_fail_fast(runner, args, message):
+    """Contradictory prompt visibility filters should not silently pick one."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        result = runner.invoke(cli, ["prompts", "list", *args])
+
+        assert result.exit_code != 0
+        assert message in result.output
+        mock_client.list_prompts.assert_not_called()
 
 
 def test_prompts_list_with_filter(runner):
@@ -467,6 +531,49 @@ def test_prompts_push_public(runner, tmp_path):
         assert call_kwargs["is_public"] is True
 
 
+def test_prompts_push_public_private_aliases(runner, tmp_path):
+    """INVARIANT: prompts push accepts paired visibility flags."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        prompt_file = tmp_path / "my_prompt.txt"
+        prompt_file.write_text("Test prompt")
+
+        result = runner.invoke(
+            cli,
+            ["prompts", "push", "my-prompt", str(prompt_file), "--public"],
+        )
+
+        assert result.exit_code == 0
+        assert mock_client.push_prompt.call_args[1]["is_public"] is True
+
+
+@pytest.mark.parametrize(
+    "args,message",
+    [
+        (["--public", "--private"], "Use only one of --public or --private"),
+        (["--public", "--is-public", "false"], "Use only one of --public"),
+        (["--private", "--is-public", "true"], "Use only one of --private"),
+    ],
+)
+def test_prompts_push_conflicting_visibility_flags_fail_fast(
+    runner, tmp_path, args, message
+):
+    """Contradictory prompt push visibility flags should fail before upload."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        prompt_file = tmp_path / "my_prompt.txt"
+        prompt_file.write_text("Test prompt")
+
+        result = runner.invoke(
+            cli, ["prompts", "push", "my-prompt", str(prompt_file), *args]
+        )
+
+        assert result.exit_code != 0
+        assert message in result.output
+        mock_client.push_prompt.assert_not_called()
+
+
 # ===== prompts pull tests =====
 
 
@@ -607,6 +714,17 @@ def test_prompts_delete_json(runner):
         mock_client.delete_prompt.assert_called_once_with("my-prompt")
 
 
+def test_prompts_delete_yes_alias(runner):
+    """INVARIANT: prompts delete accepts --yes as confirmation alias."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        result = runner.invoke(cli, ["prompts", "delete", "my-prompt", "--yes"])
+
+        assert result.exit_code == 0
+        mock_client.delete_prompt.assert_called_once_with("my-prompt")
+
+
 def test_prompts_delete_table_output(runner):
     """INVARIANT: prompts delete should show success message."""
     with patch("langsmith.Client") as MockClient:
@@ -643,8 +761,9 @@ def test_prompts_delete_requires_confirmation(runner):
 
         # Simulate user saying 'n' to confirmation
         result = runner.invoke(cli, ["prompts", "delete", "my-prompt"], input="n\n")
-        # Should abort
         assert result.exit_code != 0
+        assert "Cancelled" in result.output
+        assert "Aborted" not in result.output
         mock_client.delete_prompt.assert_not_called()
 
 
@@ -702,6 +821,42 @@ def test_prompts_create_with_options(runner):
         assert call_kwargs["description"] == "A test prompt"
         assert call_kwargs["tags"] == ["prod", "v2"]
         assert call_kwargs["is_public"] is True
+
+
+def test_prompts_create_public_private_aliases(runner):
+    """INVARIANT: prompts create accepts paired visibility flags."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.create_prompt.return_value = create_prompt(
+            repo_handle="new-prompt",
+            full_name="owner/new-prompt",
+            owner="owner",
+        )
+
+        result = runner.invoke(cli, ["prompts", "create", "new-prompt", "--public"])
+
+        assert result.exit_code == 0
+        assert mock_client.create_prompt.call_args[1]["is_public"] is True
+
+
+@pytest.mark.parametrize(
+    "args,message",
+    [
+        (["--public", "--private"], "Use only one of --public or --private"),
+        (["--public", "--is-public", "false"], "Use only one of --public"),
+        (["--private", "--is-public", "true"], "Use only one of --private"),
+    ],
+)
+def test_prompts_create_conflicting_visibility_flags_fail_fast(runner, args, message):
+    """Contradictory prompt create visibility flags should fail before create."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        result = runner.invoke(cli, ["prompts", "create", "new-prompt", *args])
+
+        assert result.exit_code != 0
+        assert message in result.output
+        mock_client.create_prompt.assert_not_called()
 
 
 def test_prompts_create_already_exists(runner):
@@ -816,6 +971,52 @@ def test_prompts_commits_with_output_file(runner, tmp_path):
         assert output_file.exists()
         data = json.loads(output_file.read_text().strip())
         assert data["commit_hash"] == "abc123"
+
+
+def test_prompts_commits_format_json(runner):
+    """INVARIANT: --format json outputs a JSON array without global --json."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        c1 = create_listed_prompt_commit(commit_hash="abc123")
+        mock_client.list_prompt_commits.return_value = iter([c1])
+
+        result = runner.invoke(
+            cli, ["prompts", "commits", "my-prompt", "--format", "json"]
+        )
+
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert isinstance(data, list)
+        assert data[0]["commit_hash"] == "abc123"
+
+
+def test_prompts_commits_output_respects_format_json(runner, tmp_path):
+    """INVARIANT: --output respects explicit --format json."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        c1 = create_listed_prompt_commit(commit_hash="abc123")
+        mock_client.list_prompt_commits.return_value = iter([c1])
+
+        output_file = tmp_path / "commits.json"
+        result = runner.invoke(
+            cli,
+            [
+                "prompts",
+                "commits",
+                "my-prompt",
+                "--format",
+                "json",
+                "--output",
+                str(output_file),
+            ],
+        )
+
+        assert result.exit_code == 0
+        data = json.loads(output_file.read_text())
+        assert isinstance(data, list)
+        assert data[0]["commit_hash"] == "abc123"
 
 
 def test_prompts_commits_empty(runner):

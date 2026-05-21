@@ -356,6 +356,49 @@ class TestRunsGetLatest:
 
         assert result.exit_code == 1
         assert "No runs found" in result.output
+        assert "Aborted" not in result.output
+
+    def test_get_latest_no_runs_json_error(self, runner, mock_client):
+        """INVARIANT: --json get-latest no-match returns structured error JSON."""
+        mock_client.list_runs.return_value = iter([])
+
+        result = runner.invoke(
+            cli, ["--json", "runs", "get-latest", "--project", "test", "--failed"]
+        )
+
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert data["error"] == "ClickException"
+        assert "No runs found" in data["message"]
+        assert "Aborted" not in result.output
+
+    def test_get_latest_project_id_failure_reports_structured_error(
+        self, runner, mock_client
+    ):
+        """--project-id fetch failures should surface details without aborting."""
+        from langsmith.utils import LangSmithError
+
+        mock_client.list_runs.side_effect = LangSmithError(
+            "permission denied for run list"
+        )
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "get-latest",
+                "--project-id",
+                "8dc9fb82-ee48-4815-a0b0-c0fbabaa1887",
+            ],
+        )
+
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert data["error"] == "ClickException"
+        assert "Some projects failed to fetch" in data["message"]
+        assert "id:8dc9fb82-ee48-4815-a0b0-c0fbabaa1887" in data["message"]
+        assert "permission denied" in data["message"]
 
     def test_get_latest_with_multiple_projects(self, runner, mock_client):
         """Get-latest searches multiple projects with pattern."""
@@ -495,7 +538,9 @@ class TestRunsStats:
 
     def test_stats_fallback_to_project_id(self, runner, mock_client):
         """Stats falls back to using project name as ID on error."""
-        mock_client.read_project.side_effect = Exception("Not found")
+        from langsmith.utils import LangSmithNotFoundError
+
+        mock_client.read_project.side_effect = LangSmithNotFoundError("Not found")
         mock_client.get_run_stats.return_value = {"run_count": 10}
 
         result = runner.invoke(
@@ -766,12 +811,13 @@ class TestRunsWatch:
     def test_watch_failed_project_shows_count(self, runner, mock_client):
         """INVARIANT: When projects fail to fetch runs, failed count appears in title."""
         from conftest import create_project
+        from langsmith.utils import LangSmithError
 
         mock_client.list_projects.return_value = [
             create_project(name="svc-a"),
             create_project(name="svc-b"),
         ]
-        mock_client.list_runs.side_effect = Exception("API error")
+        mock_client.list_runs.side_effect = LangSmithError("API error")
 
         with patch("time.sleep") as mock_sleep:
             mock_sleep.side_effect = KeyboardInterrupt()
