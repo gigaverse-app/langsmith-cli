@@ -169,6 +169,35 @@ def test_feedback_get_json(runner):
         assert data["score"] == 0.9
 
 
+def test_feedback_get_output_file(runner, tmp_path):
+    """INVARIANT: feedback get supports the standard --output file flag."""
+    out = tmp_path / "feedback.json"
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        fb = create_feedback(
+            id_str="11111111-1111-1111-1111-111111111111",
+            key="correctness",
+            score=0.9,
+        )
+        mock_client.read_feedback.return_value = fb
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "feedback",
+                "get",
+                "11111111-1111-1111-1111-111111111111",
+                "--output",
+                str(out),
+            ],
+        )
+
+        assert result.exit_code == 0
+        data = parse_json_output(out.read_text())
+        assert data["key"] == "correctness"
+        assert data["score"] == 0.9
+
+
 def test_feedback_create_exits_zero(runner):
     """INVARIANT: feedback create calls create_feedback and exits 0."""
     with patch("langsmith.Client") as MockClient:

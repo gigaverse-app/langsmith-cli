@@ -113,11 +113,12 @@ def list_feedback(
 @feedback.command("get")
 @click.argument("feedback_id")
 @fields_option()
+@output_option()
 @click.pass_context
-def get_feedback(ctx, feedback_id, fields):
+def get_feedback(ctx, feedback_id, fields, output):
     """Fetch a single feedback item by ID."""
     logger = ctx.obj["logger"]
-    configure_logger_streams(ctx, logger, fields=fields)
+    configure_logger_streams(ctx, logger, output=output, fields=fields)
 
     logger.debug(f"Fetching feedback: {feedback_id}")
 
@@ -142,7 +143,9 @@ def get_feedback(ctx, feedback_id, fields):
         if data.get("run_id"):
             console.print(f"[bold]Run ID:[/bold] {data.get('run_id')}")
 
-    output_single_item(ctx, data, console, render_fn=render_feedback_details)
+    output_single_item(
+        ctx, data, console, output=output, render_fn=render_feedback_details
+    )
 
 
 @feedback.command("create")

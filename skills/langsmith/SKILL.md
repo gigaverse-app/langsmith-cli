@@ -158,11 +158,11 @@ When your task matches one of the sections below, **you MUST load that reference
 
 ### → Use `feedback` commands when:
 - You need to list, get, create, or delete feedback scores on runs
-- Commands: `feedback list [--run-id <id>] [--key <key>] [--limit N] [--fields a,b] [--count] [--output file.jsonl] [--format json|csv|yaml]`, `feedback get <id>`, `feedback create <run-id> --key <key> [--score N] [--comment <str>]`, `feedback delete <id> [--yes]`
+- Commands: `feedback list [--run-id <id>] [--key <key>] [--limit N] [--fields a,b] [--count] [--output file.jsonl] [--format json|csv|yaml]`, `feedback get <id> [--fields a,b] [--output file.json]`, `feedback create <run-id> --key <key> [--score N] [--comment <str>]`, `feedback delete <id> [--yes]`
 
 ### → Use `annotation-queues` commands when:
 - You need to manage human review queues (list, create, update, delete)
-- Commands: `annotation-queues list [--fields a,b] [--count] [--output file.jsonl] [--format json|csv|yaml]`, `annotation-queues get <id>`, `annotation-queues create <name> [--description <str>]`, `annotation-queues update <id> [--name <str>] [--description <str>]`, `annotation-queues delete <id> [--yes]`
+- Commands: `annotation-queues list [--fields a,b] [--count] [--output file.jsonl] [--format json|csv|yaml]`, `annotation-queues get <id> [--fields a,b] [--output file.json]`, `annotation-queues create <name> [--description <str>]`, `annotation-queues update <id> [--name <str>] [--description <str>]`, `annotation-queues delete <id> [--yes]`
 
 ### → Use `experiments` commands when:
 - You need to view run stats and feedback scores for a named experiment (project)

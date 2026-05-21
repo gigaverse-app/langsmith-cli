@@ -135,6 +135,33 @@ def test_annotation_queues_get_json(runner):
         assert data["name"] == "my-queue"
 
 
+def test_annotation_queues_get_output_file(runner, tmp_path):
+    """INVARIANT: annotation-queues get supports the standard --output file flag."""
+    out = tmp_path / "queue.json"
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        q = create_annotation_queue(
+            id_str="33333333-3333-3333-3333-333333333333",
+            name="output-queue",
+        )
+        mock_client.read_annotation_queue.return_value = q
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "annotation-queues",
+                "get",
+                "33333333-3333-3333-3333-333333333333",
+                "--output",
+                str(out),
+            ],
+        )
+
+        assert result.exit_code == 0
+        data = parse_json_output(out.read_text())
+        assert data["name"] == "output-queue"
+
+
 def test_annotation_queues_create_exits_zero(runner):
     """INVARIANT: annotation-queues create calls create_annotation_queue and exits 0."""
     with patch("langsmith.Client") as MockClient:

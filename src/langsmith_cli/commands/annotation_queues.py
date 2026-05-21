@@ -85,11 +85,12 @@ def list_queues(ctx, name, name_contains, limit, output_format, fields, count, o
 @annotation_queues.command("get")
 @click.argument("queue_id")
 @fields_option()
+@output_option()
 @click.pass_context
-def get_queue(ctx, queue_id, fields):
+def get_queue(ctx, queue_id, fields, output):
     """Fetch details of a single annotation queue by ID."""
     logger = ctx.obj["logger"]
-    configure_logger_streams(ctx, logger, fields=fields)
+    configure_logger_streams(ctx, logger, output=output, fields=fields)
 
     logger.debug(f"Fetching annotation queue: {queue_id}")
 
@@ -111,7 +112,9 @@ def get_queue(ctx, queue_id, fields):
         if data.get("description"):
             console.print(f"[bold]Description:[/bold] {data.get('description')}")
 
-    output_single_item(ctx, data, console, render_fn=render_queue_details)
+    output_single_item(
+        ctx, data, console, output=output, render_fn=render_queue_details
+    )
 
 
 @annotation_queues.command("create")
