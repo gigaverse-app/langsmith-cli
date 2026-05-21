@@ -25,6 +25,7 @@ langsmith-cli --json runs list [OPTIONS]
 - `--run-type TEXT` - Filter by type: `llm`, `chain`, `tool`, `retriever`, `prompt`, `parser`
 - `--is-root BOOLEAN` - Filter for root traces only: `true` or `false`
 - `--roots` - Show only root traces (shorthand for `--is-root true`)
+- `--all-runs` - Include nested child runs (shorthand for `--is-root false`)
 - `--trace-id UUID` - Get all runs in a specific trace tree
 - `--filter TEXT` - Advanced FQL query (see Filter Query Language section)
 - `--since TEXT` - Show runs since this time (ISO format or shorthand like `7d`, `24h`, `30m`, `2w`)
@@ -52,7 +53,7 @@ langsmith-cli --json runs list [OPTIONS]
 - `--fields TEXT` - Comma-separated field names to include
 - `--exclude TEXT` - Exclude items containing substring (repeatable)
 - `--count` - Output only the count of results
-- `--output TEXT` - Write output to file (JSONL format)
+- `--output TEXT` - Write output to file. Defaults to JSONL unless `--format` is specified.
 
 **Output Fields:**
 - `id` (UUID) - Run identifier
@@ -89,7 +90,7 @@ langsmith-cli --json runs list --trace-id <uuid> --run-type llm
 langsmith-cli --json runs list --filter 'gt(latency, "5s")' --limit 10
 
 # Root runs with specific tag
-langsmith-cli --json runs list --is-root true --filter 'has(tags, "production")'
+langsmith-cli --json runs list --roots --filter 'has(tags, "production")'
 ```
 
 ### `runs get`
@@ -245,11 +246,19 @@ langsmith-cli --json runs search <query> [OPTIONS]
 - `--project-name-regex TEXT` - Regex pattern for project names
 - `--limit INTEGER` - Maximum results (default: 10)
 - `--roots` - Show only root traces
-- `--in [all|inputs|outputs|error]` - Where to search (default: all fields)
+- `--status [success|error]`, `--failed`, `--succeeded` - Status filters
+- `--run-type TEXT` - Filter by run type
+- `--tag TEXT` - Filter by tag (repeatable, AND logic)
+- `--metadata KEY=VALUE` - Filter by metadata (repeatable)
+- `--filter TEXT` - Additional LangSmith FQL filter
+- `--in [all|inputs|outputs|error]` - Where to search. `all` uses server-side query; scoped values use client-side grep.
 - `--input-contains TEXT` - Filter by content in inputs
 - `--output-contains TEXT` - Filter by content in outputs
 - `--since TEXT` - Since time (ISO or shorthand: `3d`, `24h`, `30m`)
 - `--last TEXT` - From last duration (e.g., `24h`, `7d`)
+- `--fields TEXT` - Comma-separated fields to include; pushed to SDK `select` for sparse output where possible
+- `--count` - Output only the count
+- `--output FILE` - Write JSONL output to a file
 - `--format [table|json|csv|yaml]` - Output format
 
 **Output:** List of runs matching query
@@ -309,6 +318,8 @@ langsmith-cli --json runs usage [OPTIONS]
 - `--from-cache` - Use local cache instead of API (fast, offline)
 - `--metadata TEXT` - Filter by metadata key=value (repeatable)
 - `--sample-size INTEGER` - Limit runs per project
+- `--format [table|json|csv|yaml]` - Output format
+- `--output TEXT` - Write output to file. Defaults to JSONL unless `--format` is specified.
 
 **Examples:**
 ```bash
@@ -321,7 +332,7 @@ langsmith-cli runs usage --from-cache --group-by metadata:community_name --break
 
 ### `runs pricing`
 
-Check model pricing coverage and look up missing prices from OpenRouter.
+Check model pricing coverage. OpenRouter lookup is opt-in.
 
 ```bash
 langsmith-cli --json runs pricing [OPTIONS]
@@ -329,7 +340,9 @@ langsmith-cli --json runs pricing [OPTIONS]
 
 **Options:**
 - `--from-cache` - Analyze cached runs (fast)
-- `--no-lookup` - Skip OpenRouter price lookup
+- `--lookup` - Look up missing prices from OpenRouter API
+- `--no-lookup` - Skip OpenRouter price lookup (default)
+- `--format [table|json|yaml]` - Output format
 
 **Examples:**
 ```bash
@@ -337,7 +350,10 @@ langsmith-cli --json runs pricing [OPTIONS]
 langsmith-cli runs pricing --project-name-pattern "prd/*" --from-cache
 
 # JSON output for programmatic use
-langsmith-cli --json runs pricing --project-name-pattern "prd/*" --from-cache
+langsmith-cli runs pricing --project-name-pattern "prd/*" --from-cache --format json
+
+# Include OpenRouter lookup for missing models
+langsmith-cli runs pricing --project-name-pattern "prd/*" --from-cache --lookup
 ```
 
 ### `runs cache download`
@@ -376,19 +392,27 @@ List cached projects with run counts and file sizes.
 
 ```bash
 langsmith-cli runs cache list
+langsmith-cli --json runs cache list --fields project_name,run_count,path
+langsmith-cli runs cache list --count
 ```
+
+**Options:**
+- `--fields TEXT` - Sparse output fields such as `project_name,run_count,path`
+- `--count` - Print only the number of cached projects
+- `--format table|json|jsonl|csv|yaml` - Choose output format
+- `--output PATH` - Write results to a file
 
 ### `runs cache clear`
 
 Clear cached data.
 
 ```bash
-langsmith-cli runs cache clear [--project TEXT] [--yes]
+langsmith-cli runs cache clear [--project TEXT] [--yes|--confirm]
 ```
 
 **Options:**
 - `--project TEXT` - Clear only this project's cache
-- `--yes` - Skip confirmation prompt
+- `--yes` / `--confirm` - Skip confirmation prompt
 
 ### `runs export`
 
@@ -406,6 +430,7 @@ langsmith-cli --json runs export <directory> [OPTIONS]
 - `--limit INTEGER` - Maximum runs to export (default: 50)
 - `--status TEXT` - Filter: `success` or `error`
 - `--roots` - Export only root traces
+- `--all-runs` - Export all runs including nested child runs
 - `--run-type TEXT` - Filter by type: `llm`, `chain`, `tool`, etc.
 - `--tag TEXT` - Filter by tag (can specify multiple)
 - `--last TEXT` - Time window: `24h`, `7d`, `30m`, etc.
@@ -461,7 +486,8 @@ langsmith-cli --json runs sample [OPTIONS]
 - `--samples-per-combination INTEGER` - Alias for `--samples-per-stratum` in multi-dimensional mode
 - `--since TEXT` / `--last TEXT` - Time filters
 - `--fields TEXT` - Comma-separated fields to include
-- `--output TEXT` - Write to JSONL file (recommended for data extraction)
+- `--format [jsonl|json|csv|yaml]` - Output format. Defaults to JSON for `--json` stdout, otherwise JSONL.
+- `--output TEXT` - Write output to file. Defaults to JSONL unless `--format` is specified.
 
 **Examples:**
 ```bash
@@ -469,6 +495,11 @@ langsmith-cli --json runs sample [OPTIONS]
 langsmith-cli runs sample --project my-project \
   --stratify-by "tag:length_category" --values "short,medium,long" \
   --samples-per-stratum 20 --output samples.jsonl
+
+# Machine-readable JSON array on stdout
+langsmith-cli --json runs sample --project my-project \
+  --stratify-by "tag:length_category" --values "short,medium,long" \
+  --samples-per-stratum 20
 
 # Multi-dimensional (Cartesian product)
 langsmith-cli runs sample --project my-project \
@@ -490,6 +521,7 @@ langsmith-cli --json runs analyze [OPTIONS]
 - Multi-project: `--project-name`, `--project-name-pattern`, `--project-name-regex`, etc.
 - `--group-by TEXT` - Grouping field (e.g., `tag:length_category`, `metadata:user_tier`)
 - `--metrics TEXT` - Metrics to compute (comma-separated). Available: `count`, `error_rate`, `p50_latency`, `p95_latency`, `p99_latency`, `avg_latency`, `total_tokens`, `avg_cost`
+- `--tag TEXT` - Filter by tag server-side (repeatable, AND logic)
 - `--sample-size INTEGER` - Number of recent runs to analyze (default: 300, use 0 for all)
 - `--filter TEXT` - Additional FQL filter
 - `--format [table|json|csv|yaml]` - Output format

@@ -147,6 +147,21 @@ class TestDetectLanguageSafe:
         # Should still work and detect English
         assert result == "en"
 
+    def test_detection_failure_returns_none(self, monkeypatch):
+        """Language detection failures are treated as unknown language."""
+        from langdetect.lang_detect_exception import LangDetectException
+
+        def raise_detection_error(text: str) -> str:
+            raise LangDetectException(code=0, message="no features")
+
+        monkeypatch.setattr("langdetect.detect", raise_detection_error)
+
+        result = detect_language_safe(
+            "This text is long enough to reach the detector but should fail."
+        )
+
+        assert result is None
+
 
 class TestComputeLanguageDistribution:
     """Tests for compute_language_distribution function."""

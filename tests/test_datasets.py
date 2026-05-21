@@ -407,6 +407,28 @@ def test_datasets_push(runner, tmp_path):
         assert call_kwargs["dataset_name"] == "target-dataset"
 
 
+def test_datasets_push_skips_blank_jsonl_lines(runner, tmp_path):
+    """Blank JSONL lines are ignored without shifting valid examples."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.read_dataset.return_value = create_dataset(name="target-dataset")
+
+        jsonl_file = tmp_path / "examples.jsonl"
+        jsonl_file.write_text(
+            "\n"
+            + json.dumps({"inputs": {"text": "hello"}, "outputs": {"result": "world"}})
+            + "\n\n"
+        )
+
+        result = runner.invoke(
+            cli, ["datasets", "push", str(jsonl_file), "--dataset", "target-dataset"]
+        )
+
+        assert result.exit_code == 0
+        call_kwargs = mock_client.create_examples.call_args[1]
+        assert call_kwargs["inputs"] == [{"text": "hello"}]
+
+
 def test_datasets_push_creates_dataset_if_not_exists(runner, tmp_path):
     """INVARIANT: datasets push should create dataset if it doesn't exist."""
     from langsmith.utils import LangSmithNotFoundError
@@ -452,6 +474,96 @@ def test_datasets_push_uses_filename_as_default_dataset(runner, tmp_path):
         assert call_kwargs["dataset_name"] == "my-examples"
 
 
+def test_datasets_push_rejects_missing_inputs(runner, tmp_path):
+    """INVARIANT: datasets push fails fast with line numbers for malformed rows."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.read_dataset.return_value = create_dataset(name="target-dataset")
+
+        jsonl_file = tmp_path / "bad-examples.jsonl"
+        jsonl_file.write_text(json.dumps({"outputs": {"result": "world"}}))
+
+        result = runner.invoke(
+            cli, ["datasets", "push", str(jsonl_file), "--dataset", "target-dataset"]
+        )
+
+        assert result.exit_code != 0
+        assert "1: missing required field 'inputs'" in result.output
+        mock_client.create_examples.assert_not_called()
+
+
+def test_datasets_push_rejects_non_object_row(runner, tmp_path):
+    """INVARIANT: datasets push requires each JSONL row to be an object."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.read_dataset.return_value = create_dataset(name="target-dataset")
+
+        jsonl_file = tmp_path / "bad-examples.jsonl"
+        jsonl_file.write_text(json.dumps(["not", "an", "object"]))
+
+        result = runner.invoke(
+            cli, ["datasets", "push", str(jsonl_file), "--dataset", "target-dataset"]
+        )
+
+        assert result.exit_code != 0
+        assert "1: expected a JSON object" in result.output
+        mock_client.create_examples.assert_not_called()
+
+
+def test_datasets_push_rejects_non_object_inputs(runner, tmp_path):
+    """INVARIANT: datasets push requires inputs to be an object."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.read_dataset.return_value = create_dataset(name="target-dataset")
+
+        jsonl_file = tmp_path / "bad-examples.jsonl"
+        jsonl_file.write_text(json.dumps({"inputs": "not-object"}))
+
+        result = runner.invoke(
+            cli, ["datasets", "push", str(jsonl_file), "--dataset", "target-dataset"]
+        )
+
+        assert result.exit_code != 0
+        assert "1: field 'inputs' must be an object" in result.output
+        mock_client.create_examples.assert_not_called()
+
+
+def test_datasets_push_rejects_non_object_outputs(runner, tmp_path):
+    """INVARIANT: datasets push requires outputs to be object or null."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.read_dataset.return_value = create_dataset(name="target-dataset")
+
+        jsonl_file = tmp_path / "bad-examples.jsonl"
+        jsonl_file.write_text(json.dumps({"inputs": {}, "outputs": "not-object"}))
+
+        result = runner.invoke(
+            cli, ["datasets", "push", str(jsonl_file), "--dataset", "target-dataset"]
+        )
+
+        assert result.exit_code != 0
+        assert "1: field 'outputs' must be an object or null" in result.output
+        mock_client.create_examples.assert_not_called()
+
+
+def test_datasets_push_rejects_invalid_json_with_line_number(runner, tmp_path):
+    """INVARIANT: datasets push reports invalid JSON with the JSONL line number."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.read_dataset.return_value = create_dataset(name="target-dataset")
+
+        jsonl_file = tmp_path / "bad-examples.jsonl"
+        jsonl_file.write_text('{"inputs": {"text": "ok"}}\n{"inputs":')
+
+        result = runner.invoke(
+            cli, ["datasets", "push", str(jsonl_file), "--dataset", "target-dataset"]
+        )
+
+        assert result.exit_code != 0
+        assert "2: invalid JSON" in result.output
+        mock_client.create_examples.assert_not_called()
+
+
 # ===== datasets delete tests =====
 
 
@@ -472,6 +584,19 @@ def test_datasets_delete_by_name_json(runner):
         assert data["name"] == "my-dataset"
         # Should resolve by name then delete by ID
         mock_client.read_dataset.assert_called_once_with(dataset_name="my-dataset")
+        mock_client.delete_dataset.assert_called_once_with(dataset_id=str(dataset.id))
+
+
+def test_datasets_delete_yes_alias(runner):
+    """INVARIANT: datasets delete accepts --yes as confirmation alias."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        dataset = create_dataset(name="my-dataset")
+        mock_client.read_dataset.return_value = dataset
+
+        result = runner.invoke(cli, ["datasets", "delete", "my-dataset", "--yes"])
+
+        assert result.exit_code == 0
         mock_client.delete_dataset.assert_called_once_with(dataset_id=str(dataset.id))
 
 
@@ -542,8 +667,9 @@ def test_datasets_delete_requires_confirmation(runner):
 
         # Simulate user saying 'n' to confirmation
         result = runner.invoke(cli, ["datasets", "delete", "my-dataset"], input="n\n")
-        # Should abort
         assert result.exit_code != 0
+        assert "Cancelled" in result.output
+        assert "Aborted" not in result.output
         mock_client.delete_dataset.assert_not_called()
 
 

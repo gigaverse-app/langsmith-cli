@@ -1,5 +1,7 @@
 """Runs list command."""
 
+import json
+
 import click
 
 from langsmith_cli.commands.runs._group import _make_fetch_runs, console, runs
@@ -15,6 +17,7 @@ from langsmith_cli.utils import (
     build_tag_fql_filters,
     build_time_fql_filters,
     combine_fql_filters,
+    configure_logger_streams,
     count_option,
     determine_output_format,
     exclude_option,
@@ -23,14 +26,79 @@ from langsmith_cli.utils import (
     filter_fields,
     get_matching_items,
     get_or_create_client,
+    is_json_context,
     output_formatted_data,
     output_option,
     parse_duration_to_seconds,
+    parse_fields_option,
+    quote_fql_string,
     raise_if_all_failed_with_suggestions,
     resolve_project_filters,
+    resolve_root_scope,
     sort_items,
     write_output_to_file,
 )
+
+_FREEFORM_QUERY_REJECTION_DETAIL = "Failed to generate filter from freeform query"
+
+
+def _is_query_rejection(exc: BaseException) -> bool:
+    """True when ``exc`` looks like the server rejecting the ``query=`` param.
+
+    The SDK usually exposes raw ``httpx``/``requests`` HTTP errors with response
+    bodies, but some paths wrap them in ``LangSmithError`` and preserve only the
+    chained exception/body args. This adapter keeps that SDK-specific extraction
+    localized and only accepts the structured server detail for freeform query
+    rejection; auth/network/not-found errors must not trigger the retry.
+    """
+    import httpx
+    import requests
+
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+
+        if isinstance(current, (httpx.HTTPStatusError, requests.HTTPError)):
+            response = current.response
+            if response is not None:
+                if response.status_code == 422:
+                    return True
+                if _error_body_detail(response.text):
+                    return True
+
+            if len(current.args) > 1 and _error_body_detail(current.args[1]):
+                return True
+
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def _error_body_detail(body: object) -> bool:
+    """Return True when an SDK HTTP error body has the query rejection detail."""
+    if not isinstance(body, str):
+        return False
+    try:
+        parsed = json.loads(body)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(parsed, dict):
+        return False
+    detail = parsed["detail"] if "detail" in parsed else None
+    return detail == _FREEFORM_QUERY_REJECTION_DETAIL
+
+
+def _all_failures_are_query_rejection(
+    failed_exceptions: dict[str, BaseException],
+) -> bool:
+    """True only when every recorded failure is a 422 query rejection.
+
+    Used to guard the FQL ``search()`` fallback in ``runs list`` so we don't
+    retry pointlessly on auth/network/not-found errors.
+    """
+    if not failed_exceptions:
+        return False
+    return all(_is_query_rejection(exc) for exc in failed_exceptions.values())
 
 
 @runs.command("list")
@@ -48,11 +116,21 @@ from langsmith_cli.utils import (
 @click.option(
     "--run-type", help="Filter by run type (llm, chain, tool, retriever, etc)."
 )
-@click.option("--is-root", type=bool, help="Filter root traces only (true/false).")
+@click.option(
+    "--is-root",
+    type=bool,
+    hidden=True,
+    help="Legacy root-run filter. Use --roots or --all-runs instead.",
+)
 @click.option(
     "--roots",
     is_flag=True,
-    help="Show only root traces (shorthand for --is-root true). Recommended for cleaner output.",
+    help="Show only root traces. Recommended for cleaner output.",
+)
+@click.option(
+    "--all-runs",
+    is_flag=True,
+    help="Include nested child runs.",
 )
 @click.option("--trace-filter", help="Filter applied to root trace.")
 @click.option("--tree-filter", help="Filter if any run in trace tree matches.")
@@ -148,6 +226,7 @@ def list_runs(
     run_type,
     is_root,
     roots,
+    all_runs,
     trace_filter,
     tree_filter,
     reference_example_id,
@@ -182,23 +261,19 @@ def list_runs(
 ):
     """Fetch recent runs from one or more projects.
 
-    Use project filters (--project-name, --project-name-pattern, --project-name-regex, --project-name-exact) to match multiple projects.
+    Use project filters (--project, --project-id, --project-pattern, --project-name-regex) to match one or more projects.
     Use run name filters (--name-pattern, --name-regex) to filter specific run names.
 
     \b
     FQL Filter Examples:
       # Filter by name
       --filter 'eq(name, "extractor")'
-
       # Filter by latency
       --filter 'gt(latency, "5s")'
-
       # Filter by tags
       --filter 'has(tags, "production")'
-
       # Combine multiple conditions
       --filter 'and(eq(run_type, "chain"), gt(latency, "10s"))'
-
       # Complex example: chains that took >10s and had >5000 tokens
       --filter 'and(eq(run_type, "chain"), gt(latency, "10s"), gt(total_tokens, 5000))'
 
@@ -206,20 +281,24 @@ def list_runs(
     Search Examples:
       # Server-side text search (fast, first ~250 chars)
       --query "error message"
-
       # Client-side grep (slower, unlimited, regex)
       --grep "druze" --grep-in inputs,outputs
-
       # Regex search for Hebrew characters
       --grep "[\\u0590-\\u05FF]" --grep-regex --grep-in inputs
     """
     logger = ctx.obj["logger"]
 
-    # Determine if output is machine-readable (use stderr for diagnostics)
-    is_machine_readable = (
-        ctx.obj.get("json") or output_format in ["csv", "yaml"] or count or output
+    # Determine output format early so field selection can be pushed to the SDK
+    # without starving table rendering of required columns.
+    format_type = determine_output_format(output_format, is_json_context(ctx))
+    is_machine_readable = configure_logger_streams(
+        ctx,
+        logger,
+        output=output,
+        output_format=format_type,
+        count=count,
+        fields=fields,
     )
-    logger.use_stderr = is_machine_readable
 
     # When --count is used, default to unlimited (0) unless user explicitly set limit
     # Check if limit was explicitly provided by checking if it's not the default
@@ -247,9 +326,7 @@ def list_runs(
     )
     projects_to_query = pq.names
 
-    # Handle --roots flag (convenience for --is-root true)
-    if roots:
-        is_root = True
+    is_root = resolve_root_scope(roots=roots, all_runs=all_runs, is_root=is_root)
 
     # Handle status filtering with multiple options
     error_filter = None
@@ -273,8 +350,12 @@ def list_runs(
     if metadata_filters:
         fql_filters.extend(build_metadata_fql_filters(metadata_filters))
 
-    # Run name pattern - skip FQL filtering, do client-side instead
-    # (FQL search doesn't support proper wildcard matching)
+    # Run name pattern. Exact patterns can be pushed server-side; wildcard
+    # patterns still need client-side matching because FQL has no glob match.
+    client_name_pattern = name_pattern
+    if name_pattern and not any(ch in name_pattern for ch in "*?["):
+        fql_filters.append(f"eq(name, {quote_fql_string(name_pattern)})")
+        client_name_pattern = None
 
     # Model filtering (search in model-related fields)
     if model:
@@ -317,7 +398,7 @@ def list_runs(
 
     # Determine if client-side filtering is needed
     # (for run name pattern/regex matching, exclude patterns, or grep content search)
-    needs_client_filtering = bool(name_regex or name_pattern or exclude or grep)
+    needs_client_filtering = bool(name_regex or client_name_pattern or exclude or grep)
 
     # Determine fetch limit (how many runs to fetch from API)
     if fetch is not None:
@@ -365,6 +446,40 @@ def list_runs(
             f"Use --fetch to control how many runs to evaluate."
         )
 
+    select_fields = None
+    requested_fields = parse_fields_option(fields)
+    if requested_fields and is_machine_readable:
+        select_field_set = set(requested_fields)
+        if name_regex or client_name_pattern or exclude:
+            select_field_set.add("name")
+        if sort_by:
+            sort_field = sort_by[1:] if sort_by.startswith("-") else sort_by
+            select_field_set.add(sort_field)
+        if grep:
+            if grep_in:
+                select_field_set.update(
+                    field.strip() for field in grep_in.split(",") if field.strip()
+                )
+            else:
+                select_field_set.update(["inputs", "outputs", "error"])
+        select_fields = sorted(select_field_set)
+    elif count and not needs_client_filtering:
+        select_fields = ["id"]
+
+    fetch_kwargs = {
+        "query": query,
+        "error": error_filter,
+        "filter": combined_filter,
+        "trace_id": trace_id,
+        "run_type": run_type,
+        "is_root": is_root,
+        "trace_filter": trace_filter,
+        "tree_filter": tree_filter,
+        "reference_example_id": reference_example_id,
+    }
+    if select_fields is not None:
+        fetch_kwargs["select"] = select_fields
+
     # Fetch runs from all matching projects using universal helper
     result = fetch_from_projects(
         client,
@@ -372,17 +487,36 @@ def list_runs(
         _make_fetch_runs(),
         project_query=pq,
         limit=api_limit,
-        query=query,
-        error=error_filter,
-        filter=combined_filter,
-        trace_id=trace_id,
-        run_type=run_type,
-        is_root=is_root,
-        trace_filter=trace_filter,
-        tree_filter=tree_filter,
-        reference_example_id=reference_example_id,
         console=None,  # Don't auto-report warnings (we have custom diagnostics below)
+        **fetch_kwargs,
     )
+
+    if (
+        result.all_failed
+        and query
+        and _all_failures_are_query_rejection(result.failed_exceptions)
+    ):
+        fallback_filter = f"search({quote_fql_string(query)})"
+        fallback_filters = (
+            [combined_filter, fallback_filter] if combined_filter else [fallback_filter]
+        )
+        fallback_fetch_kwargs = {
+            **fetch_kwargs,
+            "query": None,
+            "filter": combine_fql_filters(fallback_filters),
+        }
+        logger.warning(
+            "LangSmith rejected the freeform query; retrying with server-side FQL search()."
+        )
+        result = fetch_from_projects(
+            client,
+            projects_to_query,
+            _make_fetch_runs(),
+            project_query=pq,
+            limit=api_limit,
+            console=None,
+            **fallback_fetch_kwargs,
+        )
     all_runs = result.items
     failed_projects = result.failed_sources
 
@@ -400,7 +534,7 @@ def list_runs(
     # FQL doesn't support full regex or complex patterns for run names
     runs = get_matching_items(
         all_runs,
-        name_pattern=name_pattern,
+        name_pattern=client_name_pattern,
         name_regex=name_regex,
         name_getter=lambda r: r.name or "",
     )
@@ -426,7 +560,7 @@ def list_runs(
         )
 
     # Client-side sorting for table output
-    if sort_by and not ctx.obj.get("json"):
+    if sort_by and not is_json_context(ctx):
         # Map sort field to run attribute
         sort_key_map = {
             "name": lambda r: (r.name or "").lower(),
@@ -439,14 +573,17 @@ def list_runs(
     # Track total count before applying limit (for showing "more may exist" message)
     total_count = len(runs)
 
-    # Apply user's limit AFTER all client-side filtering/sorting
-    runs = apply_client_side_limit(runs, limit, needs_client_filtering)
+    # Apply user's display limit after local filtering/sorting. Explicit --fetch
+    # means the SDK may intentionally return more rows than should be displayed.
+    runs = apply_client_side_limit(
+        runs, limit, has_client_filters=needs_client_filtering or fetch is not None
+    )
 
     # Track if we hit the limit
     hit_limit = limit is not None and limit > 0 and total_count > limit
 
     # Report filtering results if client-side filtering was used
-    if needs_client_filtering and not ctx.obj.get("json"):
+    if needs_client_filtering and not is_json_context(ctx):
         matches_found = len(runs)
 
         if limit and matches_found < limit:
@@ -473,11 +610,9 @@ def list_runs(
     # Handle file output - short circuit if writing to file
     if output:
         data = filter_fields(runs, fields)
-        write_output_to_file(data, output, console, format_type="jsonl")
+        file_format = output_format if output_format is not None else "jsonl"
+        write_output_to_file(data, output, console, format_type=file_format)
         return
-
-    # Determine output format
-    format_type = determine_output_format(output_format, ctx.obj.get("json"))
 
     # Handle non-table formats
     if format_type != "table":
@@ -498,7 +633,6 @@ def list_runs(
     if len(runs) == 0:
         # Provide helpful diagnostic message
         logger.warning("No runs found matching your criteria.")
-
         # Build list of active filters
         active_filters = []
         if len(projects_to_query) == 1:
@@ -532,7 +666,6 @@ def list_runs(
             logger.info("Active filters:")
             for f in active_filters:
                 logger.info(f"  • {f}")
-
         # Show failed projects if any
         if failed_projects:
             logger.warning("Some projects failed to fetch:")
@@ -544,7 +677,6 @@ def list_runs(
                 logger.warning(f"  • {proj}: {short_error}")
             if len(failed_projects) > 3:
                 logger.warning(f"  • ... and {len(failed_projects) - 3} more")
-
         # Provide suggestions
         logger.info("Try:")
         if roots or is_root:
@@ -560,9 +692,8 @@ def list_runs(
         logger.info("  • Check project has runs: langsmith-cli runs list --limit 1")
     else:
         console.print(table)
-
         # Show message if we hit the limit (not in count mode or JSON mode)
-        if hit_limit and not count and not ctx.obj.get("json"):
+        if hit_limit and not count and not is_json_context(ctx):
             # Show the exact number we know
             logger.info(
                 f"Showing {len(runs)} of {total_count} runs. "

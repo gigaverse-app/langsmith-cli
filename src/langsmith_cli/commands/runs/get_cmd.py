@@ -1,27 +1,33 @@
 """Runs get, get-latest, and view-file commands."""
 
+from __future__ import annotations
+
 from datetime import datetime as _datetime, timezone as _timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 import json
 
 import click
-from langsmith.schemas import Run
 
 from langsmith_cli.commands.runs._group import runs, console
 from langsmith_cli.utils import (
     add_project_filter_options,
     build_runs_list_filter,
     build_runs_table,
+    configure_logger_streams,
     fields_option,
     filter_fields,
     get_or_create_client,
     get_project_suggestions,
+    is_json_context,
     output_formatted_data,
     output_option,
     output_single_item,
     render_run_details,
     resolve_project_filters,
 )
+
+if TYPE_CHECKING:
+    from langsmith.schemas import Run
 
 
 @runs.command("get")
@@ -46,6 +52,7 @@ def get_run(ctx, run_id, fields, output, follow_children):
     Use --follow-children when the run is a parent chain (e.g. RunnableSequence)
     whose outputs are null — the actual LLM outputs live in child runs.
 
+    \b
     Examples:
         langsmith-cli --json runs get <id> --fields inputs,outputs
         langsmith-cli --json runs get <id> --follow-children --fields id,name,inputs,outputs
@@ -148,24 +155,19 @@ def get_latest_run(
     This is a convenience command that fetches the latest run matching your filters,
     eliminating the need for piping `runs list` into `jq` and then `runs get`.
 
+    \b
     Examples:
         # Get latest run with just inputs/outputs
         langsmith-cli --json runs get-latest --project my-project --fields inputs,outputs
-
         # Get latest successful run
         langsmith-cli --json runs get-latest --project my-project --succeeded
-
         # Get latest error from production projects
         langsmith-cli --json runs get-latest --project-name-pattern "prd/*" --failed --fields id,name,error
-
         # Get latest slow run from last hour
         langsmith-cli --json runs get-latest --project my-project --slow --recent --fields name,latency
     """
     logger = ctx.obj["logger"]
-
-    # Determine if output is machine-readable (use stderr for diagnostics)
-    is_machine_readable = ctx.obj.get("json") or fields or output
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger, output=output, fields=fields)
 
     client = get_or_create_client(ctx)
     logger.debug(f"Getting latest run with filters: project={project}, status={status}")
@@ -211,12 +213,18 @@ def get_latest_run(
         run_type=run_type,
     )
 
+    # Lazy: SDK exception imports are cold-path for `get-latest`.
+    from langsmith.utils import LangSmithError
+    import httpx
+
+    _fetch_errors = (LangSmithError, httpx.HTTPError)
+
     if pq.use_id:
         # Direct project ID lookup - no iteration needed
         try:
             runs_iter = client.list_runs(project_id=pq.project_id, **run_kwargs)
             latest_run = next(runs_iter, None)
-        except Exception as e:
+        except _fetch_errors as e:
             failed_projects.append((f"id:{pq.project_id}", str(e)))
     else:
         for proj_name in projects_to_query:
@@ -225,23 +233,22 @@ def get_latest_run(
                 latest_run = next(runs_iter, None)
                 if latest_run:
                     break  # Found a run, stop searching
-            except Exception as e:
+            except _fetch_errors as e:
                 failed_projects.append((proj_name, str(e)))
                 continue
 
     if not latest_run:
-        logger.warning("No runs found matching the specified filters")
-
+        message_parts = ["No runs found matching the specified filters."]
         # Show failed projects if any
         if failed_projects:
-            logger.warning("Some projects failed to fetch:")
+            message_parts.append("Some projects failed to fetch:")
             for proj, error_msg in failed_projects[:3]:
                 short_error = (
                     error_msg[:100] + "..." if len(error_msg) > 100 else error_msg
                 )
-                logger.warning(f"  • {proj}: {short_error}")
+                message_parts.append(f"  {proj}: {short_error}")
             if len(failed_projects) > 3:
-                logger.warning(f"  • ... and {len(failed_projects) - 3} more")
+                message_parts.append(f"  ... and {len(failed_projects) - 3} more")
 
             # Suggest similar project names for single-project failures
             failed_names = [
@@ -251,9 +258,9 @@ def get_latest_run(
                 suggestions = get_project_suggestions(client, failed_names[0])
                 if suggestions:
                     suggestion_list = ", ".join(f"'{s}'" for s in suggestions[:5])
-                    logger.info(f"Did you mean: {suggestion_list}?")
+                    message_parts.append(f"Did you mean: {suggestion_list}?")
 
-        raise click.Abort()
+        raise click.ClickException("\n".join(message_parts))
 
     data = filter_fields(latest_run, fields)
 
@@ -277,6 +284,7 @@ def view_file(ctx, pattern, no_truncate, fields):
 
     Supports glob patterns to read multiple files.
 
+    \b
     Examples:
         langsmith-cli runs view-file samples.jsonl
         langsmith-cli runs view-file "data/*.jsonl"
@@ -285,10 +293,7 @@ def view_file(ctx, pattern, no_truncate, fields):
         langsmith-cli --json runs view-file samples.jsonl
     """
     logger = ctx.obj["logger"]
-
-    # Determine if output is machine-readable
-    is_machine_readable = ctx.obj.get("json") or fields
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger, fields=fields)
 
     import glob
 
@@ -296,10 +301,14 @@ def view_file(ctx, pattern, no_truncate, fields):
     file_paths = glob.glob(pattern)
 
     if not file_paths:
-        logger.error(f"No files match pattern: {pattern}")
-        raise click.Abort()
+        raise click.ClickException(f"No files match pattern: {pattern}")
 
     # Read all runs from matching files
+    # Lazy import: view-file is a cold-path command and we don't want
+    # `from langsmith.schemas import Run` running for every CLI startup.
+    from langsmith.schemas import Run as _Run
+    from pydantic import ValidationError
+
     all_runs: list[Run] = []
     for file_path in sorted(file_paths):
         try:
@@ -311,26 +320,26 @@ def view_file(ctx, pattern, no_truncate, fields):
                     try:
                         data = json.loads(line)
                         # Convert dict to Run object using Pydantic validation
-                        run = Run.model_validate(data)
+                        run = _Run.model_validate(data)
                         all_runs.append(run)
                     except json.JSONDecodeError as e:
                         logger.warning(f"Invalid JSON at {file_path}:{line_num} - {e}")
-                    except Exception as e:
+                    except ValidationError as e:
                         logger.warning(
                             f"Failed to parse run at {file_path}:{line_num} - {e}"
                         )
-        except Exception as e:
+        except OSError as e:
             logger.error(f"Error reading {file_path}: {e}")
             continue
 
     if not all_runs:
         logger.warning("No valid runs found in files.")
-        if ctx.obj.get("json"):
+        if is_json_context(ctx):
             click.echo(json.dumps([]))
         return
 
     # Handle JSON output
-    if ctx.obj.get("json"):
+    if is_json_context(ctx):
         data = filter_fields(all_runs, fields)
         output_formatted_data(data, "json")
         return

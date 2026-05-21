@@ -5,7 +5,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from conftest import create_run, make_run_id
+from conftest import create_project, create_run, make_run_id
 from langsmith_cli.main import cli
 
 
@@ -41,6 +41,77 @@ class TestRunsListBasic:
 
         _, kwargs = mock_client.list_runs.call_args
         assert kwargs["is_root"] is True
+
+    def test_list_with_all_runs_flag(self, runner, mock_client):
+        """--all-runs is an ergonomic alias for --is-root false."""
+        mock_client.list_runs.return_value = []
+
+        runner.invoke(cli, ["runs", "list", "--all-runs"])
+
+        _, kwargs = mock_client.list_runs.call_args
+        assert kwargs["is_root"] is False
+
+    def test_legacy_is_root_flag_still_works_but_is_hidden(self, runner, mock_client):
+        """--is-root remains compatible but no longer clutters help."""
+        mock_client.list_runs.return_value = []
+
+        result = runner.invoke(cli, ["runs", "list", "--is-root", "true"])
+
+        assert result.exit_code == 0
+        _, kwargs = mock_client.list_runs.call_args
+        assert kwargs["is_root"] is True
+
+        help_result = runner.invoke(cli, ["runs", "list", "--help"])
+        assert help_result.exit_code == 0
+        assert "--is-root" not in help_result.output
+        assert "--roots" in help_result.output
+        assert "--all-runs" in help_result.output
+
+    def test_project_pattern_alias_filters_projects(self, runner, mock_client):
+        """--project-pattern is the short alias for --project-name-pattern."""
+        mock_client.list_projects.return_value = [
+            create_project("prd/api"),
+            create_project("dev/api"),
+        ]
+        mock_client.list_runs.return_value = []
+
+        result = runner.invoke(cli, ["runs", "list", "--project-pattern", "prd/*"])
+
+        assert result.exit_code == 0
+        _, kwargs = mock_client.list_runs.call_args
+        assert kwargs["project_name"] == "prd/api"
+
+    @pytest.mark.parametrize(
+        "args,message",
+        [
+            (["--roots", "--all-runs"], "Use only one of --roots or --all-runs"),
+            (["--roots", "--is-root", "false"], "Use only one of --roots"),
+            (["--all-runs", "--is-root", "true"], "Use only one of --all-runs"),
+        ],
+    )
+    def test_conflicting_root_scope_flags_fail_fast(
+        self, runner, mock_client, args, message
+    ):
+        """Contradictory root-scope flags should not silently pick one."""
+        mock_client.list_runs.return_value = []
+
+        result = runner.invoke(cli, ["runs", "list", *args])
+
+        assert result.exit_code != 0
+        assert message in result.output
+        mock_client.list_runs.assert_not_called()
+
+    def test_count_defaults_to_unlimited_and_selects_id(self, runner, mock_client):
+        """--count should count all runs by default and request only IDs."""
+        mock_client.list_runs.return_value = [create_run(name="counted")]
+
+        result = runner.invoke(cli, ["runs", "list", "--count"])
+
+        assert result.exit_code == 0
+        assert result.output.strip() == "1"
+        _, kwargs = mock_client.list_runs.call_args
+        assert kwargs["limit"] is None
+        assert kwargs["select"] == ["id"]
 
     def test_list_table_includes_tokens_and_model(self, runner, mock_client):
         """Table output includes tokens and model columns."""
@@ -100,10 +171,11 @@ class TestRunsListJSON:
         When ALL sources fail, the global error handler outputs a JSON error object
         with non-zero exit code so scripts can detect and parse the failure.
         """
+        from langsmith.utils import LangSmithError
 
         with patch("langsmith.Client") as MockClient:
             mock_client = MockClient.return_value
-            mock_client.list_runs.side_effect = Exception("API Error")
+            mock_client.list_runs.side_effect = LangSmithError("API Error")
 
             result = runner.invoke(cli, ["--json", "runs", "list", "--project", "test"])
 
@@ -120,12 +192,13 @@ class TestRunsListJSON:
         When ALL sources fail during iteration, the global error handler outputs
         a JSON error object with non-zero exit code.
         """
+        from langsmith.utils import LangSmithError
 
         with patch("langsmith.Client") as MockClient:
             mock_client = MockClient.return_value
 
             def failing_iterator():
-                raise Exception("Iterator failed")
+                raise LangSmithError("Iterator failed")
                 yield  # Never reached
 
             mock_client.list_runs.return_value = failing_iterator()
@@ -221,6 +294,15 @@ class TestRunsListFilters:
         assert 'has(tags, "production")' in kwargs["filter"]
         assert 'has(tags, "experimental")' in kwargs["filter"]
         assert kwargs["filter"].startswith("and(")
+
+    def test_tag_filter_quotes_fql_strings(self, runner, mock_client):
+        """Tag filters safely quote embedded quotes for FQL."""
+        mock_client.list_runs.return_value = []
+
+        runner.invoke(cli, ["runs", "list", "--tag", 'team:"core"'])
+
+        _, kwargs = mock_client.list_runs.call_args
+        assert 'has(tags, "team:\\"core\\"")' in kwargs["filter"]
 
     @pytest.mark.parametrize(
         "flag,expected_error",
@@ -412,6 +494,37 @@ class TestRunsListNameFilters:
         # 250 > API max 100, so SDK gets None (cursor pagination handles paging)
         assert kwargs["limit"] is None
 
+    def test_explicit_fetch_still_applies_display_limit(self, runner, mock_client):
+        """--fetch controls evaluation size; --limit controls returned rows."""
+        mock_client.list_runs.return_value = iter(
+            [
+                create_run(name=f"run-{idx}", id_str=make_run_id(idx))
+                for idx in range(1, 6)
+            ]
+        )
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "list",
+                "--limit",
+                "1",
+                "--fetch",
+                "5",
+                "--fields",
+                "id,name",
+            ],
+        )
+
+        assert result.exit_code == 0
+        _, kwargs = mock_client.list_runs.call_args
+        assert kwargs["limit"] == 5
+        data = json.loads(result.output)
+        assert len(data) == 1
+        assert data[0]["name"] == "run-1"
+
 
 class TestRunsListCombinedFilters:
     """Combined filter tests."""
@@ -506,6 +619,28 @@ class TestRunsListOutputFormats:
 
         assert result.exit_code == 0
         assert "test-run" in result.output
+
+    def test_output_respects_json_format(self, runner, mock_client, tmp_path):
+        """--output writes a JSON array when --format json is explicit."""
+        mock_client.list_runs.return_value = iter([create_run(name="test-run")])
+        output_file = tmp_path / "runs.json"
+
+        result = runner.invoke(
+            cli,
+            [
+                "runs",
+                "list",
+                "--format",
+                "json",
+                "--output",
+                str(output_file),
+            ],
+        )
+
+        assert result.exit_code == 0
+        data = json.loads(output_file.read_text())
+        assert isinstance(data, list)
+        assert data[0]["name"] == "test-run"
 
 
 class TestRunsListTruncation:
@@ -632,7 +767,9 @@ class TestRunsListProjectNotFound:
 
     def test_error_suggests_similar_projects_json(self, runner, mock_client):
         """INVARIANT: JSON error includes suggested project names when project not found."""
-        mock_client.list_runs.side_effect = Exception("Project not found")
+        from langsmith.utils import LangSmithError
+
+        mock_client.list_runs.side_effect = LangSmithError("Project not found")
         proj = MagicMock()
         proj.name = "prd/promotion_service"
         mock_client.list_projects.return_value = [proj]
@@ -655,7 +792,9 @@ class TestRunsListProjectNotFound:
 
     def test_error_suggests_similar_projects_human(self, runner, mock_client):
         """INVARIANT: Human-mode error includes suggested project names."""
-        mock_client.list_runs.side_effect = Exception("Project not found")
+        from langsmith.utils import LangSmithError
+
+        mock_client.list_runs.side_effect = LangSmithError("Project not found")
         proj = MagicMock()
         proj.name = "prd/promotion_service"
         mock_client.list_projects.return_value = [proj]
@@ -753,3 +892,201 @@ class TestTraceAlias:
         assert result.exit_code == 0
         call_kwargs = mock_client.list_runs.call_args[1]
         assert call_kwargs.get("trace_id") == SOME_TRACE
+
+    def test_exact_name_pattern_pushes_server_filter(self, runner, mock_client):
+        """Exact --name-pattern should become an FQL equality filter."""
+        mock_client.list_runs.return_value = iter([])
+
+        result = runner.invoke(
+            cli,
+            ["--json", "runs", "list", "--name-pattern", "Exact Run", "--fields", "id"],
+        )
+
+        assert result.exit_code == 0
+        call_kwargs = mock_client.list_runs.call_args[1]
+        assert 'eq(name, "Exact Run")' in call_kwargs["filter"]
+        assert call_kwargs["select"] == ["id"]
+
+    def test_unlimited_client_filtering_uses_fetch_cap(self, runner, mock_client):
+        """Client-side filters with --limit 0 should still cap API fetches."""
+        mock_client.list_runs.return_value = iter([])
+
+        result = runner.invoke(
+            cli,
+            ["runs", "list", "--name-regex", "worker-.+", "--limit", "0"],
+        )
+
+        assert result.exit_code == 0
+        call_kwargs = mock_client.list_runs.call_args[1]
+        # The CLI computes a 1000-run cap, then _make_fetch_runs omits SDK
+        # limits above the API max and caps locally with islice.
+        assert call_kwargs["limit"] is None
+
+    def test_grep_fields_are_added_to_machine_readable_select(
+        self, runner, mock_client
+    ):
+        """--fields with grep must still fetch fields needed for filtering."""
+        mock_client.list_runs.return_value = iter([create_run(name="grep-me")])
+
+        result = runner.invoke(
+            cli,
+            ["--json", "runs", "list", "--fields", "id", "--grep", "timeout"],
+        )
+
+        assert result.exit_code == 0
+        call_kwargs = mock_client.list_runs.call_args[1]
+        assert call_kwargs["select"] == ["error", "id", "inputs", "outputs"]
+
+
+class TestRunsListQueryFallback:
+    """INVARIANTS for the freeform --query fallback to FQL search().
+
+    The fallback exists because the server rejects some freeform queries with
+    HTTP 422; in that case the CLI retries once with `search("<query>")`. The
+    retry MUST be narrow: only fire when every source failed *and* every
+    failure looks like a 422. Other failure modes (auth, not-found, network)
+    must propagate as errors, not loop into a useless retry.
+    """
+
+    def test_query_422_triggers_fql_search_retry(self, runner, mock_client):
+        """INVARIANT: 422 on --query everywhere triggers one FQL search() retry."""
+        import httpx
+
+        # Build a real 422 response so the helper's status_code check fires.
+        request = httpx.Request("POST", "https://api.smith.langchain.com/runs/query")
+        response = httpx.Response(422, request=request, text="bad query")
+        rejection = httpx.HTTPStatusError("422", request=request, response=response)
+
+        # First call raises 422; second (fallback) returns one run.
+        mock_client.list_runs.side_effect = [
+            rejection,
+            iter([create_run(name="found via fql")]),
+        ]
+
+        result = runner.invoke(cli, ["runs", "list", "--query", "some text"])
+
+        assert result.exit_code == 0, result.output
+        assert mock_client.list_runs.call_count == 2
+
+        # Retry must pass a `search(...)` FQL filter and clear `query`.
+        retry_kwargs = mock_client.list_runs.call_args_list[1].kwargs
+        assert retry_kwargs.get("query") is None
+        assert 'search("some text")' in (retry_kwargs.get("filter") or "")
+
+    def test_query_rejection_helper_handles_invalid_body(self):
+        """INVARIANT: malformed SDK error bodies do not trigger fallback."""
+        import requests
+        from langsmith_cli.commands.runs.list_cmd import (
+            _all_failures_are_query_rejection,
+            _error_body_detail,
+            _is_query_rejection,
+        )
+
+        assert _error_body_detail(None) is False
+        assert _error_body_detail("[]") is False
+        assert _is_query_rejection(requests.HTTPError("400", "not-json")) is False
+        assert (
+            _is_query_rejection(requests.HTTPError("400", '{"detail":"other"}'))
+            is False
+        )
+        assert _all_failures_are_query_rejection({}) is False
+
+    def test_query_rejection_helper_accepts_response_detail(self):
+        """SDK errors with the known server detail trigger the fallback."""
+        import requests
+        from langsmith_cli.commands.runs.list_cmd import _is_query_rejection
+
+        response = requests.Response()
+        response.status_code = 400
+        response._content = (  # noqa: SLF001 - requests exposes text through content.
+            b'{"detail":"Failed to generate filter from freeform query"}'
+        )
+        error = requests.HTTPError("400 Client Error")
+        error.response = response
+
+        assert _is_query_rejection(error) is True
+
+    def test_wrapped_langsmith_query_rejection_triggers_retry(
+        self, runner, mock_client
+    ):
+        """INVARIANT: SDK-wrapped query rejection still triggers FQL fallback."""
+        import requests
+        from langsmith.utils import LangSmithError
+
+        try:
+            try:
+                raise requests.HTTPError(
+                    "400 Client Error",
+                    '{"detail":"Failed to generate filter from freeform query"}',
+                )
+            except requests.HTTPError as inner:
+                raise LangSmithError("Failed to POST /runs/query") from inner
+        except LangSmithError as wrapped_rejection:
+            rejection = wrapped_rejection
+
+        mock_client.list_runs.side_effect = [
+            rejection,
+            iter([create_run(name="found via wrapped fallback")]),
+        ]
+
+        result = runner.invoke(cli, ["runs", "list", "--query", "wrapped"])
+
+        assert result.exit_code == 0, result.output
+        assert mock_client.list_runs.call_count == 2
+        retry_kwargs = mock_client.list_runs.call_args_list[1].kwargs
+        assert retry_kwargs.get("query") is None
+        assert 'search("wrapped")' in (retry_kwargs.get("filter") or "")
+
+    def test_non_422_failure_does_not_trigger_retry(self, runner, mock_client):
+        """INVARIANT: auth/not-found/network errors must NOT trigger the FQL fallback.
+
+        Retrying on non-query failures wastes a round-trip and lies in the
+        warning message ("LangSmith rejected the freeform query"). Only 422
+        is shaped like a query rejection.
+        """
+        from langsmith.utils import LangSmithAuthError
+
+        mock_client.list_runs.side_effect = LangSmithAuthError("forbidden")
+
+        result = runner.invoke(cli, ["runs", "list", "--query", "anything"])
+
+        # Single attempt, no retry, command surfaces the error.
+        assert mock_client.list_runs.call_count == 1
+        assert result.exit_code != 0
+
+    def test_no_query_means_no_fallback(self, runner, mock_client):
+        """INVARIANT: without --query, the fallback path is never reached."""
+        from langsmith.utils import LangSmithError
+
+        mock_client.list_runs.side_effect = LangSmithError("unrelated boom")
+
+        result = runner.invoke(cli, ["runs", "list"])
+
+        assert mock_client.list_runs.call_count == 1
+        assert result.exit_code != 0
+
+
+class TestRunsSearchDelegation:
+    """INVARIANT: runs search delegates to runs list via ctx.invoke and
+    relies on Click to fill in defaults for params it doesn't expose.
+
+    This guards against drift: when runs list grows a new option, runs
+    search must not need a code change to keep working.
+    """
+
+    def test_search_does_not_break_when_list_has_unmentioned_params(
+        self, runner, mock_client
+    ):
+        """Search must succeed end-to-end without enumerating every list_runs param.
+
+        This is the structural guarantee that the kwargs glue between the
+        two commands is robust to new flags being added to runs list.
+        """
+        mock_client.list_runs.return_value = iter([create_run(name="hit")])
+
+        result = runner.invoke(cli, ["runs", "search", "hello"])
+
+        assert result.exit_code == 0, result.output
+        # Server sees the freeform query.
+        kwargs = mock_client.list_runs.call_args.kwargs
+        assert kwargs.get("query") == "hello"
