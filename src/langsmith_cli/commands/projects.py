@@ -23,7 +23,6 @@ from langsmith_cli.utils import (
     output_single_item,
     render_output,
     get_or_create_client,
-    write_output_to_file,
     json_dumps,
 )
 
@@ -107,8 +106,14 @@ def list_projects(
 ):
     """List all projects."""
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json") or bool(output) or bool(fields)
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(
+        ctx,
+        logger,
+        output=output,
+        output_format=output_format,
+        count=count,
+        fields=fields,
+    )
 
     # When --count is used, default to unlimited (0) unless user explicitly set limit
     # Check if limit was explicitly provided by checking if it's not the default
@@ -192,13 +197,6 @@ def list_projects(
     # Track if we hit the limit
     hit_limit = effective_limit is not None and total_count > effective_limit
 
-    # Handle file output - short circuit if writing to file
-    if output:
-        data = filter_fields(projects_list, fields)
-        file_format = output_format if output_format is not None else "jsonl"
-        write_output_to_file(data, output, console, format_type=file_format)
-        return
-
     # Define table builder function
     def build_projects_table(projects):
         from datetime import datetime, timezone
@@ -264,7 +262,11 @@ def list_projects(
         empty_message="No projects found",
         output_format=output_format,
         count_flag=count,
+        output_path=output,
     )
+
+    if output:
+        return
 
     # Show message if we hit the limit (not in count mode or JSON mode)
     if hit_limit and not count and not ctx.obj.get("json"):
