@@ -6,7 +6,6 @@ from datetime import datetime as _datetime, timezone as _timezone
 from typing import TYPE_CHECKING
 
 import click
-from rich.table import Table
 
 from langsmith_cli.commands.runs._group import runs
 from langsmith_cli.utils import (
@@ -97,6 +96,8 @@ def watch_runs(
         else:
             title = f"Watching: {project}"
         title += f" (Interval: {interval}s)"
+
+        from rich.table import Table
 
         table = Table(title=title)
         table.add_column("Name", style="cyan")

@@ -1,10 +1,10 @@
 import click
 import webbrowser
 from pathlib import Path
-from rich.console import Console
 from langsmith_cli.config import save_api_key
+from langsmith_cli.output import LazyConsole
 
-console = Console()
+console = LazyConsole()
 
 
 @click.command()

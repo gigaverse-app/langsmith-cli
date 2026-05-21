@@ -3,7 +3,6 @@
 from typing import Any
 
 import click
-from rich.table import Table
 
 from langsmith_cli.commands.runs._group import runs, console
 from langsmith_cli.utils import (
@@ -80,6 +79,8 @@ def run_stats(
         table_title = f"Stats: {pq.names[0]}"
     else:
         table_title = f"Stats: {len(pq.names)} projects"
+
+    from rich.table import Table
 
     table = Table(title=table_title)
     table.add_column("Metric")

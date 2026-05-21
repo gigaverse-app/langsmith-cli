@@ -1,7 +1,6 @@
 import click
-from rich.console import Console
-from rich.table import Table
 from langsmith_cli.utils import (
+    LazyConsole,
     apply_exclude_filter,
     configure_logger_streams,
     confirm_option,
@@ -24,7 +23,7 @@ from langsmith_cli.utils import (
     sort_items,
 )
 
-console = Console()
+console = LazyConsole()
 
 
 def normalize_split(split: str | None) -> list[str] | None:
@@ -132,6 +131,8 @@ def list_examples(
 
     # Define table builder function
     def build_examples_table(examples):
+        from rich.table import Table
+
         table = Table(title=f"Examples: {dataset}")
         table.add_column("ID", style="dim")
         table.add_column("Inputs")
@@ -182,9 +183,7 @@ def get_example(ctx, example_id, as_of, fields, output):
 
     def render_example_details(data: dict, console: object) -> None:
         from rich.syntax import Syntax
-        from rich.console import Console as RichConsole
 
-        assert isinstance(console, RichConsole)
         console.print(f"[bold]Example ID:[/bold] {data.get('id')}")
         if "inputs" in data:
             console.print("\n[bold]Inputs:[/bold]")

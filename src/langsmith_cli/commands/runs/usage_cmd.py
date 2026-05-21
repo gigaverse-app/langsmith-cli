@@ -7,7 +7,6 @@ from datetime import datetime as _datetime
 from typing import TYPE_CHECKING, Any
 
 import click
-from rich.table import Table
 
 from langsmith_cli.commands.runs._group import console, runs
 from langsmith_cli.time_parsing import ensure_aware_datetime
@@ -846,8 +845,10 @@ def _build_usage_table(
     group_by: str | None,
     group_field: str | None,
     breakdown: tuple[str, ...],
-) -> Table:
+) -> Any:
     """Render usage rows as a Rich Table. View layer only — no console.print."""
+    from rich.table import Table
+
     group_label = group_field or "group"
     table = Table(title=f"Token Usage by {interval.title()}")
     table.add_column("Time", style="cyan")

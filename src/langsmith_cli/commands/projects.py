@@ -3,9 +3,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import click
-from rich.console import Console
-from rich.table import Table
 from langsmith_cli.utils import (
+    LazyConsole,
     resolve_by_name_or_id,
     sort_items,
     apply_regex_filter,
@@ -33,7 +32,7 @@ if TYPE_CHECKING:
     from langsmith import Client
     from langsmith.schemas import TracerSessionResult
 
-console = Console()
+console = LazyConsole()
 
 
 def resolve_project(
@@ -207,6 +206,8 @@ def list_projects(
     # Define table builder function
     def build_projects_table(projects):
         from datetime import datetime, timezone
+        from rich.table import Table
+
         from langsmith_cli.time_parsing import ensure_aware_datetime
 
         table = Table(title="Projects")
@@ -334,9 +335,6 @@ def get_project(ctx, name_or_id, include_stats, fields, output):
     data = filter_fields(project, fields)
 
     def render_project_details(data: dict, console: object) -> None:
-        from rich.console import Console as RichConsole
-
-        assert isinstance(console, RichConsole)
         console.print(f"[bold]Project:[/bold] {data.get('name')}")
         console.print(f"[bold]ID:[/bold] {data.get('id')}")
         if data.get("description"):

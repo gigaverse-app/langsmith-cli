@@ -16,6 +16,7 @@ specific module directly:
 
 from langsmith_cli.output import (
     ConsoleProtocol,
+    LazyConsole,
     configure_logger_streams,
     determine_output_format,
     emit_action_result,
@@ -104,6 +105,7 @@ from langsmith_cli.run_helpers import (
 __all__ = [
     # output
     "ConsoleProtocol",
+    "LazyConsole",
     "configure_logger_streams",
     "determine_output_format",
     "emit_action_result",

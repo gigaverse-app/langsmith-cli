@@ -89,6 +89,23 @@ class ConsoleProtocol(Protocol):
         ...
 
 
+class LazyConsole:
+    """Defer Rich Console construction until human rendering actually needs it."""
+
+    def __init__(self) -> None:
+        self._console: Any | None = None
+
+    def _get_console(self) -> Any:
+        if self._console is None:
+            from rich.console import Console
+
+            self._console = Console()
+        return self._console
+
+    def print(self, *args: Any, **kwargs: Any) -> None:
+        self._get_console().print(*args, **kwargs)
+
+
 def output_formatted_data(
     data: list[dict[str, Any]],
     format_type: str,

@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 import click
-from rich.table import Table
 
 from langsmith_cli.commands.runs._group import runs, console, _make_fetch_runs
 from langsmith_cli.utils import (
@@ -309,8 +308,10 @@ def _render_analyze_table(
     results: list[dict[str, Any]],
     requested_metrics: list[str],
     group_by_label: str,
-) -> Table:
+) -> Any:
     """Build a Rich Table from grouped metric rows. View layer only."""
+    from rich.table import Table
+
     table = Table(title=f"Analysis: {group_by_label}")
     table.add_column("Group", style="cyan")
     for metric in requested_metrics:

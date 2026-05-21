@@ -4,7 +4,6 @@ from typing import Any
 import json
 
 import click
-from rich.table import Table
 
 from langsmith_cli.commands.runs._group import console, runs
 from langsmith_cli.utils import (
@@ -464,6 +463,8 @@ def cache_list(ctx: click.Context) -> None:
                 f"(run 'runs cache repair' to fix): {', '.join(orphaned)}"
             )
         return
+
+    from rich.table import Table
 
     table = Table(title="Cached Projects")
     table.add_column("Project", style="cyan")

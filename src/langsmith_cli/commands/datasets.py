@@ -4,9 +4,8 @@ import os
 from typing import TYPE_CHECKING, Any, TypedDict
 
 import click
-from rich.console import Console
-from rich.table import Table
 from langsmith_cli.utils import (
+    LazyConsole,
     add_name_filter_options,
     apply_exclude_filter,
     apply_name_filters,
@@ -34,7 +33,7 @@ if TYPE_CHECKING:
     from langsmith import Client
     from langsmith.schemas import Dataset
 
-console = Console()
+console = LazyConsole()
 
 
 class DatasetPushRow(TypedDict):
@@ -163,6 +162,8 @@ def list_datasets(
 
     # Define table builder function
     def build_datasets_table(datasets):
+        from rich.table import Table
+
         table = Table(title="Datasets")
         table.add_column("Name", style="cyan")
         table.add_column("ID", style="dim")
@@ -204,9 +205,6 @@ def get_dataset(ctx, dataset_id, fields, output):
     data = filter_fields(dataset, fields)
 
     def render_dataset_details(data: dict, console: object) -> None:
-        from rich.console import Console as RichConsole
-
-        assert isinstance(console, RichConsole)
         console.print(f"[bold]Name:[/bold] {data.get('name')}")
         console.print(f"[bold]ID:[/bold] {data.get('id')}")
         console.print(f"[bold]Description:[/bold] {data.get('description')}")

@@ -1,7 +1,6 @@
 import click
-from rich.console import Console
-from rich.table import Table
 from langsmith_cli.utils import (
+    LazyConsole,
     configure_logger_streams,
     confirm_option,
     count_option,
@@ -17,7 +16,7 @@ from langsmith_cli.utils import (
     require_confirmation,
 )
 
-console = Console()
+console = LazyConsole()
 
 
 @click.group()
@@ -89,6 +88,8 @@ def list_feedback(
     )
 
     def build_feedback_table(items):
+        from rich.table import Table
+
         table = Table(title="Feedback")
         table.add_column("ID", style="dim")
         table.add_column("Key")
@@ -137,9 +138,6 @@ def get_feedback(ctx, feedback_id, fields, output):
     data = filter_fields(fb, fields)
 
     def render_feedback_details(data: dict, console: object) -> None:
-        from rich.console import Console as RichConsole
-
-        assert isinstance(console, RichConsole)
         console.print(f"[bold]ID:[/bold] {data.get('id')}")
         console.print(f"[bold]Key:[/bold] {data.get('key')}")
         console.print(f"[bold]Score:[/bold] {data.get('score')}")

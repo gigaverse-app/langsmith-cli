@@ -2,16 +2,15 @@ from datetime import timedelta
 from decimal import Decimal
 
 import click
-from rich.console import Console
-from rich.table import Table
 from langsmith_cli.utils import (
+    LazyConsole,
     configure_logger_streams,
     get_or_create_client,
     json_dumps,
     not_found_as_click_exception,
 )
 
-console = Console()
+console = LazyConsole()
 
 
 @click.group()
@@ -32,6 +31,8 @@ def results(ctx, name):
     configure_logger_streams(ctx, logger)
 
     logger.debug(f"Fetching experiment results: {name}")
+
+    from rich.table import Table
 
     client = get_or_create_client(ctx)
     with not_found_as_click_exception("Experiment", name):

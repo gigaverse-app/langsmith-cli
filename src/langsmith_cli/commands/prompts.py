@@ -1,7 +1,6 @@
 import click
-from rich.console import Console
-from rich.table import Table
 from langsmith_cli.utils import (
+    LazyConsole,
     apply_exclude_filter,
     configure_logger_streams,
     confirm_option,
@@ -22,7 +21,7 @@ from langsmith_cli.utils import (
     sort_items,
 )
 
-console = Console()
+console = LazyConsole()
 
 
 def _resolve_visibility_flags(
@@ -125,6 +124,8 @@ def list_prompts(
 
     # Define table builder function
     def build_prompts_table(prompts):
+        from rich.table import Table
+
         table = Table(title="Prompts")
         table.add_column("Repo", style="cyan")
         table.add_column("Description")
@@ -191,9 +192,6 @@ def get_prompt(ctx, name, commit, fields, output):
     prompt_str = str(prompt_obj)
 
     def render_prompt_details(data: dict, console: object) -> None:
-        from rich.console import Console as RichConsole
-
-        assert isinstance(console, RichConsole)
         console.print(f"[bold]Prompt:[/bold] {name}")
         console.print("-" * 20)
         console.print(prompt_str)
@@ -290,10 +288,8 @@ def pull_prompt(ctx, name, commit, include_model, fields, output):
     data = filter_fields(prompt_commit, fields)
 
     def render_commit_details(data: dict, console: object) -> None:
-        from rich.console import Console as RichConsole
         from rich.syntax import Syntax
 
-        assert isinstance(console, RichConsole)
         console.print(f"[bold]Prompt:[/bold] {data.get('owner')}/{data.get('repo')}")
         console.print(f"[bold]Commit:[/bold] {data.get('commit_hash')}")
         if data.get("manifest"):
@@ -426,6 +422,8 @@ def list_commits(
 
     # Define table builder
     def build_commits_table(commits):
+        from rich.table import Table
+
         table = Table(title=f"Commits: {name}")
         table.add_column("Hash", style="cyan")
         table.add_column("Created At", style="dim")

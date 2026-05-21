@@ -1,7 +1,6 @@
 import click
-from rich.console import Console
-from rich.table import Table
 from langsmith_cli.utils import (
+    LazyConsole,
     configure_logger_streams,
     confirm_option,
     count_option,
@@ -17,7 +16,7 @@ from langsmith_cli.utils import (
     require_confirmation,
 )
 
-console = Console()
+console = LazyConsole()
 
 
 @click.group(name="annotation-queues")
@@ -65,6 +64,8 @@ def list_queues(ctx, name, name_contains, limit, output_format, fields, count, o
     )
 
     def build_queues_table(items):
+        from rich.table import Table
+
         table = Table(title="Annotation Queues")
         table.add_column("ID", style="dim")
         table.add_column("Name")
@@ -109,9 +110,6 @@ def get_queue(ctx, queue_id, fields, output):
     data = filter_fields(queue, fields)
 
     def render_queue_details(data: dict, console: object) -> None:
-        from rich.console import Console as RichConsole
-
-        assert isinstance(console, RichConsole)
         console.print(f"[bold]ID:[/bold] {data.get('id')}")
         console.print(f"[bold]Name:[/bold] {data.get('name')}")
         if data.get("description"):
