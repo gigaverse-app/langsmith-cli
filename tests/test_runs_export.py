@@ -99,6 +99,40 @@ def test_export_with_all_runs_flag(runner, tmp_path):
         assert call_kwargs["is_root"] is False
 
 
+def test_export_legacy_is_root_flag_still_works_but_is_hidden(runner, tmp_path):
+    """--is-root remains compatible but no longer clutters help."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        project = create_project(name="test-proj")
+        mock_client.read_project.return_value = project
+        mock_client.list_runs.return_value = []
+
+        out_dir = tmp_path / "traces"
+        result = runner.invoke(
+            cli,
+            [
+                "runs",
+                "export",
+                str(out_dir),
+                "--project",
+                "test-proj",
+                "--is-root",
+                "true",
+            ],
+        )
+
+        assert result.exit_code == 0
+        call_kwargs = mock_client.list_runs.call_args[1]
+        assert call_kwargs["is_root"] is True
+
+        help_result = runner.invoke(cli, ["runs", "export", "--help"])
+        assert help_result.exit_code == 0
+        assert "--is-root" not in help_result.output
+        assert "--roots" in help_result.output
+        assert "--all-runs" in help_result.output
+
+
 @pytest.mark.parametrize(
     "args,message",
     [

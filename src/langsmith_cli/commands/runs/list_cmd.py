@@ -116,16 +116,21 @@ def _all_failures_are_query_rejection(
 @click.option(
     "--run-type", help="Filter by run type (llm, chain, tool, retriever, etc)."
 )
-@click.option("--is-root", type=bool, help="Filter root traces only (true/false).")
+@click.option(
+    "--is-root",
+    type=bool,
+    hidden=True,
+    help="Legacy root-run filter. Use --roots or --all-runs instead.",
+)
 @click.option(
     "--roots",
     is_flag=True,
-    help="Show only root traces (shorthand for --is-root true). Recommended for cleaner output.",
+    help="Show only root traces. Recommended for cleaner output.",
 )
 @click.option(
     "--all-runs",
     is_flag=True,
-    help="Include nested child runs (shorthand for --is-root false).",
+    help="Include nested child runs.",
 )
 @click.option("--trace-filter", help="Filter applied to root trace.")
 @click.option("--tree-filter", help="Filter if any run in trace tree matches.")

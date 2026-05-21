@@ -51,6 +51,22 @@ class TestRunsListBasic:
         _, kwargs = mock_client.list_runs.call_args
         assert kwargs["is_root"] is False
 
+    def test_legacy_is_root_flag_still_works_but_is_hidden(self, runner, mock_client):
+        """--is-root remains compatible but no longer clutters help."""
+        mock_client.list_runs.return_value = []
+
+        result = runner.invoke(cli, ["runs", "list", "--is-root", "true"])
+
+        assert result.exit_code == 0
+        _, kwargs = mock_client.list_runs.call_args
+        assert kwargs["is_root"] is True
+
+        help_result = runner.invoke(cli, ["runs", "list", "--help"])
+        assert help_result.exit_code == 0
+        assert "--is-root" not in help_result.output
+        assert "--roots" in help_result.output
+        assert "--all-runs" in help_result.output
+
     def test_project_pattern_alias_filters_projects(self, runner, mock_client):
         """--project-pattern is the short alias for --project-name-pattern."""
         mock_client.list_projects.return_value = [

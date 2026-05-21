@@ -33,7 +33,12 @@ if TYPE_CHECKING:
     "--status", type=click.Choice(["success", "error"]), help="Filter by status."
 )
 @click.option("--filter", "filter_", help="LangSmith FQL filter.")
-@click.option("--is-root", type=bool, help="Filter root traces only (true/false).")
+@click.option(
+    "--is-root",
+    type=bool,
+    hidden=True,
+    help="Legacy root-run filter. Use --roots or --all-runs instead.",
+)
 @click.option(
     "--roots",
     is_flag=True,
