@@ -573,8 +573,11 @@ def list_runs(
     # Track total count before applying limit (for showing "more may exist" message)
     total_count = len(runs)
 
-    # Apply user's limit AFTER all client-side filtering/sorting
-    runs = apply_client_side_limit(runs, limit, needs_client_filtering)
+    # Apply user's display limit after local filtering/sorting. Explicit --fetch
+    # means the SDK may intentionally return more rows than should be displayed.
+    runs = apply_client_side_limit(
+        runs, limit, has_client_filters=needs_client_filtering or fetch is not None
+    )
 
     # Track if we hit the limit
     hit_limit = limit is not None and limit > 0 and total_count > limit

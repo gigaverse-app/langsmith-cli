@@ -492,6 +492,37 @@ class TestRunsListNameFilters:
         # 250 > API max 100, so SDK gets None (cursor pagination handles paging)
         assert kwargs["limit"] is None
 
+    def test_explicit_fetch_still_applies_display_limit(self, runner, mock_client):
+        """--fetch controls evaluation size; --limit controls returned rows."""
+        mock_client.list_runs.return_value = iter(
+            [
+                create_run(name=f"run-{idx}", id_str=make_run_id(idx))
+                for idx in range(1, 6)
+            ]
+        )
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "list",
+                "--limit",
+                "1",
+                "--fetch",
+                "5",
+                "--fields",
+                "id,name",
+            ],
+        )
+
+        assert result.exit_code == 0
+        _, kwargs = mock_client.list_runs.call_args
+        assert kwargs["limit"] == 5
+        data = json.loads(result.output)
+        assert len(data) == 1
+        assert data[0]["name"] == "run-1"
+
 
 class TestRunsListCombinedFilters:
     """Combined filter tests."""
