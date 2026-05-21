@@ -1,13 +1,14 @@
 """Output formatting and rendering utilities."""
 
+from __future__ import annotations
+
 import json
-from typing import Any, Callable, Protocol, TypeVar
+from typing import TYPE_CHECKING, Any, Callable, Protocol
 
 import click
-from pydantic import BaseModel
 
-T = TypeVar("T")
-ModelT = TypeVar("ModelT", bound=BaseModel)
+if TYPE_CHECKING:
+    from langsmith_cli.cli_logging import CLILogger
 
 
 def json_dumps(obj: Any, **kwargs: Any) -> str:
@@ -29,19 +30,69 @@ def json_dumps(obj: Any, **kwargs: Any) -> str:
     return json.dumps(obj, ensure_ascii=False, default=str, **kwargs)
 
 
-def configure_logger_streams(
+def is_json_context(ctx: click.Context) -> bool:
+    """Return whether the root CLI context requested strict JSON output."""
+    if ctx.obj is None:
+        return False
+    if "json" not in ctx.obj:
+        return False
+    return bool(ctx.obj["json"])
+
+
+def is_machine_readable_output(
     ctx: click.Context,
-    logger: Any,
     *,
     output: str | None = None,
+    output_format: str | None = None,
+    count: bool = False,
     fields: str | None = None,
-) -> None:
+) -> bool:
+    """Return True when the command should route diagnostics to stderr.
+
+    Any of these signals means stdout is being consumed by a machine:
+    - global --json flag
+    - explicit non-table --format (json/csv/yaml)
+    - --output writing data to a file (diagnostics must not corrupt stdout)
+    - --count returning a single integer
+    - --fields filtering JSON output (caller is post-processing)
+
+    Centralizing the rule prevents drift between commands that compute it inline.
+    """
+    if is_json_context(ctx):
+        return True
+    if output:
+        return True
+    if count:
+        return True
+    if fields:
+        return True
+    if output_format and output_format != "table":
+        return True
+    return False
+
+
+def configure_logger_streams(
+    ctx: click.Context,
+    logger: CLILogger,
+    *,
+    output: str | None = None,
+    output_format: str | None = None,
+    count: bool = False,
+    fields: str | None = None,
+) -> bool:
     """Set logger.use_stderr when output is machine-readable.
 
-    Machine-readable modes (--json, --output, --fields) must write data to
-    stdout and diagnostics to stderr so the two streams don't mix.
+    See :func:`is_machine_readable_output` for the full set of signals.
     """
-    logger.use_stderr = bool(ctx.obj.get("json")) or bool(output) or bool(fields)
+    use_stderr = is_machine_readable_output(
+        ctx,
+        output=output,
+        output_format=output_format,
+        count=count,
+        fields=fields,
+    )
+    logger.use_stderr = use_stderr
+    return use_stderr
 
 
 class ConsoleProtocol(Protocol):
@@ -50,6 +101,29 @@ class ConsoleProtocol(Protocol):
     def print(self, *args: Any, **kwargs: Any) -> None:
         """Print to console."""
         ...
+
+
+class LazyConsole:
+    """Defer Rich Console construction until human rendering actually needs it."""
+
+    def __init__(self) -> None:
+        self._console: Any | None = None
+
+    def _get_console(self) -> Any:
+        if self._console is None:
+            from rich.console import Console
+
+            self._console = Console()
+        return self._console
+
+    def print(self, *args: Any, **kwargs: Any) -> None:
+        self._get_console().print(*args, **kwargs)
+
+
+class ModelDumpable(Protocol):
+    def model_dump(
+        self, *, include: set[str] | None = None, mode: str = "json"
+    ) -> dict[str, Any]: ...
 
 
 def output_formatted_data(
@@ -129,35 +203,51 @@ def print_empty_result_message(console: ConsoleProtocol, item_type: str) -> None
     console.print(f"[yellow]No {item_type} found.[/yellow]")
 
 
+def render_detail_fields(
+    data: dict[str, Any],
+    console: ConsoleProtocol,
+    fields: list[tuple[str, str]],
+    *,
+    skip_empty: bool = True,
+) -> None:
+    """Render labeled fields from a filtered detail dictionary.
+
+    ``get`` commands often render a dict produced by ``filter_fields``. When a
+    user asks for ``--fields name`` the omitted keys should simply disappear
+    from human output, not show up as ``None`` values.
+    """
+    for key, label in fields:
+        if key not in data:
+            continue
+        value = data[key]
+        if value is None:
+            continue
+        if skip_empty and value == "":
+            continue
+        console.print(f"[bold]{label}:[/bold] {value}")
+
+
 def safe_model_dump(
-    obj: Any, include: set[str] | None = None, mode: str = "json"
+    obj: ModelDumpable | dict[str, Any],
+    include: set[str] | None = None,
+    mode: str = "json",
 ) -> dict[str, Any]:
-    """Safely serialize Pydantic models to dict (handles v1 and v2).
+    """Serialize a dict or Pydantic v2-style model to a JSON-compatible dict.
 
     Args:
-        obj: Pydantic model instance or dict
+        obj: Pydantic v2-style model instance or dict
         include: Optional set of fields to include
         mode: Serialization mode ("json" for JSON-compatible output)
 
     Returns:
         Dictionary representation suitable for JSON serialization
     """
-    # Pydantic v2
-    if hasattr(obj, "model_dump"):
-        return obj.model_dump(include=include, mode=mode)
-    # Pydantic v1
-    elif hasattr(obj, "dict"):
-        result = obj.dict()
-        if include:
-            return {k: v for k, v in result.items() if k in include}
-        return result
-    # Already a dict
-    elif isinstance(obj, dict):
+    if isinstance(obj, dict):
         if include:
             return {k: v for k, v in obj.items() if k in include}
         return obj
-    # Fallback
-    return dict(obj)
+
+    return obj.model_dump(include=include, mode=mode)
 
 
 def render_output(
@@ -169,6 +259,7 @@ def render_output(
     empty_message: str = "No results found",
     output_format: str | None = None,
     count_flag: bool = False,
+    output_path: str | None = None,
 ) -> None:
     """Unified output renderer for all output formats (JSON, CSV, YAML, Table).
 
@@ -197,6 +288,8 @@ def render_output(
                      include_fields={"name", "id"},
                      empty_message="No projects found")
     """
+    from rich.console import Console
+
     # Normalize to list
     items = data if isinstance(data, list) else [data] if data else []
 
@@ -206,7 +299,17 @@ def render_output(
         return
 
     # Determine output format
-    format_type = determine_output_format(output_format, ctx.obj.get("json"))
+    format_type = determine_output_format(output_format, is_json_context(ctx))
+
+    # File output respects --format. Tables aren't sensible in files, so fall
+    # back to JSONL (the historical default) when --format is table or unset.
+    if output_path:
+        serialized = [safe_model_dump(item, include=include_fields) for item in items]
+        file_format = "jsonl" if format_type == "table" else format_type
+        write_output_to_file(
+            serialized, output_path, Console(), format_type=file_format
+        )
+        return
 
     # Handle non-table formats (JSON, CSV, YAML)
     if format_type != "table":
@@ -219,25 +322,16 @@ def render_output(
         return
 
     # Table output mode
+    console = Console()
     if not items:
-        from rich.console import Console
-
-        console = Console()
         console.print(f"[yellow]{empty_message}[/yellow]")
         return
 
     # Build and print table
     if table_builder:
-        table = table_builder(items)
-        from rich.console import Console
-
-        console = Console()
-        console.print(table)
+        console.print(table_builder(items))
     else:
         # Data is already a table or printable object
-        from rich.console import Console
-
-        console = Console()
         console.print(data)
 
 
@@ -261,7 +355,7 @@ def write_output_to_file(
         format_type: Output format ("jsonl" for newline-delimited JSON, "json" for JSON array/object)
 
     Raises:
-        click.Abort: If file writing fails
+        click.ClickException: If file writing fails
 
     Example:
         # List output
@@ -292,6 +386,17 @@ def write_output_to_file(
             elif format_type == "json":
                 # Write as JSON array
                 f.write(json_dumps(data))
+            elif format_type == "yaml":
+                import yaml
+
+                yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+            elif format_type == "csv":
+                import csv
+
+                if data:
+                    writer = csv.DictWriter(f, fieldnames=list(data[0].keys()))
+                    writer.writeheader()
+                    writer.writerows(data)
             else:
                 raise ValueError(f"Unsupported format_type: {format_type}")
 
@@ -305,12 +410,54 @@ def write_output_to_file(
             stderr_console.print(
                 f"[green]Wrote {len(data)} items to {output_path}[/green]"
             )
-    except Exception as e:
+    except (OSError, TypeError, ValueError) as e:
         from rich.console import Console as RichConsole
 
         stderr_console = RichConsole(stderr=True)
         stderr_console.print(f"[red]Error writing to file {output_path}: {e}[/red]")
-        raise click.Abort()
+        raise click.ClickException(f"Error writing to file {output_path}: {e}") from e
+
+
+def emit_action_result(
+    ctx: click.Context,
+    logger: CLILogger,
+    *,
+    model: Any = None,
+    payload: dict[str, Any] | None = None,
+    success_message: str,
+) -> None:
+    """Emit the result of a create/update/delete-style command.
+
+    Every mutating command in the CLI has the same two-branch shape: in
+    machine mode (``--json``) it dumps a structured payload; in human mode it
+    writes a single rich success line. Routing both branches through this
+    helper prevents future commands from forgetting one half (the most
+    common drift mode — usually the JSON branch).
+
+    Args:
+        ctx: Click context (inspected for the ``--json`` flag).
+        logger: CLILogger used for the human-mode success message.
+        model: Optional Pydantic model to dump in JSON mode. If provided,
+            takes precedence over ``payload`` and is serialized via
+            :func:`safe_model_dump`. Use this for create/update commands
+            that return an SDK entity.
+        payload: Optional plain dict to emit in JSON mode. Use this for
+            delete commands or other operations without a model return,
+            e.g. ``{"status": "success", "deleted": id}``.
+        success_message: Human-readable confirmation line written via
+            ``logger.success()`` when ``--json`` is not active.
+
+    Raises:
+        ValueError: If neither ``model`` nor ``payload`` is provided.
+    """
+    if model is None and payload is None:
+        raise ValueError("emit_action_result requires either model= or payload=.")
+
+    if is_json_context(ctx):
+        data = safe_model_dump(model) if model is not None else payload
+        click.echo(json_dumps(data))
+        return
+    logger.success(success_message)
 
 
 def output_single_item(
@@ -340,7 +487,7 @@ def output_single_item(
         write_output_to_file(data, output, console, format_type="json")
         return
 
-    if ctx.obj.get("json"):
+    if is_json_context(ctx):
         click.echo(json_dumps(data))
         return
 
@@ -355,7 +502,7 @@ def output_single_item(
 
 
 def output_option(
-    help_text: str = "Write output to file instead of stdout. For list commands, uses JSONL format (one item per line); for single items, uses JSON format.",
+    help_text: str = "Write output to file instead of stdout. List commands default to JSONL; combine with --format json/csv/yaml to choose another file format.",
 ) -> Any:
     """Reusable Click option decorator for --output flag.
 

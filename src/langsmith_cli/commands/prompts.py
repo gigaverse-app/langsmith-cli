@@ -1,26 +1,56 @@
 import click
-from rich.console import Console
-from rich.table import Table
 from langsmith_cli.utils import (
+    ConsoleProtocol,
+    LazyConsole,
     apply_exclude_filter,
     configure_logger_streams,
+    confirm_option,
     count_option,
+    emit_action_result,
     exclude_option,
     fields_option,
     filter_fields,
     get_or_create_client,
+    is_json_context,
     json_dumps,
     output_option,
     output_single_item,
     parse_comma_separated_list,
     parse_fields_option,
+    render_detail_fields,
     render_output,
+    require_confirmation,
     sort_by_option,
     sort_items,
-    write_output_to_file,
 )
 
-console = Console()
+console = LazyConsole()
+
+
+def _resolve_visibility_flags(
+    ctx: click.Context,
+    *,
+    is_public: bool | None,
+    public: bool,
+    private: bool,
+) -> bool | None:
+    """Resolve prompt visibility flags and reject contradictory inputs."""
+    if public and private:
+        raise click.UsageError("Use only one of --public or --private.")
+
+    legacy_source = ctx.get_parameter_source("is_public")
+    legacy_was_set = legacy_source is click.core.ParameterSource.COMMANDLINE
+
+    if legacy_was_set and public and is_public is False:
+        raise click.UsageError("Use only one of --public or --is-public false.")
+    if legacy_was_set and private and is_public is True:
+        raise click.UsageError("Use only one of --private or --is-public true.")
+
+    if public:
+        return True
+    if private:
+        return False
+    return is_public
 
 
 @click.group()
@@ -32,18 +62,58 @@ def prompts():
 @prompts.command("list")
 @click.option("--limit", default=20, help="Limit number of prompts (default 20).")
 @click.option(
-    "--is-public", type=bool, default=None, help="Filter by public/private status."
+    "--is-public",
+    type=bool,
+    default=None,
+    hidden=True,
+    help="Legacy visibility filter. Use --public or --private instead.",
+)
+@click.option(
+    "--public",
+    "public",
+    is_flag=True,
+    help="Show only public prompts.",
+)
+@click.option(
+    "--private",
+    "private",
+    is_flag=True,
+    help="Show only private prompts.",
 )
 @sort_by_option(fields="full_name, created_at, updated_at")
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["table", "json", "csv", "yaml"]),
+    help="Output format (default: table, or json if --json flag used).",
+)
 @exclude_option()
 @fields_option()
 @count_option()
 @output_option()
 @click.pass_context
-def list_prompts(ctx, limit, is_public, sort_by, exclude, fields, count, output):
+def list_prompts(
+    ctx,
+    limit,
+    is_public,
+    public,
+    private,
+    sort_by,
+    output_format,
+    exclude,
+    fields,
+    count,
+    output,
+):
     """List available prompt repositories."""
     logger = ctx.obj["logger"]
-    configure_logger_streams(ctx, logger, output=output, fields=fields)
+    configure_logger_streams(
+        ctx, logger, output=output, output_format=output_format, fields=fields
+    )
+
+    is_public = _resolve_visibility_flags(
+        ctx, is_public=is_public, public=public, private=private
+    )
 
     logger.debug(f"Listing prompts: limit={limit}, is_public={is_public}")
 
@@ -57,16 +127,20 @@ def list_prompts(ctx, limit, is_public, sort_by, exclude, fields, count, output)
 
     # Client-side sorting
     if sort_by:
-        prompts_list = sort_items(prompts_list, sort_by)
-
-    # Handle file output - short circuit if writing to file
-    if output:
-        data = filter_fields(prompts_list, fields)
-        write_output_to_file(data, output, console, format_type="jsonl")
-        return
+        prompts_list = sort_items(
+            prompts_list,
+            sort_by,
+            {
+                "full_name": lambda p: p.full_name,
+                "created_at": lambda p: p.created_at,
+                "updated_at": lambda p: p.updated_at,
+            },
+        )
 
     # Define table builder function
     def build_prompts_table(prompts):
+        from rich.table import Table
+
         table = Table(title="Prompts")
         table.add_column("Repo", style="cyan")
         table.add_column("Description")
@@ -77,13 +151,16 @@ def list_prompts(ctx, limit, is_public, sort_by, exclude, fields, count, output)
 
     include_fields = parse_fields_option(fields)
 
+    # Unified output rendering (handles --json, --format, --output, --count uniformly)
     render_output(
         prompts_list,
         build_prompts_table,
         ctx,
         include_fields=include_fields,
         empty_message="No prompts found",
+        output_format=output_format,
         count_flag=count,
+        output_path=output,
     )
 
 
@@ -129,10 +206,7 @@ def get_prompt(ctx, name, commit, fields, output):
     # Capture prompt_obj for rich rendering closure
     prompt_str = str(prompt_obj)
 
-    def render_prompt_details(data: dict, console: object) -> None:
-        from rich.console import Console as RichConsole
-
-        assert isinstance(console, RichConsole)
+    def render_prompt_details(data: dict, console: ConsoleProtocol) -> None:
         console.print(f"[bold]Prompt:[/bold] {name}")
         console.print("-" * 20)
         console.print(prompt_str)
@@ -147,15 +221,26 @@ def get_prompt(ctx, name, commit, fields, output):
 @click.argument("file_path", type=click.Path(exists=True))
 @click.option("--description", help="Prompt description.")
 @click.option("--tags", help="Comma-separated tags.")
-@click.option("--is-public", type=bool, default=False, help="Make prompt public.")
+@click.option(
+    "--is-public",
+    type=bool,
+    default=False,
+    hidden=True,
+    help="Legacy visibility flag. Use --public or --private instead.",
+)
+@click.option("--public", "public", is_flag=True, help="Make prompt public.")
+@click.option("--private", "private", is_flag=True, help="Make prompt private.")
 @click.pass_context
-def push_prompt(ctx, name, file_path, description, tags, is_public):
+def push_prompt(ctx, name, file_path, description, tags, is_public, public, private):
     """Push a local prompt file to LangSmith."""
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json")
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger)
 
     logger.debug(f"Pushing prompt: name={name}, file={file_path}")
+
+    prompt_is_public = _resolve_visibility_flags(
+        ctx, is_public=is_public, public=public, private=private
+    )
 
     client = get_or_create_client(ctx)
 
@@ -172,7 +257,7 @@ def push_prompt(ctx, name, file_path, description, tags, is_public):
             object=content,
             description=description,
             tags=tags_list,
-            is_public=is_public,
+            is_public=prompt_is_public,
         )
     except ImportError:
         raise click.ClickException(
@@ -180,10 +265,12 @@ def push_prompt(ctx, name, file_path, description, tags, is_public):
             "Install with: pip install langchain-core"
         )
 
-    if ctx.obj.get("json"):
-        click.echo(json_dumps({"status": "success", "name": name}))
-    else:
-        logger.success(f"Successfully pushed prompt to {name}")
+    emit_action_result(
+        ctx,
+        logger,
+        payload={"status": "success", "name": name},
+        success_message=f"Successfully pushed prompt to {name}",
+    )
 
 
 @prompts.command("pull")
@@ -221,14 +308,13 @@ def pull_prompt(ctx, name, commit, include_model, fields, output):
 
     data = filter_fields(prompt_commit, fields)
 
-    def render_commit_details(data: dict, console: object) -> None:
-        from rich.console import Console as RichConsole
+    def render_commit_details(data: dict, console: ConsoleProtocol) -> None:
         from rich.syntax import Syntax
 
-        assert isinstance(console, RichConsole)
-        console.print(f"[bold]Prompt:[/bold] {data.get('owner')}/{data.get('repo')}")
-        console.print(f"[bold]Commit:[/bold] {data.get('commit_hash')}")
-        if data.get("manifest"):
+        if "owner" in data and "repo" in data:
+            console.print(f"[bold]Prompt:[/bold] {data['owner']}/{data['repo']}")
+        render_detail_fields(data, console, [("commit_hash", "Commit")])
+        if "manifest" in data and data["manifest"]:
             console.print("\n[bold]Manifest:[/bold]")
             console.print(Syntax(json_dumps(data["manifest"], indent=2), "json"))
 
@@ -239,18 +325,16 @@ def pull_prompt(ctx, name, commit, include_model, fields, output):
 
 @prompts.command("delete")
 @click.argument("name")
-@click.option("--confirm", is_flag=True, help="Skip confirmation prompt.")
+@confirm_option()
 @click.pass_context
 def delete_prompt(ctx, name, confirm):
     """Delete a prompt from LangSmith."""
     from langsmith.utils import LangSmithNotFoundError
 
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json")
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger)
 
-    if not confirm:
-        click.confirm(f"Are you sure you want to delete prompt '{name}'?", abort=True)
+    require_confirmation(confirm, f"Are you sure you want to delete prompt '{name}'?")
 
     logger.debug(f"Deleting prompt: {name}")
 
@@ -258,7 +342,7 @@ def delete_prompt(ctx, name, confirm):
     try:
         client.delete_prompt(name)
     except LangSmithNotFoundError:
-        if ctx.obj.get("json"):
+        if is_json_context(ctx):
             click.echo(
                 json_dumps({"status": "error", "message": f"Prompt '{name}' not found"})
             )
@@ -266,44 +350,58 @@ def delete_prompt(ctx, name, confirm):
             logger.warning(f"Prompt '{name}' not found.")
         return
 
-    if ctx.obj.get("json"):
-        click.echo(json_dumps({"status": "success", "name": name}))
-    else:
-        logger.success(f"Deleted prompt '{name}'")
+    emit_action_result(
+        ctx,
+        logger,
+        payload={"status": "success", "name": name},
+        success_message=f"Deleted prompt '{name}'",
+    )
 
 
 @prompts.command("create")
 @click.argument("name")
 @click.option("--description", help="Prompt description.")
 @click.option("--tags", help="Comma-separated tags.")
-@click.option("--is-public", type=bool, default=False, help="Make prompt public.")
+@click.option(
+    "--is-public",
+    type=bool,
+    default=False,
+    hidden=True,
+    help="Legacy visibility flag. Use --public or --private instead.",
+)
+@click.option("--public", "public", is_flag=True, help="Make prompt public.")
+@click.option("--private", "private", is_flag=True, help="Make prompt private.")
 @click.pass_context
-def create_prompt_cmd(ctx, name, description, tags, is_public):
+def create_prompt_cmd(ctx, name, description, tags, is_public, public, private):
     """Create a new empty prompt repository."""
     from langsmith.utils import LangSmithConflictError
 
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json")
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger)
 
     logger.debug(f"Creating prompt: {name}")
 
-    client = get_or_create_client(ctx)
     tags_list = parse_comma_separated_list(tags)
+    prompt_is_public = _resolve_visibility_flags(
+        ctx, is_public=is_public, public=public, private=private
+    )
+    client = get_or_create_client(ctx)
 
     try:
         prompt = client.create_prompt(
             name,
             description=description,
             tags=tags_list if tags_list else None,
-            is_public=is_public,
+            is_public=prompt_is_public,
         )
-        if ctx.obj.get("json"):
-            click.echo(json_dumps(prompt.model_dump(mode="json")))
-        else:
-            logger.success(f"Created prompt '{prompt.full_name}'")
+        emit_action_result(
+            ctx,
+            logger,
+            model=prompt,
+            success_message=f"Created prompt '{prompt.full_name}'",
+        )
     except LangSmithConflictError:
-        if ctx.obj.get("json"):
+        if is_json_context(ctx):
             click.echo(
                 json_dumps(
                     {"status": "error", "message": f"Prompt '{name}' already exists"}
@@ -323,14 +421,24 @@ def create_prompt_cmd(ctx, name, description, tags, is_public):
     default=False,
     help="Include model configuration.",
 )
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["table", "json", "csv", "yaml"]),
+    help="Output format (default: table, or json if --json flag used).",
+)
 @fields_option()
 @count_option()
 @output_option()
 @click.pass_context
-def list_commits(ctx, name, limit, offset, include_model, fields, count, output):
+def list_commits(
+    ctx, name, limit, offset, include_model, output_format, fields, count, output
+):
     """List version history (commits) for a prompt."""
     logger = ctx.obj["logger"]
-    configure_logger_streams(ctx, logger, output=output, fields=fields)
+    configure_logger_streams(
+        ctx, logger, output=output, output_format=output_format, fields=fields
+    )
 
     logger.debug(f"Listing commits for prompt: {name}, limit={limit}")
 
@@ -340,14 +448,10 @@ def list_commits(ctx, name, limit, offset, include_model, fields, count, output)
     )
     commits_list = list(commits_gen)
 
-    # Handle file output
-    if output:
-        data = filter_fields(commits_list, fields)
-        write_output_to_file(data, output, console, format_type="jsonl")
-        return
-
     # Define table builder
     def build_commits_table(commits):
+        from rich.table import Table
+
         table = Table(title=f"Commits: {name}")
         table.add_column("Hash", style="cyan")
         table.add_column("Created At", style="dim")
@@ -369,5 +473,7 @@ def list_commits(ctx, name, limit, offset, include_model, fields, count, output)
         ctx,
         include_fields=include_fields,
         empty_message=f"No commits found for '{name}'",
+        output_format=output_format,
         count_flag=count,
+        output_path=output,
     )

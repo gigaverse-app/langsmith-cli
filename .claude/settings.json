@@ -1,0 +1,15 @@
+{
+  "enabledPlugins": {
+    "superpowers@claude-plugins-official": true,
+    "ralph-loop@claude-plugins-official": true,
+    "kaizen@kaizen": true
+  },
+  "extraKnownMarketplaces": {
+    "kaizen": {
+      "source": {
+        "source": "github",
+        "repo": "Garsson-io/kaizen"
+      }
+    }
+  }
+}

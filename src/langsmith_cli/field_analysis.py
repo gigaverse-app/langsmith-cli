@@ -261,10 +261,15 @@ def detect_language_safe(text: str) -> str | None:
     try:
         # Lazy import for performance
         from langdetect import detect
+        from langdetect.lang_detect_exception import LangDetectException
 
-        return detect(sample)
-    except Exception:
-        # langdetect can throw LangDetectException and various other errors on edge cases
+        try:
+            return detect(sample)
+        except LangDetectException:
+            # Empty text after filtering, no detectable language, etc.
+            return None
+    except ImportError:
+        # langdetect is an optional dependency
         return None
 
 

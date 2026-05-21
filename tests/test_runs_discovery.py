@@ -132,3 +132,16 @@ class TestRunsMetadataKeysDiscovery:
 
         assert result.exit_code == 0
         assert "No metadata keys found" in result.output
+
+    def test_metadata_keys_malformed_extra_fails_fast(self, runner, mock_client):
+        """Malformed run.extra.metadata should surface as an SDK contract error."""
+        mock_client.list_runs.return_value = [
+            create_run("run1", extra={"metadata": "not-a-dict"})
+        ]
+
+        result = runner.invoke(cli, ["--json", "runs", "metadata-keys"])
+
+        assert result.exit_code != 0
+        data = json.loads(result.output)
+        assert data["error"] == "TypeError"
+        assert "run.metadata" in data["message"]

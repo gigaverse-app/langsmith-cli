@@ -6,7 +6,10 @@ Always discover the schema first — don't guess field names.
 
 ```bash
 # What's cached?
-langsmith-cli runs cache list
+langsmith-cli --json runs cache list --fields project_name,run_count,path
+
+# Search cached content without API calls
+langsmith-cli --json runs cache grep "pattern" --grep-in outputs --fields id,name,outputs
 
 # Discover the full schema (sample 20 runs by default)
 langsmith-cli --json runs cache schema --project dev/namedrop_service

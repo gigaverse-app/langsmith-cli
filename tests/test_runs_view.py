@@ -102,6 +102,7 @@ class TestRunsViewFile:
         if file_content == "nonexistent.jsonl":
             result = runner.invoke(cli, ["runs", "view-file", file_content])
             assert result.exit_code != 0
+            assert "Aborted" not in result.output
         else:
             test_file = tmp_path / "test.jsonl"
             test_file.write_text(file_content)
@@ -109,6 +110,16 @@ class TestRunsViewFile:
             assert result.exit_code == 0
 
         assert expected_msg in result.output
+
+    def test_view_file_no_match_json_error(self, runner):
+        """INVARIANT: --json view-file no-match returns structured error JSON."""
+        result = runner.invoke(cli, ["--json", "runs", "view-file", "missing.jsonl"])
+
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert data["error"] == "ClickException"
+        assert "No files match pattern: missing.jsonl" in data["message"]
+        assert "Aborted" not in result.output
 
 
 class TestUnicodePreservation:

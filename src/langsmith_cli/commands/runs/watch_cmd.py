@@ -1,18 +1,23 @@
 """Open and watch commands for runs."""
 
+from __future__ import annotations
+
 from datetime import datetime as _datetime, timezone as _timezone
+from typing import TYPE_CHECKING
 
 import click
-from rich.table import Table
-from langsmith.schemas import Run
 
 from langsmith_cli.commands.runs._group import runs
 from langsmith_cli.utils import (
     add_project_filter_options,
     get_or_create_client,
+    is_json_context,
     json_dumps,
     resolve_project_filters,
 )
+
+if TYPE_CHECKING:
+    from langsmith.schemas import Run
 
 
 @runs.command("open")
@@ -27,7 +32,7 @@ def open_run(ctx, run_id):
     run = client.read_run(run_id)
     url = client.get_run_url(run=run)
 
-    if ctx.obj.get("json"):
+    if is_json_context(ctx):
         click.echo(json_dumps({"run_id": run_id, "url": url}))
     else:
         click.echo(f"Opening run {run_id} in browser...")
@@ -53,6 +58,7 @@ def watch_runs(
 
     Watch a single project or multiple projects matching filters.
 
+    \b
     Examples:
         langsmith-cli runs watch --project my-project
         langsmith-cli runs watch --project-name-pattern "dev/*"
@@ -93,17 +99,24 @@ def watch_runs(
             title = f"Watching: {project}"
         title += f" (Interval: {interval}s)"
 
+        from rich.table import Table
+
         table = Table(title=title)
         table.add_column("Name", style="cyan")
         table.add_column("Project", style="dim")
         table.add_column("Status", justify="center")
         table.add_column("Tokens", justify="right")
         table.add_column("Latency", justify="right")
-
         # Collect runs from all matching projects
         # Store runs with their project names as tuples
         all_runs: list[tuple[str, Run]] = []
         failed_count = 0
+        # Lazy: SDK / httpx exception imports are cold-path for watch's poll loop.
+        import httpx
+        from langsmith.utils import LangSmithError
+
+        _fetch_errors = (LangSmithError, httpx.HTTPError)
+
         if pq.use_id:
             try:
                 runs_list = list(
@@ -115,7 +128,7 @@ def watch_runs(
                 )
                 label = f"id:{pq.project_id}"
                 all_runs.extend((label, run) for run in runs_list)
-            except Exception:
+            except _fetch_errors:
                 failed_count += 1
         else:
             for proj_name in pq.names:
@@ -128,14 +141,12 @@ def watch_runs(
                         )
                     )
                     all_runs.extend((proj_name, run) for run in runs_list)
-                except Exception:
+                except _fetch_errors:
                     failed_count += 1
-
         # Sort by start time (most recent first) and limit to 10
         _epoch = _datetime.min.replace(tzinfo=_timezone.utc)
         all_runs.sort(key=lambda item: item[1].start_time or _epoch, reverse=True)
         all_runs = all_runs[:10]
-
         # Add failure count to title if any projects failed
         if failed_count > 0:
             table.title = title + f" ({failed_count} failed)"

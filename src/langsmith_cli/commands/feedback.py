@@ -1,20 +1,24 @@
 import click
-from rich.console import Console
-from rich.table import Table
-from langsmith.utils import LangSmithNotFoundError
 from langsmith_cli.utils import (
+    ConsoleProtocol,
+    LazyConsole,
     configure_logger_streams,
+    confirm_option,
+    count_option,
+    emit_action_result,
     fields_option,
     filter_fields,
     get_or_create_client,
-    json_dumps,
+    not_found_as_click_exception,
+    output_option,
     output_single_item,
     parse_fields_option,
+    render_detail_fields,
     render_output,
-    safe_model_dump,
+    require_confirmation,
 )
 
-console = Console()
+console = LazyConsole()
 
 
 @click.group()
@@ -37,12 +41,37 @@ def feedback():
 @click.option(
     "--limit", default=20, help="Maximum number of feedback items (default 20)."
 )
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["table", "json", "csv", "yaml"]),
+    help="Output format (default: table, or json if --json flag used).",
+)
 @fields_option()
+@count_option()
+@output_option()
 @click.pass_context
-def list_feedback(ctx, run_id, feedback_key, feedback_source_type, limit, fields):
+def list_feedback(
+    ctx,
+    run_id,
+    feedback_key,
+    feedback_source_type,
+    limit,
+    output_format,
+    fields,
+    count,
+    output,
+):
     """List feedback items, optionally filtered by run, key, or source."""
     logger = ctx.obj["logger"]
-    configure_logger_streams(ctx, logger, fields=fields)
+    configure_logger_streams(
+        ctx,
+        logger,
+        output=output,
+        output_format=output_format,
+        count=count,
+        fields=fields,
+    )
 
     logger.debug(
         f"Listing feedback: run_id={run_id}, key={feedback_key}, limit={limit}"
@@ -61,6 +90,8 @@ def list_feedback(ctx, run_id, feedback_key, feedback_source_type, limit, fields
     )
 
     def build_feedback_table(items):
+        from rich.table import Table
+
         table = Table(title="Feedback")
         table.add_column("ID", style="dim")
         table.add_column("Key")
@@ -84,42 +115,46 @@ def list_feedback(ctx, run_id, feedback_key, feedback_source_type, limit, fields
         ctx,
         include_fields=include_fields,
         empty_message="No feedback found",
+        output_format=output_format,
+        count_flag=count,
+        output_path=output,
     )
 
 
 @feedback.command("get")
 @click.argument("feedback_id")
 @fields_option()
+@output_option()
 @click.pass_context
-def get_feedback(ctx, feedback_id, fields):
+def get_feedback(ctx, feedback_id, fields, output):
     """Fetch a single feedback item by ID."""
     logger = ctx.obj["logger"]
-    configure_logger_streams(ctx, logger, fields=fields)
+    configure_logger_streams(ctx, logger, output=output, fields=fields)
 
     logger.debug(f"Fetching feedback: {feedback_id}")
 
     client = get_or_create_client(ctx)
-
-    try:
+    with not_found_as_click_exception("Feedback", feedback_id):
         fb = client.read_feedback(feedback_id)
-    except LangSmithNotFoundError:
-        raise click.ClickException(f"Feedback '{feedback_id}' not found.")
 
     data = filter_fields(fb, fields)
 
-    def render_feedback_details(data: dict, console: object) -> None:
-        from rich.console import Console as RichConsole
+    def render_feedback_details(data: dict, console: ConsoleProtocol) -> None:
+        render_detail_fields(
+            data,
+            console,
+            [
+                ("id", "ID"),
+                ("key", "Key"),
+                ("score", "Score"),
+                ("comment", "Comment"),
+                ("run_id", "Run ID"),
+            ],
+        )
 
-        assert isinstance(console, RichConsole)
-        console.print(f"[bold]ID:[/bold] {data.get('id')}")
-        console.print(f"[bold]Key:[/bold] {data.get('key')}")
-        console.print(f"[bold]Score:[/bold] {data.get('score')}")
-        if data.get("comment"):
-            console.print(f"[bold]Comment:[/bold] {data.get('comment')}")
-        if data.get("run_id"):
-            console.print(f"[bold]Run ID:[/bold] {data.get('run_id')}")
-
-    output_single_item(ctx, data, console, render_fn=render_feedback_details)
+    output_single_item(
+        ctx, data, console, output=output, render_fn=render_feedback_details
+    )
 
 
 @feedback.command("create")
@@ -145,8 +180,7 @@ def get_feedback(ctx, feedback_id, fields):
 def create_feedback_cmd(ctx, run_id, key, score, value, comment, feedback_source_type):
     """Create a feedback entry for a run."""
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json")
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger)
 
     logger.debug(f"Creating feedback for run {run_id}: key={key}, score={score}")
 
@@ -161,37 +195,36 @@ def create_feedback_cmd(ctx, run_id, key, score, value, comment, feedback_source
         feedback_source_type=feedback_source_type,
     )
 
-    if ctx.obj.get("json"):
-        click.echo(json_dumps(safe_model_dump(fb)))
-    else:
-        logger.success(f"Created feedback (ID: {fb.id}) for run {run_id}")
+    emit_action_result(
+        ctx,
+        logger,
+        model=fb,
+        success_message=f"Created feedback (ID: {fb.id}) for run {run_id}",
+    )
 
 
 @feedback.command("delete")
 @click.argument("feedback_id")
-@click.option("--confirm", is_flag=True, help="Skip confirmation prompt.")
+@confirm_option()
 @click.pass_context
 def delete_feedback_cmd(ctx, feedback_id, confirm):
     """Delete a feedback item by ID."""
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json")
-    logger.use_stderr = is_machine_readable
+    configure_logger_streams(ctx, logger)
 
-    if not confirm:
-        click.confirm(
-            f"Are you sure you want to delete feedback {feedback_id}?", abort=True
-        )
+    require_confirmation(
+        confirm, f"Are you sure you want to delete feedback {feedback_id}?"
+    )
 
     logger.debug(f"Deleting feedback: {feedback_id}")
 
     client = get_or_create_client(ctx)
-
-    try:
+    with not_found_as_click_exception("Feedback", feedback_id):
         client.delete_feedback(feedback_id)
-    except LangSmithNotFoundError:
-        raise click.ClickException(f"Feedback '{feedback_id}' not found.")
 
-    if ctx.obj.get("json"):
-        click.echo(json_dumps({"status": "success", "deleted": feedback_id}))
-    else:
-        logger.success(f"Deleted feedback {feedback_id}")
+    emit_action_result(
+        ctx,
+        logger,
+        payload={"status": "success", "deleted": feedback_id},
+        success_message=f"Deleted feedback {feedback_id}",
+    )
