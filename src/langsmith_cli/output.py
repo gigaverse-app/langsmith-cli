@@ -1,13 +1,9 @@
 """Output formatting and rendering utilities."""
 
 import json
-from typing import Any, Callable, Protocol, TypeVar
+from typing import Any, Callable, Protocol
 
 import click
-from pydantic import BaseModel
-
-T = TypeVar("T")
-ModelT = TypeVar("ModelT", bound=BaseModel)
 
 
 def json_dumps(obj: Any, **kwargs: Any) -> str:

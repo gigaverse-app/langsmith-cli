@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict, dataclass
 from datetime import datetime as _datetime
 from typing import TYPE_CHECKING, Any
 
 import click
-from pydantic import BaseModel
 from rich.table import Table
 
 from langsmith_cli.commands.runs._group import console, runs
@@ -38,7 +38,8 @@ if TYPE_CHECKING:
     from langsmith.schemas import Run
 
 
-class UsageBucket(BaseModel):
+@dataclass
+class UsageBucket:
     """Accumulated token/cost metrics for a single time+group+breakdown bucket."""
 
     total_tokens: int = 0
@@ -734,7 +735,7 @@ def usage_runs(
         for i, dim in enumerate(breakdown):
             row[dim] = key[2 + i]
 
-        row.update(metrics.model_dump())
+        row.update(asdict(metrics))
         results.append(row)
 
     # Sort by time, then group

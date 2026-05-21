@@ -7,7 +7,6 @@ import re
 from typing import TYPE_CHECKING, Any, Callable, TypeVar, overload
 
 import click
-from pydantic import BaseModel
 
 from langsmith_cli.output import ConsoleProtocol, json_dumps
 
@@ -15,7 +14,7 @@ if TYPE_CHECKING:
     from langsmith.schemas import Run
 
 T = TypeVar("T")
-ModelT = TypeVar("ModelT", bound=BaseModel)
+ModelT = TypeVar("ModelT")
 
 
 @overload

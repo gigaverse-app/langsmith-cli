@@ -6,11 +6,10 @@ import re
 import time
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Generic, TypeVar
 
 import click
-from pydantic import BaseModel, Field
 
 from langsmith_cli.filtering import apply_regex_filter, apply_wildcard_filter
 
@@ -118,28 +117,18 @@ class CLIFetchError(click.ClickException):
         self.suggestions = suggestions or []
 
 
-class FetchResult(BaseModel, Generic[T]):
+@dataclass
+class FetchResult(Generic[T]):
     """Result of fetching items from multiple projects/sources.
 
     Tracks both successful items and failed sources for proper error reporting.
     """
 
-    model_config = {"arbitrary_types_allowed": True}
-
     items: list[T]
     successful_sources: list[str]
-    failed_sources: list[tuple[str, str]] = Field(
-        default_factory=list, description="(source_name, error_message)"
-    )
-    failed_exceptions: dict[str, BaseException] = Field(
-        default_factory=dict,
-        description="Maps source_name to the underlying exception, for callers "
-        "that need to inspect failure type (e.g. to decide whether to retry).",
-    )
-    item_source_map: dict[str, str] = Field(
-        default_factory=dict,
-        description="Maps item ID (str) to source name for project attribution",
-    )
+    failed_sources: list[tuple[str, str]] = field(default_factory=list)
+    failed_exceptions: dict[str, BaseException] = field(default_factory=dict)
+    item_source_map: dict[str, str] = field(default_factory=dict)
 
     @property
     def has_failures(self) -> bool:
