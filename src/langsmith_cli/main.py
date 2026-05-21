@@ -169,8 +169,11 @@ class LangSmithCLIGroup(click.Group):
             # walking ``click.get_current_context()`` here only sees the
             # root group. Walk the *traceback* instead — the deepest frame
             # with a Click ``Context`` local is the subcommand that blew up.
+            command_path_from_meta = (
+                ctx.meta["command_path"] if "command_path" in ctx.meta else None
+            )
             command_path = str(
-                ctx.meta.get("command_path")
+                command_path_from_meta
                 or _command_path_from_exception(e)
                 or _command_path_for_ctx(ctx)
             )
