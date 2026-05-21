@@ -19,8 +19,8 @@ langsmith-cli --json projects list [OPTIONS]
 - `--exclude TEXT` - Exclude items containing substring (repeatable)
 - `--fields TEXT` - Comma-separated field names to include
 - `--count` - Output only the count of results
-- `--output TEXT` - Write output to file (JSONL format)
 - `--format [table|json|csv|yaml]` - Output format
+- `--output TEXT` - Write output to file. Defaults to JSONL unless `--format` is specified.
 
 **Output Fields:**
 - `id` (UUID) - Project identifier

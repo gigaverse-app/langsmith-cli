@@ -215,6 +215,31 @@ def test_projects_list_with_format(runner, format_type, expected_content):
             assert "," in result.output
 
 
+def test_projects_list_output_respects_json_format(runner, tmp_path):
+    """INVARIANT: --output writes JSON array when --format json is explicit."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_projects.return_value = iter([create_project("test-project")])
+        output_file = tmp_path / "projects.json"
+
+        result = runner.invoke(
+            cli,
+            [
+                "projects",
+                "list",
+                "--format",
+                "json",
+                "--output",
+                str(output_file),
+            ],
+        )
+
+        assert result.exit_code == 0
+        data = json.loads(output_file.read_text())
+        assert isinstance(data, list)
+        assert data[0]["name"] == "test-project"
+
+
 def test_projects_list_with_empty_results(runner):
     """INVARIANT: Empty results should show appropriate message."""
     with patch("langsmith.Client") as MockClient:

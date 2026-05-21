@@ -193,7 +193,8 @@ def list_projects(
     # Handle file output - short circuit if writing to file
     if output:
         data = filter_fields(projects_list, fields)
-        write_output_to_file(data, output, console, format_type="jsonl")
+        file_format = output_format if output_format is not None else "jsonl"
+        write_output_to_file(data, output, console, format_type=file_format)
         return
 
     # Define table builder function
