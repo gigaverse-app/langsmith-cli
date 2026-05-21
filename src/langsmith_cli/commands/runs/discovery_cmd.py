@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 import click
 
 from langsmith_cli.commands.runs._group import _make_fetch_runs, console, runs
+from langsmith_cli.run_helpers import run_extra_metadata, run_metadata_mapping
 from langsmith_cli.utils import (
     add_project_filter_options,
     add_time_filter_options,
@@ -276,15 +277,8 @@ def discover_metadata_keys(
     metadata_keys: set[str] = set()
 
     for run in discovery.runs:
-        # Check run.metadata
-        if run.metadata and isinstance(run.metadata, dict):
-            metadata_keys.update(run.metadata.keys())
-
-        # Check run.extra["metadata"]
-        if run.extra and isinstance(run.extra, dict):
-            extra_metadata = run.extra.get("metadata")
-            if extra_metadata and isinstance(extra_metadata, dict):
-                metadata_keys.update(extra_metadata.keys())
+        metadata_keys.update(run_metadata_mapping(run).keys())
+        metadata_keys.update(run_extra_metadata(run).keys())
 
     result = {"metadata_keys": sorted(metadata_keys)}
 
