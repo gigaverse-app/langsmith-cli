@@ -77,6 +77,74 @@ def test_http_status_extraction_unknown_error():
     assert _http_status_from_exception(RuntimeError("boom")) is None
 
 
+def test_json_mode_helper_defaults_false_without_obj_or_flag():
+    """JSON-mode detection should be explicit and safe for early Click errors."""
+    from langsmith_cli.main import _is_json_mode
+
+    command = click.Command("cmd")
+    no_obj_ctx = click.Context(command)
+    assert _is_json_mode(no_obj_ctx) is False
+
+    no_json_key_ctx = click.Context(command)
+    no_json_key_ctx.obj = {}
+    assert _is_json_mode(no_json_key_ctx) is False
+
+
+def test_close_cached_client_noops_without_cached_client():
+    """Cleanup should be harmless for commands that never create a client."""
+    from langsmith_cli.main import _close_cached_client
+
+    command = click.Command("cmd")
+    no_obj_ctx = click.Context(command)
+    _close_cached_client(no_obj_ctx)
+
+    no_client_ctx = click.Context(command)
+    no_client_ctx.obj = {}
+    _close_cached_client(no_client_ctx)
+
+
+def test_command_path_helpers_preserve_nested_subcommands():
+    """Structured errors need the nested command path, not just the root command."""
+    from langsmith_cli.main import (
+        _command_path_for_ctx,
+        _command_path_from_args,
+        _command_path_from_exception,
+    )
+
+    root = click.Group("langsmith-cli")
+    runs = click.Group("runs")
+    get = click.Command("get")
+    runs.add_command(get)
+    root.add_command(runs)
+
+    assert (
+        _command_path_from_args(
+            "langsmith-cli", root, ["--json", "runs", "get", "run-id"]
+        )
+        == "langsmith-cli runs get"
+    )
+    assert (
+        _command_path_from_args("langsmith-cli", root, ["runs", "unknown"])
+        == "langsmith-cli runs"
+    )
+
+    root_ctx = click.Context(root, info_name="langsmith-cli")
+    runs_ctx = click.Context(runs, info_name="runs", parent=root_ctx)
+    get_ctx = click.Context(get, info_name="get", parent=runs_ctx)
+    assert _command_path_for_ctx(get_ctx) == "langsmith-cli runs get"
+
+    def raise_with_click_context() -> None:
+        ctx = get_ctx
+        if ctx.info_name == "":
+            raise AssertionError("unreachable")
+        raise RuntimeError("boom")
+
+    try:
+        raise_with_click_context()
+    except RuntimeError as exc:
+        assert _command_path_from_exception(exc) == "langsmith-cli runs get"
+
+
 def test_cached_client_is_closed_after_invocation(runner, mock_client):
     """LangSmith client resources are closed after command invocation when supported."""
     from conftest import create_project
@@ -306,6 +374,33 @@ def test_conflict_error_handling_json_mode(runner):
         assert result.exit_code == 0
         # Output is the warning message (handled internally by the command)
         assert "already exists" in result.output.lower()
+
+
+def test_global_conflict_handler_emits_structured_json(runner):
+    """Unhandled SDK conflicts should still produce sparse structured JSON."""
+    from langsmith.utils import LangSmithConflictError
+    from langsmith_cli.main import LangSmithCLIGroup
+
+    @click.group(cls=LangSmithCLIGroup)
+    @click.option("--json", "json_mode", is_flag=True)
+    @click.pass_context
+    def command_group(ctx, json_mode):
+        ctx.ensure_object(dict)
+        ctx.obj["json"] = json_mode
+
+    @command_group.command("conflict")
+    def conflict_command():
+        raise LangSmithConflictError("resource already exists")
+
+    result = runner.invoke(command_group, ["--json", "conflict"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload == {
+        "error": "ConflictError",
+        "message": "resource already exists",
+        "command": "command conflict",
+    }
 
 
 def test_unauthorized_error_handling(runner):

@@ -1,6 +1,7 @@
 """Tests for the runs pricing command."""
 
 import json
+import re
 from datetime import datetime, timezone
 from decimal import Decimal
 from unittest.mock import patch, MagicMock
@@ -11,6 +12,7 @@ from langsmith.schemas import Run
 
 from conftest import create_run, make_run_id, strip_ansi
 from langsmith_cli.commands.runs import _fetch_openrouter_pricing
+from langsmith_cli.commands.runs.pricing_cmd import _validate_openrouter_models_response
 from langsmith_cli.main import cli
 
 
@@ -278,6 +280,64 @@ class TestFetchOpenRouterPricing:
         assert result == {}
         logger.warning.assert_called_once()
         assert "unexpected shape" in logger.warning.call_args.args[0]
+
+    @pytest.mark.parametrize(
+        ("payload", "message"),
+        [
+            ([], "expected object"),
+            ({"data": {}}, "field 'data' must be a list"),
+            ({"data": ["bad"]}, "data[0] must be an object"),
+            ({"data": [{"pricing": {"prompt": "1", "completion": "2"}}]}, "id"),
+            (
+                {"data": [{"id": 123, "pricing": {"prompt": "1", "completion": "2"}}]},
+                "id must be a string",
+            ),
+            ({"data": [{"id": "model"}]}, "pricing"),
+            ({"data": [{"id": "model", "pricing": []}]}, "pricing must be an object"),
+            (
+                {"data": [{"id": "model", "pricing": {"completion": "2"}}]},
+                "prompt",
+            ),
+            ({"data": [{"id": "model", "pricing": {"prompt": "1"}}]}, "completion"),
+            (
+                {
+                    "data": [
+                        {
+                            "id": "model",
+                            "pricing": {"prompt": 1, "completion": "2"},
+                        }
+                    ]
+                },
+                "prompt must be a string",
+            ),
+            (
+                {
+                    "data": [
+                        {
+                            "id": "model",
+                            "pricing": {"prompt": "1", "completion": 2},
+                        }
+                    ]
+                },
+                "completion must be a string",
+            ),
+            (
+                {
+                    "data": [
+                        {
+                            "id": "model",
+                            "pricing": {"prompt": "free", "completion": "2"},
+                        }
+                    ]
+                },
+                "numeric strings",
+            ),
+        ],
+    )
+    def test_openrouter_response_validation_fails_fast(self, payload, message):
+        """Malformed OpenRouter payloads fail at the network boundary."""
+        with pytest.raises(ValueError, match=re.escape(message)):
+            _validate_openrouter_models_response(payload)
 
 
 class TestPricingTagFiltering:
