@@ -737,7 +737,7 @@ def get_project_suggestions(
     """
     try:
         all_projects = list(client.list_projects())
-    except Exception:
+    except _project_fetch_error_types():
         return []
 
     query_lower = failed_name.lower()

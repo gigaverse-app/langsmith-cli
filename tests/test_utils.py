@@ -1593,12 +1593,22 @@ class TestGetProjectSuggestions:
 
     def test_api_failure_returns_empty(self):
         """INVARIANT: If listing projects fails, returns empty (no error)."""
+        from langsmith.utils import LangSmithError
+
         mock_client = MagicMock()
-        mock_client.list_projects.side_effect = Exception("API error")
+        mock_client.list_projects.side_effect = LangSmithError("API error")
 
         suggestions = get_project_suggestions(mock_client, "anything")
 
         assert suggestions == []
+
+    def test_programmer_error_propagates(self):
+        """INVARIANT: Unexpected local errors are not swallowed as API failures."""
+        mock_client = MagicMock()
+        mock_client.list_projects.side_effect = RuntimeError("bug")
+
+        with pytest.raises(RuntimeError, match="bug"):
+            get_project_suggestions(mock_client, "anything")
 
     def test_max_suggestions_respected(self):
         """INVARIANT: At most max_suggestions results returned."""
