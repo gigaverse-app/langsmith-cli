@@ -1,12 +1,11 @@
 """Pricing check command for runs."""
 
-from typing import Any
+from __future__ import annotations
+
+from typing import Any, TYPE_CHECKING
 import json
 
 import click
-from rich.console import Console
-from rich.table import Table
-from langsmith.schemas import Run
 
 from langsmith_cli.commands.runs._group import runs
 from langsmith_cli.utils import (
@@ -20,6 +19,9 @@ from langsmith_cli.utils import (
     json_dumps,
     resolve_project_filters,
 )
+
+if TYPE_CHECKING:
+    from langsmith.schemas import Run
 
 
 def _get_model_name(run: Run) -> str:
@@ -51,13 +53,13 @@ def _get_model_name(run: Run) -> str:
 )
 @click.option(
     "--lookup/--no-lookup",
-    default=True,
-    help="Look up missing prices from OpenRouter API (default: enabled).",
+    default=False,
+    help="Look up missing prices from OpenRouter API (default: disabled).",
 )
 @click.option(
     "--format",
     "output_format",
-    type=click.Choice(["table", "yaml"]),
+    type=click.Choice(["table", "json", "yaml"]),
     help="Output format. Use 'yaml' to generate a pricing file for --apply-pricing.",
 )
 @click.pass_context
@@ -102,7 +104,7 @@ def pricing_check(
     from collections import defaultdict
 
     logger = ctx.obj["logger"]
-    is_json = ctx.obj.get("json")
+    is_json = bool(ctx.obj.get("json")) or output_format == "json"
     logger.use_stderr = bool(is_json) or output_format == "yaml"
 
     # Fetch runs
@@ -151,12 +153,15 @@ def pricing_check(
         combined_filter = combine_fql_filters(base_filters)
 
         logger.info(f"Scanning LLM runs from {len(pq.names)} project(s)...")
+        from langsmith.utils import LangSmithError
+        import httpx
+
         sources = (
             [(f"id:{pq.project_id}", {"project_id": pq.project_id})]
             if pq.use_id
             else [(name, {"project_name": name}) for name in pq.names]
         )
-        for _, proj_kwargs in sources:
+        for source_name, proj_kwargs in sources:
             try:
                 for run in client.list_runs(
                     **proj_kwargs,
@@ -165,8 +170,8 @@ def pricing_check(
                     limit=None,
                 ):
                     all_runs.append(run)
-            except Exception:
-                pass
+            except (LangSmithError, httpx.HTTPError) as e:
+                logger.warning(f"Failed to fetch pricing runs from {source_name}: {e}")
 
     # Aggregate by model
     model_stats: dict[str, dict[str, int | float]] = defaultdict(
@@ -263,6 +268,9 @@ def pricing_check(
         click.echo(json_dumps({"models": models_data}))
     else:
         # Table output
+        from rich.console import Console
+        from rich.table import Table
+
         table = Table(title="Model Pricing Coverage")
         table.add_column("Model", style="cyan")
         table.add_column("Runs", justify="right")

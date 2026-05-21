@@ -4,10 +4,12 @@ from rich.table import Table
 from langsmith.utils import LangSmithNotFoundError
 from langsmith_cli.utils import (
     configure_logger_streams,
+    count_option,
     fields_option,
     filter_fields,
     get_or_create_client,
     json_dumps,
+    output_option,
     output_single_item,
     parse_fields_option,
     render_output,
@@ -37,12 +39,30 @@ def feedback():
 @click.option(
     "--limit", default=20, help="Maximum number of feedback items (default 20)."
 )
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["table", "json", "csv", "yaml"]),
+    help="Output format (default: table, or json if --json flag used).",
+)
 @fields_option()
+@count_option()
+@output_option()
 @click.pass_context
-def list_feedback(ctx, run_id, feedback_key, feedback_source_type, limit, fields):
+def list_feedback(
+    ctx,
+    run_id,
+    feedback_key,
+    feedback_source_type,
+    limit,
+    output_format,
+    fields,
+    count,
+    output,
+):
     """List feedback items, optionally filtered by run, key, or source."""
     logger = ctx.obj["logger"]
-    configure_logger_streams(ctx, logger, fields=fields)
+    configure_logger_streams(ctx, logger, output=output, fields=fields)
 
     logger.debug(
         f"Listing feedback: run_id={run_id}, key={feedback_key}, limit={limit}"
@@ -84,6 +104,9 @@ def list_feedback(ctx, run_id, feedback_key, feedback_source_type, limit, fields
         ctx,
         include_fields=include_fields,
         empty_message="No feedback found",
+        output_format=output_format,
+        count_flag=count,
+        output_path=output,
     )
 
 

@@ -1,4 +1,5 @@
 import os
+from typing import Any, TypedDict
 
 import click
 import langsmith
@@ -30,6 +31,37 @@ from langsmith_cli.utils import (
 )
 
 console = Console()
+
+
+class DatasetPushRow(TypedDict, total=False):
+    """Validated JSONL row for datasets push."""
+
+    inputs: dict[str, Any]
+    outputs: dict[str, Any] | None
+
+
+def _validate_dataset_push_row(raw_row: Any, line_number: int) -> DatasetPushRow:
+    if not isinstance(raw_row, dict):
+        raise click.ClickException(
+            f"{line_number}: expected a JSON object with 'inputs' and optional 'outputs'."
+        )
+    if "inputs" not in raw_row:
+        raise click.ClickException(f"{line_number}: missing required field 'inputs'.")
+    inputs = raw_row["inputs"]
+    if not isinstance(inputs, dict):
+        raise click.ClickException(f"{line_number}: field 'inputs' must be an object.")
+
+    row: DatasetPushRow = {"inputs": inputs}
+    if "outputs" in raw_row:
+        outputs = raw_row["outputs"]
+        if outputs is not None and not isinstance(outputs, dict):
+            raise click.ClickException(
+                f"{line_number}: field 'outputs' must be an object or null."
+            )
+        row["outputs"] = outputs
+    else:
+        row["outputs"] = None
+    return row
 
 
 @click.group()
@@ -239,16 +271,23 @@ def push_dataset(ctx, file_path, dataset):
         logger.warning(f"Dataset '{dataset}' not found. Creating it...")
         client.create_dataset(dataset_name=dataset)
 
-    examples = []
+    examples: list[DatasetPushRow] = []
     with open(file_path, "r", encoding="utf-8") as f:
-        for line in f:
-            if line.strip():
-                examples.append(json.loads(line))
+        for line_number, line in enumerate(f, start=1):
+            if not line.strip():
+                continue
+            try:
+                raw_row = json.loads(line)
+            except json.JSONDecodeError as e:
+                raise click.ClickException(
+                    f"{line_number}: invalid JSON: {e.msg}."
+                ) from e
+            examples.append(_validate_dataset_push_row(raw_row, line_number))
 
     # Expecting examples in [{"inputs": {...}, "outputs": {...}}, ...] format
     client.create_examples(
-        inputs=[e.get("inputs", {}) for e in examples],
-        outputs=[e.get("outputs") for e in examples],
+        inputs=[e["inputs"] for e in examples],
+        outputs=[e["outputs"] for e in examples],
         dataset_name=dataset,
     )
 

@@ -466,6 +466,31 @@ class TestRunsAnalyze:
                 "order_by should not be passed to list_runs — LangSmith API rejects it with 400 Bad Request"
             )
 
+    def test_analyze_all_runs_uses_select(self, runner, mock_client):
+        """--sample-size 0 still uses SDK select for sparse all-run analysis."""
+        mock_client.list_runs.return_value = [
+            create_run("run1", tags=["category:test"])
+        ]
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "analyze",
+                "--group-by",
+                "tag:category",
+                "--metrics",
+                "count,error_rate",
+                "--sample-size",
+                "0",
+            ],
+        )
+
+        assert result.exit_code == 0
+        call_kwargs = mock_client.list_runs.call_args[1]
+        assert sorted(call_kwargs["select"]) == ["error", "start_time", "tags"]
+
     def test_analyze_invalid_group_by(self, runner):
         """Invalid group-by format produces error."""
         result = runner.invoke(cli, ["runs", "analyze", "--group-by", "unknown:field"])

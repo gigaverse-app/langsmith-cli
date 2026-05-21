@@ -8,15 +8,19 @@ from langsmith_cli.commands.runs._group import (
     runs,
 )
 from langsmith_cli.utils import (
+    add_grep_options,
+    add_metadata_filter_options,
     add_project_filter_options,
     add_time_filter_options,
     build_time_fql_filters,
     combine_fql_filters,
+    count_option,
     fetch_from_projects,
     fields_option,
     filter_fields,
     get_or_create_client,
     json_dumps,
+    output_option,
     resolve_project_filters,
 )
 
@@ -32,11 +36,37 @@ from langsmith_cli.utils import (
     help="Show only root traces (cleaner output).",
 )
 @click.option(
+    "--status", type=click.Choice(["success", "error"]), help="Filter by status."
+)
+@click.option(
+    "--failed",
+    is_flag=True,
+    help="Show only failed/error runs (equivalent to --status error).",
+)
+@click.option(
+    "--succeeded",
+    is_flag=True,
+    help="Show only successful runs (equivalent to --status success).",
+)
+@click.option(
+    "--filter",
+    "filter_",
+    help="Additional LangSmith FQL filter to combine with the search.",
+)
+@click.option(
+    "--run-type", help="Filter by run type (llm, chain, tool, retriever, etc)."
+)
+@click.option(
+    "--tag",
+    multiple=True,
+    help="Filter by tag (can specify multiple times for AND logic).",
+)
+@click.option(
     "--in",
     "search_in",
     type=click.Choice(["all", "inputs", "outputs", "error"]),
     default="all",
-    help="Where to search (default: all fields).",
+    help="Where to search. 'all' uses server-side query; scoped values use client-side grep.",
 )
 @click.option(
     "--input-contains", help="Filter by content in inputs (JSON path or text)."
@@ -50,6 +80,11 @@ from langsmith_cli.utils import (
     type=click.Choice(["table", "json", "csv", "yaml"]),
     help="Output format.",
 )
+@add_grep_options
+@add_metadata_filter_options
+@fields_option()
+@count_option()
+@output_option()
 @click.pass_context
 def search_runs(
     ctx,
@@ -65,10 +100,24 @@ def search_runs(
     last,
     limit,
     roots,
+    status,
+    failed,
+    succeeded,
+    filter_,
+    run_type,
+    tag,
     search_in,
     input_contains,
     output_contains,
     output_format,
+    grep,
+    grep_ignore_case,
+    grep_regex,
+    grep_in,
+    metadata_filters,
+    fields,
+    count,
+    output,
 ):
     """Search runs using full-text search across one or more projects.
 
@@ -76,6 +125,7 @@ def search_runs(
 
     Use project filters to search across multiple projects.
 
+    \b
     Examples:
       langsmith-cli runs search "authentication failed"
       langsmith-cli runs search "timeout" --in error
@@ -84,20 +134,37 @@ def search_runs(
     """
     from langsmith_cli.commands.runs import list_runs
 
-    # Build FQL filter for full-text search
-    filter_expr = f'search("{query}")'
+    query_arg = query
+    grep_arg = grep
+    grep_in_arg = grep_in
+    failed_arg = failed
+    search_filters = []
 
-    # Add field-specific filters if provided
-    filters = [filter_expr]
+    if filter_:
+        search_filters.append(filter_)
+
+    if search_in != "all":
+        query_arg = None
+        grep_arg = grep_arg or query
+        grep_in_arg = grep_in_arg or search_in
+        if search_in == "error":
+            failed_arg = True
+
+    if input_contains and output_contains:
+        raise click.ClickException(
+            "Use only one of --input-contains or --output-contains per search. "
+            "For multiple scoped content checks, use runs list with --grep and --filter."
+        )
 
     if input_contains:
-        filters.append(f'search("{input_contains}")')
+        grep_arg = input_contains
+        grep_in_arg = "inputs"
 
     if output_contains:
-        filters.append(f'search("{output_contains}")')
+        grep_arg = output_contains
+        grep_in_arg = "outputs"
 
-    # Combine filters with AND (filters always has at least one element from query)
-    combined_filter = combine_fql_filters(filters) or filters[0]
+    combined_filter = combine_fql_filters(search_filters)
 
     # Invoke list_runs with the filter and project filters
     return ctx.invoke(
@@ -112,20 +179,20 @@ def search_runs(
         filter_=combined_filter,
         output_format=output_format,
         # Pass through other required args with defaults
-        status=None,
+        status=status,
         trace_id=None,
-        run_type=None,
+        run_type=run_type,
         is_root=None,
         roots=roots,  # Pass through --roots flag
         trace_filter=None,
         tree_filter=None,
         reference_example_id=None,
-        tag=(),
+        tag=tag,
         name_pattern=None,
         name_regex=None,
         model=None,
-        failed=False,
-        succeeded=False,
+        failed=failed_arg,
+        succeeded=succeeded,
         slow=False,
         recent=False,
         today=False,
@@ -134,8 +201,19 @@ def search_runs(
         since=since,  # Pass through time filters
         before=before,  # Pass through time filters
         last=last,  # Pass through time filters
+        query=query_arg,
+        grep=grep_arg,
+        grep_ignore_case=grep_ignore_case,
+        grep_regex=grep_regex,
+        grep_in=grep_in_arg,
+        fetch=None,
+        metadata_filters=metadata_filters,
         sort_by=None,
-        fields=None,  # Pass through fields parameter
+        no_truncate=False,
+        exclude=None,
+        fields=fields,
+        count=count,
+        output=output,
     )
 
 

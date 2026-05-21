@@ -22,7 +22,7 @@ See [Installation Guide](references/installation.md) if install fails or for alt
 
 ### 1. Always use `--json`
 
-**ALWAYS pass `--json` as the FIRST argument.** Without it you get Rich terminal tables — unparseable, useless to agents.
+**ALWAYS pass `--json` for machine-readable output.** It can appear before or after the subcommand, but putting it first is still the clearest convention.
 
 ```bash
 # ✅ CORRECT
@@ -95,7 +95,8 @@ langsmith-cli --json runs get <id> --fields inputs,outputs,error
 | Get run + child outputs | `langsmith-cli --json runs get <id> --follow-children --fields id,name,inputs,outputs` |
 | Get latest run | `langsmith-cli --json runs get-latest --project <name> --fields inputs,outputs` |
 | Get latest error | `langsmith-cli --json runs get-latest --project <name> --failed --fields id,name,error` |
-| Search run content | `langsmith-cli --json runs list --grep "pattern" --grep-in outputs --limit 20` |
+| Server-side search | `langsmith-cli --json runs search "pattern" --fields id,name,status --limit 20` |
+| Scoped content search | `langsmith-cli --json runs search "pattern" --in outputs --fields id,name,outputs --limit 20` |
 | Search cached runs | `langsmith-cli runs cache grep "pattern" -E --grep-in outputs --project <name>` |
 | Download cache | `langsmith-cli --json runs cache download --project <name> --last 7d` |
 | List cache | `langsmith-cli runs cache list` |
@@ -106,9 +107,9 @@ langsmith-cli --json runs get <id> --fields inputs,outputs,error
 | Run stats | `langsmith-cli --json runs stats --project <name>` |
 | List datasets | `langsmith-cli --json datasets list --fields id,name` |
 | List prompts | `langsmith-cli --json prompts list --fields repo_handle,description` |
-| List feedback for a run | `langsmith-cli --json feedback list --run-id <run-id>` |
+| List feedback for a run | `langsmith-cli --json feedback list --run-id <run-id> --fields id,key,score` |
 | Create feedback | `langsmith-cli --json feedback create <run-id> --key correctness --score 0.9` |
-| List annotation queues | `langsmith-cli --json annotation-queues list` |
+| List annotation queues | `langsmith-cli --json annotation-queues list --fields id,name` |
 | Get annotation queue | `langsmith-cli --json annotation-queues get <queue-id>` |
 | View experiment results | `langsmith-cli --json experiments results <experiment-name>` |
 | Open run in browser | Construct URL manually — see **LangSmith URLs** section below |
@@ -155,11 +156,11 @@ When your task matches one of the sections below, **you MUST load that reference
 
 ### → Use `feedback` commands when:
 - You need to list, get, create, or delete feedback scores on runs
-- Commands: `feedback list [--run-id <id>] [--key <key>] [--limit N]`, `feedback get <id>`, `feedback create <run-id> --key <key> [--score N] [--comment <str>]`, `feedback delete <id> [--confirm]`
+- Commands: `feedback list [--run-id <id>] [--key <key>] [--limit N] [--fields a,b] [--count] [--output file.jsonl] [--format json|csv|yaml]`, `feedback get <id>`, `feedback create <run-id> --key <key> [--score N] [--comment <str>]`, `feedback delete <id> [--confirm]`
 
 ### → Use `annotation-queues` commands when:
 - You need to manage human review queues (list, create, update, delete)
-- Commands: `annotation-queues list`, `annotation-queues get <id>`, `annotation-queues create <name> [--description <str>]`, `annotation-queues update <id> [--name <str>] [--description <str>]`, `annotation-queues delete <id> [--confirm]`
+- Commands: `annotation-queues list [--fields a,b] [--count] [--output file.jsonl] [--format json|csv|yaml]`, `annotation-queues get <id>`, `annotation-queues create <name> [--description <str>]`, `annotation-queues update <id> [--name <str>] [--description <str>]`, `annotation-queues delete <id> [--confirm]`
 
 ### → Use `experiments` commands when:
 - You need to view run stats and feedback scores for a named experiment (project)

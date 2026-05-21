@@ -194,6 +194,11 @@ class LangSmithCLIGroup(click.Group):
                     # In human mode, re-raise for Click's default formatting
                     raise
         finally:
+            if ctx.obj and "client" in ctx.obj:
+                try:
+                    ctx.obj["client"].close()
+                except AttributeError:
+                    pass
             # Flush stdout to prevent data loss when piping to other processes
             # This fixes race conditions where buffered output may not reach the pipe
             sys.stdout.flush()
@@ -227,8 +232,9 @@ def cli_main(ctx, json, verbose, quiet):
       langsmith-cli self skill fql          # Filter Query Language reference
 
     \b
-    Always pass --json FIRST for machine-readable output:
+    Pass --json anywhere for machine-readable output:
       langsmith-cli --json runs list --limit 5
+      langsmith-cli runs list --limit 5 --json
     """
     ctx.ensure_object(dict)
     ctx.obj["json"] = json

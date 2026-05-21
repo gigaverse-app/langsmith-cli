@@ -1,5 +1,7 @@
 """Runs list command."""
 
+import json
+
 import click
 
 from langsmith_cli.commands.runs._group import _make_fetch_runs, console, runs
@@ -26,11 +28,16 @@ from langsmith_cli.utils import (
     output_formatted_data,
     output_option,
     parse_duration_to_seconds,
+    parse_fields_option,
     raise_if_all_failed_with_suggestions,
     resolve_project_filters,
     sort_items,
     write_output_to_file,
 )
+
+
+def _fql_string(value: str) -> str:
+    return json.dumps(value)
 
 
 @runs.command("list")
@@ -215,9 +222,13 @@ def list_runs(
     """
     logger = ctx.obj["logger"]
 
+    # Determine output format early so field selection can be pushed to the SDK
+    # without starving table rendering of required columns.
+    format_type = determine_output_format(output_format, ctx.obj.get("json"))
+
     # Determine if output is machine-readable (use stderr for diagnostics)
     is_machine_readable = (
-        ctx.obj.get("json") or output_format in ["csv", "yaml"] or count or output
+        ctx.obj.get("json") or format_type in ["csv", "yaml", "json"] or count or output
     )
     logger.use_stderr = is_machine_readable
 
@@ -273,8 +284,12 @@ def list_runs(
     if metadata_filters:
         fql_filters.extend(build_metadata_fql_filters(metadata_filters))
 
-    # Run name pattern - skip FQL filtering, do client-side instead
-    # (FQL search doesn't support proper wildcard matching)
+    # Run name pattern. Exact patterns can be pushed server-side; wildcard
+    # patterns still need client-side matching because FQL has no glob match.
+    client_name_pattern = name_pattern
+    if name_pattern and not any(ch in name_pattern for ch in "*?["):
+        fql_filters.append(f"eq(name, {_fql_string(name_pattern)})")
+        client_name_pattern = None
 
     # Model filtering (search in model-related fields)
     if model:
@@ -317,7 +332,7 @@ def list_runs(
 
     # Determine if client-side filtering is needed
     # (for run name pattern/regex matching, exclude patterns, or grep content search)
-    needs_client_filtering = bool(name_regex or name_pattern or exclude or grep)
+    needs_client_filtering = bool(name_regex or client_name_pattern or exclude or grep)
 
     # Determine fetch limit (how many runs to fetch from API)
     if fetch is not None:
@@ -365,6 +380,40 @@ def list_runs(
             f"Use --fetch to control how many runs to evaluate."
         )
 
+    select_fields = None
+    requested_fields = parse_fields_option(fields)
+    if requested_fields and is_machine_readable:
+        select_field_set = set(requested_fields)
+        if name_regex or client_name_pattern or exclude:
+            select_field_set.add("name")
+        if sort_by:
+            sort_field = sort_by[1:] if sort_by.startswith("-") else sort_by
+            select_field_set.add(sort_field)
+        if grep:
+            if grep_in:
+                select_field_set.update(
+                    field.strip() for field in grep_in.split(",") if field.strip()
+                )
+            else:
+                select_field_set.update(["inputs", "outputs", "error"])
+        select_fields = sorted(select_field_set)
+    elif count and not needs_client_filtering:
+        select_fields = ["id"]
+
+    fetch_kwargs = {
+        "query": query,
+        "error": error_filter,
+        "filter": combined_filter,
+        "trace_id": trace_id,
+        "run_type": run_type,
+        "is_root": is_root,
+        "trace_filter": trace_filter,
+        "tree_filter": tree_filter,
+        "reference_example_id": reference_example_id,
+    }
+    if select_fields is not None:
+        fetch_kwargs["select"] = select_fields
+
     # Fetch runs from all matching projects using universal helper
     result = fetch_from_projects(
         client,
@@ -372,17 +421,32 @@ def list_runs(
         _make_fetch_runs(),
         project_query=pq,
         limit=api_limit,
-        query=query,
-        error=error_filter,
-        filter=combined_filter,
-        trace_id=trace_id,
-        run_type=run_type,
-        is_root=is_root,
-        trace_filter=trace_filter,
-        tree_filter=tree_filter,
-        reference_example_id=reference_example_id,
         console=None,  # Don't auto-report warnings (we have custom diagnostics below)
+        **fetch_kwargs,
     )
+
+    if result.all_failed and query:
+        fallback_filter = f"search({_fql_string(query)})"
+        fallback_filters = (
+            [combined_filter, fallback_filter] if combined_filter else [fallback_filter]
+        )
+        fallback_fetch_kwargs = {
+            **fetch_kwargs,
+            "query": None,
+            "filter": combine_fql_filters(fallback_filters),
+        }
+        logger.warning(
+            "LangSmith rejected the freeform query; retrying with server-side FQL search()."
+        )
+        result = fetch_from_projects(
+            client,
+            projects_to_query,
+            _make_fetch_runs(),
+            project_query=pq,
+            limit=api_limit,
+            console=None,
+            **fallback_fetch_kwargs,
+        )
     all_runs = result.items
     failed_projects = result.failed_sources
 
@@ -400,7 +464,7 @@ def list_runs(
     # FQL doesn't support full regex or complex patterns for run names
     runs = get_matching_items(
         all_runs,
-        name_pattern=name_pattern,
+        name_pattern=client_name_pattern,
         name_regex=name_regex,
         name_getter=lambda r: r.name or "",
     )
@@ -475,9 +539,6 @@ def list_runs(
         data = filter_fields(runs, fields)
         write_output_to_file(data, output, console, format_type="jsonl")
         return
-
-    # Determine output format
-    format_type = determine_output_format(output_format, ctx.obj.get("json"))
 
     # Handle non-table formats
     if format_type != "table":

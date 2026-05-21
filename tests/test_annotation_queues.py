@@ -59,6 +59,47 @@ def test_annotation_queues_list_json(runner):
         assert data[0]["name"] == "test-queue"
 
 
+def test_annotation_queues_list_count(runner):
+    """INVARIANT: annotation-queues list supports the standard --count flag."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_annotation_queues.return_value = iter(
+            [
+                create_annotation_queue(name="review-queue"),
+                create_annotation_queue(name="quality-queue"),
+            ]
+        )
+        result = runner.invoke(cli, ["annotation-queues", "list", "--count"])
+        assert result.exit_code == 0
+        assert result.output.strip() == "2"
+
+
+def test_annotation_queues_list_format_json_without_global_flag(runner):
+    """INVARIANT: annotation-queues list supports the standard --format json flag."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_annotation_queues.return_value = iter(
+            [create_annotation_queue(name="review-queue")]
+        )
+        result = runner.invoke(cli, ["annotation-queues", "list", "--format", "json"])
+        assert result.exit_code == 0
+        data = parse_json_output(result.output)
+        assert data[0]["name"] == "review-queue"
+
+
+def test_annotation_queues_list_output_file(runner, tmp_path):
+    """INVARIANT: annotation-queues list supports the standard --output file flag."""
+    out = tmp_path / "queues.jsonl"
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_annotation_queues.return_value = iter(
+            [create_annotation_queue(name="review-queue")]
+        )
+        result = runner.invoke(cli, ["annotation-queues", "list", "--output", str(out)])
+        assert result.exit_code == 0
+        assert "review-queue" in out.read_text()
+
+
 def test_annotation_queues_get_exits_zero(runner):
     """INVARIANT: annotation-queues get returns a single queue by ID."""
     with patch("langsmith.Client") as MockClient:

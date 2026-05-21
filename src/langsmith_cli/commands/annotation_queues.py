@@ -4,10 +4,12 @@ from rich.table import Table
 from langsmith.utils import LangSmithNotFoundError
 from langsmith_cli.utils import (
     configure_logger_streams,
+    count_option,
     fields_option,
     filter_fields,
     get_or_create_client,
     json_dumps,
+    output_option,
     output_single_item,
     parse_fields_option,
     render_output,
@@ -27,12 +29,20 @@ def annotation_queues():
 @click.option("--name", help="Filter queues by name (exact match).")
 @click.option("--name-contains", help="Filter queues by name substring.")
 @click.option("--limit", default=20, help="Maximum number of queues (default 20).")
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["table", "json", "csv", "yaml"]),
+    help="Output format (default: table, or json if --json flag used).",
+)
 @fields_option()
+@count_option()
+@output_option()
 @click.pass_context
-def list_queues(ctx, name, name_contains, limit, fields):
+def list_queues(ctx, name, name_contains, limit, output_format, fields, count, output):
     """List annotation queues."""
     logger = ctx.obj["logger"]
-    configure_logger_streams(ctx, logger, fields=fields)
+    configure_logger_streams(ctx, logger, output=output, fields=fields)
 
     logger.debug(f"Listing annotation queues: name={name}, limit={limit}")
 
@@ -66,6 +76,9 @@ def list_queues(ctx, name, name_contains, limit, fields):
         ctx,
         include_fields=include_fields,
         empty_message="No annotation queues found",
+        output_format=output_format,
+        count_flag=count,
+        output_path=output,
     )
 
 

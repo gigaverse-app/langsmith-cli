@@ -128,6 +128,7 @@ langsmith-cli --json datasets push <file.jsonl> [OPTIONS]
 {"inputs": {"query": "What is AI?"}, "outputs": {"answer": "Artificial Intelligence..."}}
 {"inputs": {"query": "Define ML"}, "outputs": {"answer": "Machine Learning..."}}
 ```
+Rows must be JSON objects with an `inputs` object. `outputs` is optional, but if present it must be an object or `null`. Malformed rows fail fast with the JSONL line number.
 
 **Output:** Upload summary with count of examples added
 

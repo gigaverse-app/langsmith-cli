@@ -63,6 +63,40 @@ def test_feedback_list_json(runner):
         assert data[0]["score"] == 0.9
 
 
+def test_feedback_list_count(runner):
+    """INVARIANT: feedback list supports the standard --count flag."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_feedback.return_value = iter(
+            [create_feedback(key="correctness"), create_feedback(key="helpfulness")]
+        )
+        result = runner.invoke(cli, ["feedback", "list", "--count"])
+        assert result.exit_code == 0
+        assert result.output.strip() == "2"
+
+
+def test_feedback_list_format_json_without_global_flag(runner):
+    """INVARIANT: feedback list supports the standard --format json flag."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_feedback.return_value = iter([create_feedback(key="quality")])
+        result = runner.invoke(cli, ["feedback", "list", "--format", "json"])
+        assert result.exit_code == 0
+        data = parse_json_output(result.output)
+        assert data[0]["key"] == "quality"
+
+
+def test_feedback_list_output_file(runner, tmp_path):
+    """INVARIANT: feedback list supports the standard --output file flag."""
+    out = tmp_path / "feedback.jsonl"
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_feedback.return_value = iter([create_feedback(key="quality")])
+        result = runner.invoke(cli, ["feedback", "list", "--output", str(out)])
+        assert result.exit_code == 0
+        assert "quality" in out.read_text()
+
+
 def test_feedback_list_with_run_id(runner):
     """INVARIANT: --run-id passes run_ids to the SDK list_feedback call."""
     with patch("langsmith.Client") as MockClient:

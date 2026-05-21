@@ -469,8 +469,8 @@ def analyze_runs(
     all_runs = []
 
     if sample_size == 0:
-        # User wants ALL runs - don't use select (would be slow for large datasets)
-        # Use serial pagination without field selection
+        # User wants ALL runs. Keep serial pagination, but still push selected
+        # fields to the SDK because this path benefits most from sparse runs.
         result = fetch_from_projects(
             client,
             pq.names,
@@ -478,6 +478,7 @@ def analyze_runs(
             project_query=pq,
             filter=combined_filter,
             limit=None,
+            select=list(select_fields) if select_fields else None,
             console=console,
         )
         all_runs = result.items

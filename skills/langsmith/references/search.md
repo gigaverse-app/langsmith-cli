@@ -11,6 +11,7 @@
 
 `--query` is server-side (fast, limited to first ~250 indexed chars).
 `--grep` is client-side (downloads runs first, searches all content, supports regex).
+`runs search <text>` uses server-side `--query` by default. Use `runs search <text> --in inputs|outputs|error` when you need field-scoped search; that intentionally switches to client-side grep.
 
 ## Content Search Examples
 
@@ -18,8 +19,14 @@
 # Server-side text search (fast, first ~250 chars)
 langsmith-cli --json runs list --project "prd/factcheck" --query "druze" --fields id,inputs
 
+# Ergonomic server-side search wrapper
+langsmith-cli --json runs search "druze" --project "prd/factcheck" --fields id,name,status
+
 # Client-side substring search (unlimited content)
 langsmith-cli --json runs list --project "prd/community_news" --grep "druze" --fields id,inputs
+
+# Scoped search wrapper
+langsmith-cli --json runs search "druze" --project "prd/community_news" --in outputs --fields id,name,outputs
 
 # Case-insensitive
 langsmith-cli --json runs list --grep "druze" --grep-ignore-case --fields id,inputs

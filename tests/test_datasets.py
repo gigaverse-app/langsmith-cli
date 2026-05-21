@@ -452,6 +452,42 @@ def test_datasets_push_uses_filename_as_default_dataset(runner, tmp_path):
         assert call_kwargs["dataset_name"] == "my-examples"
 
 
+def test_datasets_push_rejects_missing_inputs(runner, tmp_path):
+    """INVARIANT: datasets push fails fast with line numbers for malformed rows."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.read_dataset.return_value = create_dataset(name="target-dataset")
+
+        jsonl_file = tmp_path / "bad-examples.jsonl"
+        jsonl_file.write_text(json.dumps({"outputs": {"result": "world"}}))
+
+        result = runner.invoke(
+            cli, ["datasets", "push", str(jsonl_file), "--dataset", "target-dataset"]
+        )
+
+        assert result.exit_code != 0
+        assert "1: missing required field 'inputs'" in result.output
+        mock_client.create_examples.assert_not_called()
+
+
+def test_datasets_push_rejects_invalid_json_with_line_number(runner, tmp_path):
+    """INVARIANT: datasets push reports invalid JSON with the JSONL line number."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.read_dataset.return_value = create_dataset(name="target-dataset")
+
+        jsonl_file = tmp_path / "bad-examples.jsonl"
+        jsonl_file.write_text('{"inputs": {"text": "ok"}}\n{"inputs":')
+
+        result = runner.invoke(
+            cli, ["datasets", "push", str(jsonl_file), "--dataset", "target-dataset"]
+        )
+
+        assert result.exit_code != 0
+        assert "2: invalid JSON" in result.output
+        mock_client.create_examples.assert_not_called()
+
+
 # ===== datasets delete tests =====
 
 

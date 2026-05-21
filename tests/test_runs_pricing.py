@@ -548,6 +548,7 @@ class TestPricingWithOpenRouterLookup:
                         "--project",
                         "test-proj",
                         "--from-cache",
+                        "--lookup",
                     ],
                 )
 
@@ -597,6 +598,7 @@ class TestPricingWithOpenRouterLookup:
                         "--project",
                         "test-proj",
                         "--from-cache",
+                        "--lookup",
                     ],
                 )
 
@@ -604,9 +606,11 @@ class TestPricingWithOpenRouterLookup:
         output = strip_ansi(result.output)
         assert "OpenRouter" in output
 
-    def test_api_fetch_exception_swallowed_silently(self, runner, mock_client):
-        """INVARIANT: API errors for individual projects are swallowed (no crash)."""
-        mock_client.list_runs.side_effect = Exception("network error")
+    def test_api_fetch_exception_reported_without_crashing(self, runner, mock_client):
+        """INVARIANT: API errors for individual projects are reported without crashing."""
+        from langsmith.utils import LangSmithError
+
+        mock_client.list_runs.side_effect = LangSmithError("network error")
 
         result = runner.invoke(
             cli,
@@ -625,3 +629,34 @@ class TestPricingWithOpenRouterLookup:
         assert result.exit_code == 0
         data = _extract_json(result.output)
         assert data["models"] == []
+        assert "Failed to fetch pricing runs from test-proj" in result.output
+
+    def test_format_json_outputs_json_without_global_flag(
+        self, runner, tmp_path, monkeypatch
+    ):
+        """--format json outputs JSON even without root --json."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+        from langsmith_cli.cache import append_runs_to_cache
+
+        append_runs_to_cache(
+            "test-proj",
+            [_make_llm_run(1, model="gpt-4o", total_cost=Decimal("0.005"))],
+        )
+
+        with patch("langsmith.Client"):
+            result = runner.invoke(
+                cli,
+                [
+                    "runs",
+                    "pricing",
+                    "--project",
+                    "test-proj",
+                    "--from-cache",
+                    "--format",
+                    "json",
+                ],
+            )
+
+        assert result.exit_code == 0
+        data = _extract_json(result.output)
+        assert data["models"][0]["model"] == "gpt-4o"

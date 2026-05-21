@@ -29,6 +29,26 @@ def test_json_flag(runner):
     assert "--json" in result.output
 
 
+def test_help_mentions_json_can_appear_anywhere(runner):
+    """Root help should not claim --json must be first."""
+    result = runner.invoke(cli, ["--help"])
+    assert result.exit_code == 0
+    assert "Pass --json anywhere" in result.output
+    assert "Always pass --json FIRST" not in result.output
+
+
+def test_cached_client_is_closed_after_invocation(runner, mock_client):
+    """LangSmith client resources are closed after command invocation when supported."""
+    from conftest import create_project
+
+    mock_client.list_projects.return_value = iter([create_project("test-project")])
+
+    result = runner.invoke(cli, ["projects", "list"])
+
+    assert result.exit_code == 0
+    mock_client.close.assert_called_once()
+
+
 class TestJsonFlagPlacement:
     """INVARIANT: --json produces JSON output regardless of where it appears in the command."""
 

@@ -245,11 +245,19 @@ langsmith-cli --json runs search <query> [OPTIONS]
 - `--project-name-regex TEXT` - Regex pattern for project names
 - `--limit INTEGER` - Maximum results (default: 10)
 - `--roots` - Show only root traces
-- `--in [all|inputs|outputs|error]` - Where to search (default: all fields)
+- `--status [success|error]`, `--failed`, `--succeeded` - Status filters
+- `--run-type TEXT` - Filter by run type
+- `--tag TEXT` - Filter by tag (repeatable, AND logic)
+- `--metadata KEY=VALUE` - Filter by metadata (repeatable)
+- `--filter TEXT` - Additional LangSmith FQL filter
+- `--in [all|inputs|outputs|error]` - Where to search. `all` uses server-side query; scoped values use client-side grep.
 - `--input-contains TEXT` - Filter by content in inputs
 - `--output-contains TEXT` - Filter by content in outputs
 - `--since TEXT` - Since time (ISO or shorthand: `3d`, `24h`, `30m`)
 - `--last TEXT` - From last duration (e.g., `24h`, `7d`)
+- `--fields TEXT` - Comma-separated fields to include; pushed to SDK `select` for sparse output where possible
+- `--count` - Output only the count
+- `--output FILE` - Write JSONL output to a file
 - `--format [table|json|csv|yaml]` - Output format
 
 **Output:** List of runs matching query
@@ -321,7 +329,7 @@ langsmith-cli runs usage --from-cache --group-by metadata:community_name --break
 
 ### `runs pricing`
 
-Check model pricing coverage and look up missing prices from OpenRouter.
+Check model pricing coverage. OpenRouter lookup is opt-in.
 
 ```bash
 langsmith-cli --json runs pricing [OPTIONS]
@@ -329,7 +337,9 @@ langsmith-cli --json runs pricing [OPTIONS]
 
 **Options:**
 - `--from-cache` - Analyze cached runs (fast)
-- `--no-lookup` - Skip OpenRouter price lookup
+- `--lookup` - Look up missing prices from OpenRouter API
+- `--no-lookup` - Skip OpenRouter price lookup (default)
+- `--format [table|json|yaml]` - Output format
 
 **Examples:**
 ```bash
@@ -337,7 +347,10 @@ langsmith-cli --json runs pricing [OPTIONS]
 langsmith-cli runs pricing --project-name-pattern "prd/*" --from-cache
 
 # JSON output for programmatic use
-langsmith-cli --json runs pricing --project-name-pattern "prd/*" --from-cache
+langsmith-cli runs pricing --project-name-pattern "prd/*" --from-cache --format json
+
+# Include OpenRouter lookup for missing models
+langsmith-cli runs pricing --project-name-pattern "prd/*" --from-cache --lookup
 ```
 
 ### `runs cache download`

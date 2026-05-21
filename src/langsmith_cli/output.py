@@ -169,6 +169,7 @@ def render_output(
     empty_message: str = "No results found",
     output_format: str | None = None,
     count_flag: bool = False,
+    output_path: str | None = None,
 ) -> None:
     """Unified output renderer for all output formats (JSON, CSV, YAML, Table).
 
@@ -203,6 +204,13 @@ def render_output(
     # Handle count mode - short circuit all other output
     if count_flag:
         click.echo(str(len(items)))
+        return
+
+    if output_path:
+        serialized = [safe_model_dump(item, include=include_fields) for item in items]
+        from rich.console import Console
+
+        write_output_to_file(serialized, output_path, Console(), format_type="jsonl")
         return
 
     # Determine output format
