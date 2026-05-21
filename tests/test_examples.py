@@ -151,6 +151,47 @@ def test_examples_list_with_splits_filter(runner):
         assert call_kwargs.get("splits") == ["train"]
 
 
+def test_examples_list_attachment_boolean_pairs(runner):
+    """INVARIANT: examples list uses ergonomic paired boolean flags."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_examples.return_value = iter([])
+
+        result = runner.invoke(
+            cli,
+            [
+                "examples",
+                "list",
+                "--dataset",
+                "test-dataset",
+                "--inline-s3-urls",
+                "--include-attachments",
+            ],
+        )
+
+        assert result.exit_code == 0
+        call_kwargs = mock_client.list_examples.call_args[1]
+        assert call_kwargs["inline_s3_urls"] is True
+        assert call_kwargs["include_attachments"] is True
+
+        result = runner.invoke(
+            cli,
+            [
+                "examples",
+                "list",
+                "--dataset",
+                "test-dataset",
+                "--no-inline-s3-urls",
+                "--no-include-attachments",
+            ],
+        )
+
+        assert result.exit_code == 0
+        call_kwargs = mock_client.list_examples.call_args[1]
+        assert call_kwargs["inline_s3_urls"] is False
+        assert call_kwargs["include_attachments"] is False
+
+
 def test_examples_list_by_dataset_name(runner):
     """INVARIANT: Examples should be retrievable by dataset name."""
     with patch("langsmith.Client") as MockClient:

@@ -17,8 +17,8 @@ langsmith-cli --json examples list [OPTIONS]
 - `--metadata JSON` - Filter by metadata (JSON object)
 - `--splits TEXT` - Comma-separated list of splits (e.g., "train,test")
 - `--as-of TEXT` - Version tag or ISO timestamp
-- `--inline-s3-urls BOOLEAN` - Inline S3 URLs: `true` or `false`
-- `--include-attachments BOOLEAN` - Include attachments: `true` or `false`
+- `--inline-s3-urls`, `--no-inline-s3-urls` - Include or omit S3 URLs inline
+- `--include-attachments`, `--no-include-attachments` - Include or omit attachments
 - `--exclude TEXT` - Exclude items containing substring (repeatable)
 - `--fields TEXT` - Comma-separated field names to include
 - `--count` - Output only the count of results

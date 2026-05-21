@@ -45,8 +45,16 @@ def examples():
 @click.option("--filter", "filter_", help="LangSmith query filter.")
 @click.option("--metadata", help="Filter by metadata (JSON string).")
 @click.option("--splits", help="Filter by dataset splits (comma-separated).")
-@click.option("--inline-s3-urls", type=bool, help="Include S3 URLs inline.")
-@click.option("--include-attachments", type=bool, help="Include attachments.")
+@click.option(
+    "--inline-s3-urls/--no-inline-s3-urls",
+    default=None,
+    help="Include S3 URLs inline.",
+)
+@click.option(
+    "--include-attachments/--no-include-attachments",
+    default=None,
+    help="Include attachments.",
+)
 @click.option("--as-of", help="Dataset version tag or ISO timestamp.")
 @sort_by_option(fields="created_at, modified_at")
 @click.option(
