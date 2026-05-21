@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterable, Iterator
 from typing import TYPE_CHECKING, Any, Callable, Protocol, TypeVar, cast, overload
 
 import click
@@ -821,9 +822,9 @@ def partition_metadata_filters(
 
 
 def apply_metadata_filter(
-    runs_iter: Any,
+    runs_iter: Iterable["Run"],
     metadata_filters: tuple[str, ...],
-) -> Any:
+) -> Iterable["Run"]:
     """Apply client-side metadata wildcard filters to a run iterator/list.
 
     Accesses run.extra["metadata"] for each run. Filters are in "key=value" or
@@ -846,12 +847,13 @@ def apply_metadata_filter(
         key, value = mf.split("=", 1)
         parsed.append((key, value))
 
-    def _matches(run: Any) -> bool:
-        meta: dict[str, Any] = (getattr(run, "extra", None) or {}).get("metadata", {})
+    def _matches(run: Run) -> bool:
+        extra = run.extra or {}
+        meta: dict[str, Any] = extra["metadata"] if "metadata" in extra else {}
         for key, pattern in parsed:
             val = str(meta.get(key, ""))
             if not fnmatch.fnmatch(val, pattern):
                 return False
         return True
 
-    return (r for r in runs_iter if _matches(r))
+    return cast(Iterator["Run"], (r for r in runs_iter if _matches(r)))
