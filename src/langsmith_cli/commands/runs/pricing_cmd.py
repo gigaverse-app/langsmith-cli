@@ -13,14 +13,15 @@ from langsmith_cli.utils import (
     add_time_filter_options,
     build_tag_fql_filters,
     build_time_fql_filters,
+    collect_runs_streaming,
     combine_fql_filters,
     configure_logger_streams,
     filter_runs_by_tags,
+    get_full_model_name,
     get_or_create_client,
     json_dumps,
     resolve_project_filters,
 )
-from langsmith_cli.run_helpers import get_full_model_name
 
 if TYPE_CHECKING:
     from langsmith.schemas import Run
@@ -146,25 +147,24 @@ def pricing_check(
         combined_filter = combine_fql_filters(base_filters)
 
         logger.info(f"Scanning LLM runs from {len(pq.names)} project(s)...")
-        from langsmith.utils import LangSmithError
-        import httpx
-
-        sources = (
-            [(f"id:{pq.project_id}", {"project_id": pq.project_id})]
-            if pq.use_id
-            else [(name, {"project_name": name}) for name in pq.names]
+        stream_result = collect_runs_streaming(
+            client,
+            pq,
+            filter=combined_filter,
+            select=[
+                "total_tokens",
+                "prompt_tokens",
+                "completion_tokens",
+                "total_cost",
+                "prompt_cost",
+                "completion_cost",
+                "extra",
+                "run_type",
+            ],
         )
-        for source_name, proj_kwargs in sources:
-            try:
-                for run in client.list_runs(
-                    **proj_kwargs,
-                    filter=combined_filter,
-                    select=["total_tokens", "total_cost", "extra", "run_type"],
-                    limit=None,
-                ):
-                    all_runs.append(run)
-            except (LangSmithError, httpx.HTTPError) as e:
-                logger.warning(f"Failed to fetch pricing runs from {source_name}: {e}")
+        all_runs = stream_result.items
+        for source_name, err in stream_result.failed_sources:
+            logger.warning(f"Failed to fetch pricing runs from {source_name}: {err}")
 
     # Aggregate by model
     model_stats: dict[str, dict[str, int | float]] = defaultdict(
