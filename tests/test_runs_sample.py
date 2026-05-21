@@ -78,6 +78,62 @@ class TestRunsSample:
             data = json.loads(f.readline())
             assert data["stratum"] == "category:test"
 
+    def test_sample_json_flag_outputs_json_array(self, runner, mock_client):
+        """Global --json makes sample stdout a JSON array for machine consumers."""
+        mock_client.list_runs.return_value = [
+            create_run(name="test-run", tags=["category:test"])
+        ]
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "sample",
+                "--stratify-by",
+                "tag:category",
+                "--values",
+                "test",
+                "--samples-per-stratum",
+                "1",
+            ],
+        )
+
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert isinstance(data, list)
+        assert data[0]["stratum"] == "category:test"
+
+    def test_sample_output_format_json_file(self, runner, mock_client, tmp_path):
+        """Sample --output respects explicit --format."""
+        mock_client.list_runs.return_value = [
+            create_run(name="test-run", tags=["category:test"])
+        ]
+        output_file = tmp_path / "sample.json"
+
+        result = runner.invoke(
+            cli,
+            [
+                "runs",
+                "sample",
+                "--stratify-by",
+                "tag:category",
+                "--values",
+                "test",
+                "--samples-per-stratum",
+                "1",
+                "--format",
+                "json",
+                "--output",
+                str(output_file),
+            ],
+        )
+
+        assert result.exit_code == 0
+        data = json.loads(output_file.read_text())
+        assert isinstance(data, list)
+        assert data[0]["stratum"] == "category:test"
+
     def test_sample_with_fields_pruning(self, runner, mock_client):
         """Sample with --fields prunes output."""
         mock_client.list_runs.return_value = [
@@ -187,8 +243,7 @@ class TestRunsSampleMultiDimensional:
         )
 
         assert result.exit_code == 0
-        lines = result.output.strip().split("\n")
-        samples = [json.loads(line) for line in lines]
+        samples = json.loads(result.output)
         strata = {s["stratum"] for s in samples}
         assert any("length:short" in s and "content_type:news" in s for s in strata)
 
@@ -232,3 +287,20 @@ class TestRunsSampleMultiDimensional:
 
         assert result.exit_code != 0
         assert "requires --values or --dimension-values" in result.output
+
+    def test_single_dimensional_requires_values(self, runner):
+        """Single-dimensional stratification requires explicit values."""
+        result = runner.invoke(
+            cli,
+            [
+                "runs",
+                "sample",
+                "--stratify-by",
+                "tag:length",
+                "--samples-per-stratum",
+                "1",
+            ],
+        )
+
+        assert result.exit_code != 0
+        assert "Single-dimensional stratification requires --values" in result.output

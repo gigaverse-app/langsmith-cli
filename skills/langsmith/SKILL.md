@@ -22,7 +22,7 @@ See [Installation Guide](references/installation.md) if install fails or for alt
 
 ### 1. Always use `--json`
 
-**ALWAYS pass `--json` as the FIRST argument.** Without it you get Rich terminal tables — unparseable, useless to agents.
+**ALWAYS pass `--json` for machine-readable output.** It can appear before or after the subcommand, but putting it first is still the clearest convention.
 
 ```bash
 # ✅ CORRECT
@@ -37,6 +37,7 @@ langsmith-cli runs list --project my-project --limit 5
 ```bash
 # ✅ CORRECT — atomic write, errors visible, non-zero exit on failure
 langsmith-cli --json runs list --project my-project --output runs.jsonl
+langsmith-cli runs list --project my-project --format json --output runs.json
 python3 -c "import json; runs = [json.loads(l) for l in open('runs.jsonl')]"
 
 # ❌ WRONG — errors go to stderr silently, you get empty/corrupt file
@@ -95,20 +96,22 @@ langsmith-cli --json runs get <id> --fields inputs,outputs,error
 | Get run + child outputs | `langsmith-cli --json runs get <id> --follow-children --fields id,name,inputs,outputs` |
 | Get latest run | `langsmith-cli --json runs get-latest --project <name> --fields inputs,outputs` |
 | Get latest error | `langsmith-cli --json runs get-latest --project <name> --failed --fields id,name,error` |
-| Search run content | `langsmith-cli --json runs list --grep "pattern" --grep-in outputs --limit 20` |
-| Search cached runs | `langsmith-cli runs cache grep "pattern" -E --grep-in outputs --project <name>` |
+| Server-side search | `langsmith-cli --json runs search "pattern" --fields id,name,status --limit 20` |
+| Scoped content search | `langsmith-cli --json runs search "pattern" --in outputs --fields id,name,outputs --limit 20` |
+| Search cached runs | `langsmith-cli --json runs cache grep "pattern" -E --grep-in outputs --project <name> --fields id,name,outputs` |
 | Download cache | `langsmith-cli --json runs cache download --project <name> --last 7d` |
-| List cache | `langsmith-cli runs cache list` |
+| List cache | `langsmith-cli --json runs cache list --fields project_name,run_count,path` |
 | Discover cache schema | `langsmith-cli --json runs cache schema --project <name> --include outputs` |
 | Analyze token costs | `langsmith-cli --json runs usage --from-cache --breakdown model --active-only` |
 | List projects | `langsmith-cli --json projects list --name-pattern "dev/*" --fields name` |
 | Count runs | `langsmith-cli --json runs list --project <name> --count` |
 | Run stats | `langsmith-cli --json runs stats --project <name>` |
+| Stratified run sample | `langsmith-cli --json runs sample --project <name> --stratify-by tag:<key> --values a,b --fields id,name,stratum` |
 | List datasets | `langsmith-cli --json datasets list --fields id,name` |
 | List prompts | `langsmith-cli --json prompts list --fields repo_handle,description` |
-| List feedback for a run | `langsmith-cli --json feedback list --run-id <run-id>` |
+| List feedback for a run | `langsmith-cli --json feedback list --run-id <run-id> --fields id,key,score` |
 | Create feedback | `langsmith-cli --json feedback create <run-id> --key correctness --score 0.9` |
-| List annotation queues | `langsmith-cli --json annotation-queues list` |
+| List annotation queues | `langsmith-cli --json annotation-queues list --fields id,name` |
 | Get annotation queue | `langsmith-cli --json annotation-queues get <queue-id>` |
 | View experiment results | `langsmith-cli --json experiments results <experiment-name>` |
 | Open run in browser | Construct URL manually — see **LangSmith URLs** section below |
@@ -152,14 +155,15 @@ When your task matches one of the sections below, **you MUST load that reference
 ### → Read [references/prompts.md](references/prompts.md) when:
 - You need to pull, push, or version prompt templates
 - You need to list prompt commits or compare versions
+- Prompt commit listings support `--fields`, `--count`, `--output`, and `--format json|csv|yaml`
 
 ### → Use `feedback` commands when:
 - You need to list, get, create, or delete feedback scores on runs
-- Commands: `feedback list [--run-id <id>] [--key <key>] [--limit N]`, `feedback get <id>`, `feedback create <run-id> --key <key> [--score N] [--comment <str>]`, `feedback delete <id> [--confirm]`
+- Commands: `feedback list [--run-id <id>] [--key <key>] [--limit N] [--fields a,b] [--count] [--output file.jsonl] [--format json|csv|yaml]`, `feedback get <id> [--fields a,b] [--output file.json]`, `feedback create <run-id> --key <key> [--score N] [--comment <str>]`, `feedback delete <id> [--yes]`
 
 ### → Use `annotation-queues` commands when:
 - You need to manage human review queues (list, create, update, delete)
-- Commands: `annotation-queues list`, `annotation-queues get <id>`, `annotation-queues create <name> [--description <str>]`, `annotation-queues update <id> [--name <str>] [--description <str>]`, `annotation-queues delete <id> [--confirm]`
+- Commands: `annotation-queues list [--fields a,b] [--count] [--output file.jsonl] [--format json|csv|yaml]`, `annotation-queues get <id> [--fields a,b] [--output file.json]`, `annotation-queues create <name> [--description <str>]`, `annotation-queues update <id> [--name <str>] [--description <str>]`, `annotation-queues delete <id> [--yes]`
 
 ### → Use `experiments` commands when:
 - You need to view run stats and feedback scores for a named experiment (project)
@@ -216,6 +220,7 @@ url = f"https://smith.langchain.com/o/{org_id}/projects/p/{proj_id}?peek={run_id
 
 ```bash
 # Multi-project matching
+--project-pattern "prd/*"         # wildcard alias for --project-name-pattern
 --project-name-pattern "prd/*"    # wildcard
 --project-name-regex "^(prd|stg)" # regex
 
@@ -235,5 +240,6 @@ url = f"https://smith.langchain.com/o/{org_id}/projects/p/{proj_id}?peek={run_id
 # Reduce output size
 --fields id,name,status,start_time
 --roots                           # root traces only (cleaner)
+--all-runs                        # include nested child runs
 --limit 10 --fetch 500            # fetch 500 from API, return top 10 matches
 ```

@@ -11,7 +11,8 @@
 | `--breakdown gateway` | `runs usage` | Add gateway (groq, cerebras, openai, google_genai, etc.) |
 | `--breakdown project` | `runs usage` | Add project dimension |
 | `--apply-pricing <file>` | `runs usage` | YAML pricing file to fill missing costs |
-| `--format yaml` | `runs pricing` | Output pricing as YAML for `--apply-pricing` |
+| `--format json\|yaml` | `runs pricing` | Output pricing as JSON or YAML for automation |
+| `--lookup` | `runs pricing` | Opt in to OpenRouter lookup for missing prices |
 | `--interval hour\|day` | `runs usage` | Time bucket size for distribution |
 | `--active-only` | `runs usage` | Only show time buckets with activity |
 | `--tag <tag>` | `runs usage`, `runs pricing` | Filter by tag (repeatable, AND logic) |
@@ -72,10 +73,15 @@ langsmith-cli --json runs usage \
 ## Recipe 4: Fix Missing Model Pricing
 
 ```bash
-# Step 1: Generate pricing YAML (auto-fills from LangSmith + OpenRouter)
+# Step 1: Generate pricing YAML from LangSmith costs
 langsmith-cli runs pricing \
   --from-cache --project-name-pattern "prd/*" \
   --format yaml > pricing.yaml
+
+# Optional: include OpenRouter lookup for missing models
+langsmith-cli runs pricing \
+  --from-cache --project-name-pattern "prd/*" \
+  --lookup --format yaml > pricing.yaml
 
 # Step 2: Look up missing prices (showing 0.0) from provider pages:
 # Groq:        https://groq.com/pricing

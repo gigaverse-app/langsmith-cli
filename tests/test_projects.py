@@ -215,6 +215,31 @@ def test_projects_list_with_format(runner, format_type, expected_content):
             assert "," in result.output
 
 
+def test_projects_list_output_respects_json_format(runner, tmp_path):
+    """INVARIANT: --output writes JSON array when --format json is explicit."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_projects.return_value = iter([create_project("test-project")])
+        output_file = tmp_path / "projects.json"
+
+        result = runner.invoke(
+            cli,
+            [
+                "projects",
+                "list",
+                "--format",
+                "json",
+                "--output",
+                str(output_file),
+            ],
+        )
+
+        assert result.exit_code == 0
+        data = json.loads(output_file.read_text())
+        assert isinstance(data, list)
+        assert data[0]["name"] == "test-project"
+
+
 def test_projects_list_with_empty_results(runner):
     """INVARIANT: Empty results should show appropriate message."""
     with patch("langsmith.Client") as MockClient:
@@ -886,6 +911,19 @@ def test_projects_delete_with_confirm_json(runner):
         mock_client.delete_project.assert_called_once_with(project_id=str(project.id))
 
 
+def test_projects_delete_yes_alias(runner):
+    """INVARIANT: projects delete accepts --yes as confirmation alias."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        project = create_project(name="my-project")
+        mock_client.read_project.return_value = project
+
+        result = runner.invoke(cli, ["projects", "delete", "my-project", "--yes"])
+
+        assert result.exit_code == 0
+        mock_client.delete_project.assert_called_once_with(project_id=str(project.id))
+
+
 def test_projects_delete_table_output(runner):
     """INVARIANT: projects delete should show success message."""
     with patch("langsmith.Client") as MockClient:
@@ -923,6 +961,8 @@ def test_projects_delete_requires_confirmation(runner):
 
         result = runner.invoke(cli, ["projects", "delete", "my-project"], input="n\n")
         assert result.exit_code != 0
+        assert "Cancelled" in result.output
+        assert "Aborted" not in result.output
         mock_client.delete_project.assert_not_called()
 
 
