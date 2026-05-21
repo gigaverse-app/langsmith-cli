@@ -1270,6 +1270,82 @@ class TestCacheGrepCommand:
         assert result.exit_code == 0
         assert "2" in result.output
 
+    def test_grep_format_json(self, runner, mock_client, tmp_path, monkeypatch):
+        """INVARIANT: cache grep supports explicit JSON output format."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+
+        runs = [
+            self._make_run_with_inputs(1, inputs={"text": "hello"}),
+            self._make_run_with_inputs(2, inputs={"text": "goodbye"}),
+        ]
+        append_runs_to_cache("test-proj", runs)
+
+        result = runner.invoke(
+            cli,
+            [
+                "runs",
+                "cache",
+                "grep",
+                "hello",
+                "--project",
+                "test-proj",
+                "--format",
+                "json",
+                "--fields",
+                "id,name",
+            ],
+        )
+
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip().split("\n")[-1])
+        assert len(data) == 1
+        assert set(data[0]) == {"id", "name"}
+        assert data[0]["name"] == "run-1"
+
+    def test_grep_output_respects_json_format(
+        self, runner, mock_client, tmp_path, monkeypatch
+    ):
+        """INVARIANT: cache grep --output honors explicit --format json."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+
+        runs = [self._make_run_with_inputs(1, inputs={"text": "hello"})]
+        append_runs_to_cache("test-proj", runs)
+        output_file = tmp_path / "matches.json"
+
+        result = runner.invoke(
+            cli,
+            [
+                "runs",
+                "cache",
+                "grep",
+                "hello",
+                "--project",
+                "test-proj",
+                "--format",
+                "json",
+                "--output",
+                str(output_file),
+            ],
+        )
+
+        assert result.exit_code == 0
+        data = json.loads(output_file.read_text())
+        assert isinstance(data, list)
+        assert data[0]["name"] == "run-1"
+
+    def test_grep_empty_format_json_when_no_projects(
+        self, runner, mock_client, tmp_path, monkeypatch
+    ):
+        """INVARIANT: --format json returns [] when there are no cached projects."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+
+        result = runner.invoke(
+            cli, ["runs", "cache", "grep", "hello", "--format", "json"]
+        )
+
+        assert result.exit_code == 0
+        assert json.loads(result.output.strip().split("\n")[-1]) == []
+
     def test_grep_no_cached_data(self, runner, mock_client, tmp_path, monkeypatch):
         """INVARIANT: Warns when no cached projects exist."""
         monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)

@@ -98,7 +98,7 @@ langsmith-cli --json runs get <id> --fields inputs,outputs,error
 | Get latest error | `langsmith-cli --json runs get-latest --project <name> --failed --fields id,name,error` |
 | Server-side search | `langsmith-cli --json runs search "pattern" --fields id,name,status --limit 20` |
 | Scoped content search | `langsmith-cli --json runs search "pattern" --in outputs --fields id,name,outputs --limit 20` |
-| Search cached runs | `langsmith-cli runs cache grep "pattern" -E --grep-in outputs --project <name>` |
+| Search cached runs | `langsmith-cli --json runs cache grep "pattern" -E --grep-in outputs --project <name> --fields id,name,outputs` |
 | Download cache | `langsmith-cli --json runs cache download --project <name> --last 7d` |
 | List cache | `langsmith-cli runs cache list` |
 | Discover cache schema | `langsmith-cli --json runs cache schema --project <name> --include outputs` |

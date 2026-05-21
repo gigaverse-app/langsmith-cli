@@ -19,14 +19,12 @@ from langsmith_cli.utils import (
     combine_fql_filters,
     count_option,
     fields_option,
-    filter_fields,
     get_or_create_client,
     output_option,
     parse_fields_option,
     partition_metadata_filters,
     render_output,
     resolve_project_filters,
-    write_output_to_file,
 )
 
 
@@ -748,6 +746,12 @@ def cache_schema(
 )
 @click.option("--limit", default=20, help="Max results to return (default 20).")
 @add_time_filter_options
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["table", "json", "csv", "yaml"]),
+    help="Output format (default: table, or json if --json flag used).",
+)
 @fields_option()
 @count_option()
 @output_option()
@@ -764,6 +768,7 @@ def cache_grep(
     since: str | None,
     before: str | None,
     last: str | None,
+    output_format: str | None,
     fields: str | None,
     count: bool,
     output: str | None,
@@ -790,8 +795,27 @@ def cache_grep(
     from langsmith_cli.filters import parse_time_filter
 
     logger = ctx.obj["logger"]
-    is_machine_readable = ctx.obj.get("json") or bool(output) or bool(fields)
+    is_machine_readable = (
+        ctx.obj.get("json")
+        or bool(output)
+        or bool(fields)
+        or output_format in ("json", "csv", "yaml")
+        or count
+    )
     logger.use_stderr = is_machine_readable
+
+    def render_matches(matches: list[Any]) -> None:
+        include_fields = parse_fields_option(fields)
+        render_output(
+            matches,
+            lambda runs: build_runs_table(runs, f"Runs matching '{pattern}'"),
+            ctx,
+            include_fields=include_fields,
+            empty_message=f"No runs matching '{pattern}' found",
+            output_format=output_format,
+            count_flag=count,
+            output_path=output,
+        )
 
     # Determine which projects to search
     if project:
@@ -819,8 +843,7 @@ def cache_grep(
 
     if not project_names:
         logger.warning("No cached projects. Run 'runs cache download' first.")
-        if ctx.obj.get("json"):
-            click.echo(json.dumps([]))
+        render_matches([])
         return
 
     # Parse time filters
@@ -831,8 +854,7 @@ def cache_grep(
 
     if not result.items:
         logger.warning("No cached runs found.")
-        if ctx.obj.get("json"):
-            click.echo(json.dumps([]))
+        render_matches([])
         return
 
     # Apply metadata filter (always client-side for cached data)
@@ -840,8 +862,7 @@ def cache_grep(
 
     if not filtered_items:
         logger.warning("No cached runs matched the metadata filter.")
-        if ctx.obj.get("json"):
-            click.echo(json.dumps([]))
+        render_matches([])
         return
 
     # Parse grep-in fields
@@ -862,19 +883,4 @@ def cache_grep(
     if limit and len(matched) > limit:
         matched = matched[:limit]
 
-    # Handle file output
-    if output:
-        data = filter_fields(matched, fields)
-        write_output_to_file(data, output, console, format_type="jsonl")
-        return
-
-    include_fields = parse_fields_option(fields)
-
-    render_output(
-        matched,
-        lambda runs: build_runs_table(runs, f"Runs matching '{pattern}'"),
-        ctx,
-        include_fields=include_fields,
-        empty_message=f"No runs matching '{pattern}' found",
-        count_flag=count,
-    )
+    render_matches(matched)
