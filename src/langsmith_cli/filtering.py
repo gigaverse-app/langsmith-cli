@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from typing import TYPE_CHECKING, Any, Callable, Protocol, TypeVar, cast, overload
 
 import click
@@ -715,9 +715,7 @@ def apply_grep_filter(
         if grep_fields:
             # Search only specified fields
             fields_to_search = {
-                field: item_dict.get(field)
-                for field in grep_fields
-                if field in item_dict
+                field: item_dict[field] for field in grep_fields if field in item_dict
             }
         else:
             # Search all fields
@@ -842,9 +840,17 @@ def apply_metadata_filter(
 
     def _matches(run: Run) -> bool:
         extra = run.extra or {}
-        meta: dict[str, Any] = extra["metadata"] if "metadata" in extra else {}
+        if not isinstance(extra, Mapping):
+            raise TypeError(
+                f"Expected run.extra to be a mapping, got {type(extra).__name__}"
+            )
+        metadata = extra["metadata"] if "metadata" in extra else {}
+        if not isinstance(metadata, Mapping):
+            raise TypeError(
+                f"Expected run.extra.metadata to be a mapping, got {type(metadata).__name__}"
+            )
         for key, pattern in parsed:
-            val = str(meta.get(key, ""))
+            val = str(metadata[key]) if key in metadata else ""
             if not fnmatch.fnmatch(val, pattern):
                 return False
         return True

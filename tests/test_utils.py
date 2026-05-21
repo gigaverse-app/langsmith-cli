@@ -2138,6 +2138,14 @@ class TestApplyMetadataFilter:
         result = list(apply_metadata_filter([r1, r2], ("channel_id=Gigaverse*",)))
         assert result == [r2]
 
+    def test_malformed_metadata_fails_fast(self):
+        from langsmith_cli.utils import apply_metadata_filter
+
+        run = create_run(id_str="auto", name="bad-meta", extra={"metadata": "bad"})
+
+        with pytest.raises(TypeError, match="run.extra.metadata"):
+            list(apply_metadata_filter([run], ("channel_id=Gigaverse*",)))
+
 
 class TestEnsureAwareDatetime:
     """INVARIANT: ensure_aware_datetime always returns None or a timezone-aware datetime."""
