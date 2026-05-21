@@ -51,6 +51,26 @@ class TestRunsListBasic:
         _, kwargs = mock_client.list_runs.call_args
         assert kwargs["is_root"] is False
 
+    @pytest.mark.parametrize(
+        "args,message",
+        [
+            (["--roots", "--all-runs"], "Use only one of --roots or --all-runs"),
+            (["--roots", "--is-root", "false"], "Use only one of --roots"),
+            (["--all-runs", "--is-root", "true"], "Use only one of --all-runs"),
+        ],
+    )
+    def test_conflicting_root_scope_flags_fail_fast(
+        self, runner, mock_client, args, message
+    ):
+        """Contradictory root-scope flags should not silently pick one."""
+        mock_client.list_runs.return_value = []
+
+        result = runner.invoke(cli, ["runs", "list", *args])
+
+        assert result.exit_code != 0
+        assert message in result.output
+        mock_client.list_runs.assert_not_called()
+
     def test_count_defaults_to_unlimited_and_selects_id(self, runner, mock_client):
         """--count should count all runs by default and request only IDs."""
         mock_client.list_runs.return_value = [create_run(name="counted")]

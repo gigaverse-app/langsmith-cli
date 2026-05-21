@@ -328,7 +328,14 @@ def list_runs(
     )
     projects_to_query = pq.names
 
-    # Handle --roots flag (convenience for --is-root true)
+    if roots and all_runs:
+        raise click.UsageError("Use only one of --roots or --all-runs.")
+    if roots and is_root is False:
+        raise click.UsageError("Use only one of --roots or --is-root false.")
+    if all_runs and is_root is True:
+        raise click.UsageError("Use only one of --all-runs or --is-root true.")
+
+    # Handle root-scope aliases.
     if roots:
         is_root = True
     if all_runs:

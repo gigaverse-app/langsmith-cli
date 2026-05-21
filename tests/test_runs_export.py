@@ -8,6 +8,7 @@ from langsmith_cli.main import cli
 from unittest.mock import patch
 import json
 import os
+import pytest
 from conftest import create_run, create_project, parse_json_output, strip_ansi
 
 
@@ -96,6 +97,27 @@ def test_export_with_all_runs_flag(runner, tmp_path):
         assert result.exit_code == 0
         call_kwargs = mock_client.list_runs.call_args[1]
         assert call_kwargs["is_root"] is False
+
+
+@pytest.mark.parametrize(
+    "args,message",
+    [
+        (["--roots", "--all-runs"], "Use only one of --roots or --all-runs"),
+        (["--roots", "--is-root", "false"], "Use only one of --roots"),
+        (["--all-runs", "--is-root", "true"], "Use only one of --all-runs"),
+    ],
+)
+def test_export_conflicting_root_scope_flags_fail_fast(runner, tmp_path, args, message):
+    """Contradictory root-scope flags should not silently pick one."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        out_dir = tmp_path / "traces"
+        result = runner.invoke(cli, ["runs", "export", str(out_dir), *args])
+
+        assert result.exit_code != 0
+        assert message in result.output
+        mock_client.list_runs.assert_not_called()
 
 
 def test_export_with_fields_pruning(runner, tmp_path):
