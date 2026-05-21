@@ -115,6 +115,12 @@ class LazyConsole:
         self._get_console().print(*args, **kwargs)
 
 
+class ModelDumpable(Protocol):
+    def model_dump(
+        self, *, include: set[str] | None = None, mode: str = "json"
+    ) -> dict[str, Any]: ...
+
+
 def output_formatted_data(
     data: list[dict[str, Any]],
     format_type: str,
@@ -193,34 +199,26 @@ def print_empty_result_message(console: ConsoleProtocol, item_type: str) -> None
 
 
 def safe_model_dump(
-    obj: Any, include: set[str] | None = None, mode: str = "json"
+    obj: ModelDumpable | dict[str, Any],
+    include: set[str] | None = None,
+    mode: str = "json",
 ) -> dict[str, Any]:
-    """Safely serialize Pydantic models to dict (handles v1 and v2).
+    """Serialize a dict or Pydantic v2-style model to a JSON-compatible dict.
 
     Args:
-        obj: Pydantic model instance or dict
+        obj: Pydantic v2-style model instance or dict
         include: Optional set of fields to include
         mode: Serialization mode ("json" for JSON-compatible output)
 
     Returns:
         Dictionary representation suitable for JSON serialization
     """
-    # Pydantic v2
-    if hasattr(obj, "model_dump"):
-        return obj.model_dump(include=include, mode=mode)
-    # Pydantic v1
-    elif hasattr(obj, "dict"):
-        result = obj.dict()
-        if include:
-            return {k: v for k, v in result.items() if k in include}
-        return result
-    # Already a dict
-    elif isinstance(obj, dict):
+    if isinstance(obj, dict):
         if include:
             return {k: v for k, v in obj.items() if k in include}
         return obj
-    # Fallback
-    return dict(obj)
+
+    return obj.model_dump(include=include, mode=mode)
 
 
 def render_output(

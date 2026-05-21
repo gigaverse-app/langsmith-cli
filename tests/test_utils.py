@@ -2,6 +2,7 @@
 
 import pytest
 import json
+from typing import Any
 from unittest.mock import MagicMock
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -611,26 +612,11 @@ class TestSafeModelDump:
             include={"name", "id"}, mode="json"
         )
 
-    def test_pydantic_v1_model(self):
-        """Test with Pydantic v1 model (has dict method)."""
-        mock_model = MagicMock()
-        mock_model.dict.return_value = {"name": "test", "id": "123"}
-        del mock_model.model_dump  # Simulate v1 model
-
-        result = safe_model_dump(mock_model)
-
-        assert result == {"name": "test", "id": "123"}
-
-    def test_pydantic_v1_model_with_include(self):
-        """Test with Pydantic v1 model with field selection."""
-        mock_model = MagicMock()
-        mock_model.dict.return_value = {"name": "test", "id": "123", "extra": "field"}
-        del mock_model.model_dump  # Simulate v1 model
-
-        result = safe_model_dump(mock_model, include={"name", "id"})
-
-        assert result == {"name": "test", "id": "123"}
-        assert "extra" not in result
+    def test_unknown_object_fails_fast(self):
+        """Unknown objects should not be silently coerced or treated as Pydantic v1."""
+        unknown: Any = object()
+        with pytest.raises(AttributeError):
+            safe_model_dump(unknown)
 
     def test_plain_dict(self):
         """Test with plain dictionary."""
