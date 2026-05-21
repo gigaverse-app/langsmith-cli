@@ -57,12 +57,6 @@ class UsageBucket:
 _get_model_name = get_full_model_name
 
 
-def _get_project_name(run: Run) -> str:
-    """Extract project name from a run, handling missing attribute when using select."""
-    name: str | None = getattr(run, "session_name", None)
-    return name if name else "unknown"
-
-
 def _get_gateway(run: Run) -> str:
     """Extract gateway/API provider from ls_provider metadata."""
     extra = run.extra or {}
@@ -691,9 +685,8 @@ def usage_runs(
             if dim == "model":
                 breakdown_vals.append(_get_model_name(run))
             elif dim == "project":
-                breakdown_vals.append(
-                    run_project_map.get(str(run.id), _get_project_name(run))
-                )
+                run_id = str(run.id)
+                breakdown_vals.append(run_project_map[run_id])
             elif dim == "provider":
                 breakdown_vals.append(_get_provider(run))
             elif dim == "gateway":
