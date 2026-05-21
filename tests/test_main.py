@@ -6,6 +6,20 @@ import click
 from langsmith_cli.main import cli
 
 
+def _wrapped_langsmith_http_error(status_code: int, reason: str) -> Exception:
+    """Build the SDK shape where LangSmithError wraps requests.HTTPError."""
+    import requests
+    from langsmith.utils import LangSmithError
+
+    try:
+        try:
+            raise requests.HTTPError(f"{status_code} Client Error: {reason}")
+        except requests.HTTPError as inner:
+            raise LangSmithError(f"Failed to GET /sessions: {reason}") from inner
+    except LangSmithError as wrapped:
+        return wrapped
+
+
 def test_main_version(runner):
     """Test that the CLI can display its version."""
     result = runner.invoke(cli, ["--version"])
@@ -35,6 +49,25 @@ def test_help_mentions_json_can_appear_anywhere(runner):
     assert result.exit_code == 0
     assert "Pass --json anywhere" in result.output
     assert "Always pass --json FIRST" not in result.output
+
+
+def test_http_status_extraction_from_httpx_error():
+    """HTTP status extraction uses exception contracts, not message matching."""
+    import httpx
+    from langsmith_cli.main import _http_status_from_exception
+
+    request = httpx.Request("GET", "https://api.smith.langchain.com/sessions")
+    response = httpx.Response(403, request=request)
+    error = httpx.HTTPStatusError("forbidden", request=request, response=response)
+
+    assert _http_status_from_exception(error) == 403
+
+
+def test_http_status_extraction_unknown_error():
+    """Non-HTTP errors have no extracted status."""
+    from langsmith_cli.main import _http_status_from_exception
+
+    assert _http_status_from_exception(RuntimeError("boom")) is None
 
 
 def test_cached_client_is_closed_after_invocation(runner, mock_client):
@@ -117,12 +150,11 @@ def test_auth_error_handling(runner):
 def test_forbidden_error_handling(runner):
     """Test that 403 Forbidden errors show helpful message."""
     from unittest.mock import patch
-    from langsmith.utils import LangSmithError
 
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
-        mock_client.list_projects.side_effect = LangSmithError(
-            "Failed to GET /sessions in LangSmith API. HTTPError('403 Client Error: Forbidden for url: https://api.smith.langchain.com/sessions')"
+        mock_client.list_projects.side_effect = _wrapped_langsmith_http_error(
+            403, "Forbidden"
         )
 
         result = runner.invoke(cli, ["projects", "list"])
@@ -140,13 +172,12 @@ def test_forbidden_error_handling(runner):
 def test_forbidden_error_handling_json_mode(runner):
     """Test that 403 Forbidden errors in JSON mode return structured error."""
     from unittest.mock import patch
-    from langsmith.utils import LangSmithError
     import json
 
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
-        mock_client.list_projects.side_effect = LangSmithError(
-            "Failed to GET /sessions. HTTPError('403 Client Error: Forbidden')"
+        mock_client.list_projects.side_effect = _wrapped_langsmith_http_error(
+            403, "Forbidden"
         )
 
         result = runner.invoke(cli, ["--json", "projects", "list"])
@@ -270,12 +301,11 @@ def test_conflict_error_handling_json_mode(runner):
 def test_unauthorized_error_handling(runner):
     """Test that 401 Unauthorized errors show helpful message."""
     from unittest.mock import patch
-    from langsmith.utils import LangSmithError
 
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
-        mock_client.list_projects.side_effect = LangSmithError(
-            "Failed to GET /sessions. HTTPError('401 Client Error: Unauthorized')"
+        mock_client.list_projects.side_effect = _wrapped_langsmith_http_error(
+            401, "Unauthorized"
         )
 
         result = runner.invoke(cli, ["projects", "list"])
@@ -289,13 +319,12 @@ def test_unauthorized_error_handling(runner):
 def test_unauthorized_error_handling_json_mode(runner):
     """Test that 401 Unauthorized errors in JSON mode return structured error."""
     from unittest.mock import patch
-    from langsmith.utils import LangSmithError
     import json
 
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
-        mock_client.list_projects.side_effect = LangSmithError(
-            "Failed to GET /sessions. HTTPError('401 Unauthorized')"
+        mock_client.list_projects.side_effect = _wrapped_langsmith_http_error(
+            401, "Unauthorized"
         )
 
         result = runner.invoke(cli, ["--json", "projects", "list"])

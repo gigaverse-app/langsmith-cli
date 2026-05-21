@@ -35,6 +35,32 @@ if "LANGSMITH_API_KEY" not in os.environ:
 console = Console()
 
 
+def _http_status_from_exception(exc: BaseException) -> int | None:
+    """Extract an HTTP status from SDK/http exception chains when available."""
+    import httpx
+    import requests
+
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+
+        if isinstance(current, (httpx.HTTPStatusError, requests.HTTPError)):
+            response = getattr(current, "response", None)
+            if response is not None:
+                status_code = getattr(response, "status_code", None)
+                if isinstance(status_code, int):
+                    return status_code
+
+            if current.args and isinstance(current.args[0], str):
+                status_text = current.args[0].split(maxsplit=1)[0]
+                if status_text.isdigit():
+                    return int(status_text)
+
+        current = current.__cause__ or current.__context__
+    return None
+
+
 class LangSmithCLIGroup(click.Group):
     """Custom Click Group that handles LangSmith exceptions gracefully."""
 
@@ -100,11 +126,10 @@ class LangSmithCLIGroup(click.Group):
                 return
 
             elif isinstance(e, LangSmithError):
-                # Generic LangSmith error - check if it's a 403 Forbidden
                 error_str = str(e)
+                status_code = _http_status_from_exception(e)
 
-                # Check for 403 Forbidden errors (invalid/expired API key)
-                if "403" in error_str or "Forbidden" in error_str:
+                if status_code == 403:
                     error_msg = (
                         "Access forbidden. Your API key may be invalid or expired."
                     )
@@ -127,8 +152,7 @@ class LangSmithCLIGroup(click.Group):
 
                     sys.exit(1)
 
-                # Check for 401 Unauthorized (catches cases not caught by LangSmithAuthError)
-                elif "401" in error_str or "Unauthorized" in error_str:
+                elif status_code == 401:
                     error_msg = (
                         "Authentication failed. Your API key is missing or invalid."
                     )
