@@ -2,6 +2,7 @@
 
 from unittest.mock import MagicMock
 
+import pytest
 
 from langsmith_cli.utils import FetchResult, fetch_from_projects
 
@@ -242,13 +243,16 @@ class TestFetchFromProjects:
 
     def test_handles_one_project_failure(self):
         """Test that one project failure doesn't stop other fetches."""
+        import httpx
+
         client = MagicMock()
+        request = httpx.Request("GET", "https://api.smith.langchain.com/runs")
 
         def mock_fetch(c, proj, **kwargs):
             if proj == "proj1":
                 return [1, 2]
             elif proj == "proj2":
-                raise ConnectionError("Network timeout")
+                raise httpx.ConnectError("Network timeout", request=request)
             elif proj == "proj3":
                 return [3, 4]
             return []
@@ -269,17 +273,19 @@ class TestFetchFromProjects:
         assert len(result.failed_sources) == 1
         assert result.failed_sources[0][0] == "proj2"
         assert "Network timeout" in result.failed_sources[0][1]
-        assert isinstance(result.failed_exceptions["proj2"], ConnectionError)
+        assert isinstance(result.failed_exceptions["proj2"], httpx.ConnectError)
 
         # Should have printed warning
         console.print.assert_called()
 
     def test_handles_all_projects_failing(self):
         """Test handling when all projects fail."""
+        from langsmith.utils import LangSmithError
+
         client = MagicMock()
 
         def mock_fetch(c, proj, **kwargs):
-            raise ValueError(f"Project {proj} not found")
+            raise LangSmithError(f"Project {proj} not found")
 
         console = MagicMock()
         result = fetch_from_projects(
@@ -331,12 +337,14 @@ class TestFetchFromProjects:
 
     def test_show_warnings_false_doesnt_print(self):
         """Test that show_warnings=False suppresses console output."""
+        from langsmith.utils import LangSmithError
+
         client = MagicMock()
 
         def mock_fetch(c, proj, **kwargs):
             if proj == "proj1":
                 return [1]
-            raise ValueError("Error")
+            raise LangSmithError("Error")
 
         console = MagicMock()
         result = fetch_from_projects(
@@ -353,12 +361,13 @@ class TestFetchFromProjects:
 
     def test_project_id_failure_preserves_exception(self):
         """Project-id fetch failures keep the original exception for callers."""
+        from langsmith.utils import LangSmithError
         from langsmith_cli.project_resolution import ProjectQuery
 
         client = MagicMock()
 
         def mock_fetch(c, proj, **kwargs):
-            raise RuntimeError("project-id failed")
+            raise LangSmithError("project-id failed")
 
         result = fetch_from_projects(
             client,
@@ -369,16 +378,18 @@ class TestFetchFromProjects:
 
         source_name = "id:project-uuid"
         assert result.failed_sources == [(source_name, "project-id failed")]
-        assert isinstance(result.failed_exceptions[source_name], RuntimeError)
+        assert isinstance(result.failed_exceptions[source_name], LangSmithError)
 
     def test_no_console_provided_doesnt_crash(self):
         """Test that missing console doesn't cause errors."""
+        from langsmith.utils import LangSmithError
+
         client = MagicMock()
 
         def mock_fetch(c, proj, **kwargs):
             if proj == "proj1":
                 return [1]
-            raise ValueError("Error")
+            raise LangSmithError("Error")
 
         result = fetch_from_projects(
             client,
@@ -390,6 +401,16 @@ class TestFetchFromProjects:
 
         # Should complete without error even though console is None
         assert result.has_failures is True
+
+    def test_programming_errors_propagate(self):
+        """Non-SDK/non-http errors are not mislabeled as project fetch failures."""
+        client = MagicMock()
+
+        def mock_fetch(c, proj, **kwargs):
+            raise ValueError(f"bad local assumption for {proj}")
+
+        with pytest.raises(ValueError, match="bad local assumption"):
+            fetch_from_projects(client, ["proj1"], mock_fetch)
 
     def test_empty_project_list(self):
         """Test handling empty project list."""

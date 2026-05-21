@@ -19,6 +19,14 @@ if TYPE_CHECKING:
 T = TypeVar("T")
 
 
+def _project_fetch_error_types() -> tuple[type[BaseException], ...]:
+    """Errors that represent expected LangSmith/http fetch failures."""
+    import httpx
+    from langsmith.utils import LangSmithError
+
+    return (LangSmithError, httpx.HTTPError)
+
+
 @contextmanager
 def not_found_as_click_exception(entity: str, identifier: str | Any) -> Iterator[None]:
     """Translate ``LangSmithNotFoundError`` into a uniform ``ClickException``.
@@ -314,6 +322,8 @@ def fetch_from_projects(
         >>> if result.has_failures:
         ...     result.report_failures(console)
     """
+    fetch_error_types = _project_fetch_error_types()
+
     # When project_id is available, bypass name-based iteration
     if project_query and project_query.use_id:
         try:
@@ -334,7 +344,7 @@ def fetch_from_projects(
             if show_warnings and result.has_failures and console:
                 result.report_failures(console)
             return result
-        except Exception as e:
+        except fetch_error_types as e:
             source_name = f"id:{project_query.project_id}"
             return FetchResult(
                 items=[],
@@ -355,7 +365,7 @@ def fetch_from_projects(
             )
             all_items.extend(items)
             successful.append(proj_name)
-        except Exception as e:
+        except fetch_error_types as e:
             failed.append((proj_name, str(e)))
             failed_excs[proj_name] = e
 
@@ -423,6 +433,7 @@ def collect_runs_streaming(
     successful: list[str] = []
     failed: list[tuple[str, str]] = []
     failed_excs: dict[str, BaseException] = {}
+    fetch_error_types = _project_fetch_error_types()
 
     collected = 0
     for source_label, proj_kwargs in sources:
@@ -445,7 +456,7 @@ def collect_runs_streaming(
             successful.append(source_label)
             if reached_cap:
                 break
-        except Exception as e:
+        except fetch_error_types as e:
             failed.append((source_label, str(e)))
             failed_excs[source_label] = e
 
