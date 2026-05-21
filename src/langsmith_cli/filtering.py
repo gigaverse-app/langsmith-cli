@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import TYPE_CHECKING, Any, Callable, Protocol, TypeVar, overload
+from typing import TYPE_CHECKING, Any, Callable, Protocol, TypeVar, cast, overload
 
 import click
 
@@ -708,18 +708,14 @@ def apply_grep_filter(
         flags = re.IGNORECASE if ignore_case else 0
         compiled_pattern = re.compile(escaped_pattern, flags)
 
-    filtered_items = []
+    filtered_items: list[T] = []
     for item in items:
         # Convert item to dict for searching
-        if hasattr(item, "model_dump"):
-            # Type-safe call: we verified the method exists
-            model_dump_method = getattr(item, "model_dump")
-            item_dict: dict[str, Any] = model_dump_method(mode="json")
-        elif isinstance(item, dict):
+        if isinstance(item, dict):
             item_dict = item
         else:
-            # Skip items we can't convert to dict
-            continue
+            dumpable = cast(ModelDumpable, item)
+            item_dict = dumpable.model_dump(mode="json")
 
         # Determine which fields to search
         if grep_fields:
