@@ -230,6 +230,20 @@ def _update_meta_times(meta: CacheMetadata, t: datetime) -> None:
         meta.newest_run_start_time = t
 
 
+def _cache_row_start_time(raw_row: object) -> str | None:
+    """Return the optional start_time field from a cached JSONL object."""
+    if not isinstance(raw_row, dict):
+        raise TypeError(
+            f"Expected cached run row to be an object, got {type(raw_row).__name__}"
+        )
+    if "start_time" not in raw_row:
+        return None
+    value = raw_row["start_time"]
+    if value is None:
+        return None
+    return str(value)
+
+
 def append_runs_streaming(
     project_name: str,
     runs_iter: Iterator[Run],
@@ -364,10 +378,10 @@ def repair_cache_metadata(project_name: str) -> CacheMetadata:
             data = json.loads(line)
         except json.JSONDecodeError:
             continue
-        t_str = data.get("start_time")
+        t_str = _cache_row_start_time(data)
         if t_str:
             try:
-                t = datetime.fromisoformat(str(t_str).replace("Z", "+00:00"))
+                t = datetime.fromisoformat(t_str.replace("Z", "+00:00"))
                 _update_meta_times(meta, t)
             except (TypeError, ValueError) as e:
                 logger.debug("Could not parse start_time %r: %s", t_str, e)

@@ -6,6 +6,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
+import pytest
 from langsmith.schemas import Run
 
 from conftest import make_run_id, parse_json_output, strip_ansi
@@ -1490,6 +1491,14 @@ class TestRepairCacheMetadata:
         assert meta.run_count == 2
         assert meta.oldest_run_start_time is None
         assert meta.newest_run_start_time is None
+
+    def test_valid_json_non_object_fails_fast(self, tmp_path, monkeypatch):
+        """INVARIANT: cache rows must be JSON objects, not arbitrary JSON values."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+        (tmp_path / "test.jsonl").write_text('["not", "a", "run"]\n')
+
+        with pytest.raises(TypeError, match="cached run row"):
+            repair_cache_metadata("test")
 
 
 class TestCacheRepairCommand:

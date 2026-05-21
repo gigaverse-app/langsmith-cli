@@ -76,8 +76,8 @@ def load_api_key() -> str | None:
         API key if found, None otherwise
     """
     # Priority 1: Environment variable
-    if api_key := os.environ.get("LANGSMITH_API_KEY"):
-        return api_key
+    if "LANGSMITH_API_KEY" in os.environ and os.environ["LANGSMITH_API_KEY"]:
+        return os.environ["LANGSMITH_API_KEY"]
 
     # Priority 2: Credentials file
     creds_file = get_credentials_file()
@@ -85,7 +85,8 @@ def load_api_key() -> str | None:
         from dotenv import dotenv_values
 
         config = dotenv_values(creds_file)
-        return config.get("LANGSMITH_API_KEY")
+        if "LANGSMITH_API_KEY" in config:
+            return config["LANGSMITH_API_KEY"]
 
     return None
 
