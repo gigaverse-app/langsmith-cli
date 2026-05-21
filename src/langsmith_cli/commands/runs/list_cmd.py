@@ -545,7 +545,8 @@ def list_runs(
     # Handle file output - short circuit if writing to file
     if output:
         data = filter_fields(runs, fields)
-        write_output_to_file(data, output, console, format_type="jsonl")
+        file_format = output_format if output_format is not None else "jsonl"
+        write_output_to_file(data, output, console, format_type=file_format)
         return
 
     # Handle non-table formats

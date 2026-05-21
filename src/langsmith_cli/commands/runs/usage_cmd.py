@@ -782,7 +782,8 @@ def usage_runs(
 
     # Handle file output — write results to file and return
     if output:
-        write_output_to_file(results, output, console, format_type="jsonl")
+        file_format = output_format if output_format is not None else "jsonl"
+        write_output_to_file(results, output, console, format_type=file_format)
         return
 
     if format_type != "table":

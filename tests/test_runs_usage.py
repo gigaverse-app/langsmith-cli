@@ -1079,6 +1079,34 @@ class TestUsageCsvFormat:
         assert "time" in rows[0]
         assert "run_count" in rows[0]
 
+    def test_output_respects_json_format(self, runner, mock_client, tmp_path):
+        """--output writes a JSON array when --format json is explicit."""
+        mock_client.list_runs.return_value = [
+            _create_llm_run(1, hour=16, model="gpt-4"),
+            _create_llm_run(2, hour=17, model="claude-3"),
+        ]
+        output_file = tmp_path / "usage.json"
+
+        result = runner.invoke(
+            cli,
+            [
+                "-qq",
+                "runs",
+                "usage",
+                "--last",
+                "24h",
+                "--format",
+                "json",
+                "--output",
+                str(output_file),
+            ],
+        )
+
+        assert result.exit_code == 0
+        data = json.loads(output_file.read_text())
+        assert isinstance(data, list)
+        assert "run_count" in data[0]
+
 
 class TestUsageProviderGatewayBreakdown:
     """Tests for --breakdown provider and --breakdown gateway dimensions."""

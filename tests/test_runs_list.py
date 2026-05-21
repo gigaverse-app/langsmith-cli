@@ -525,6 +525,28 @@ class TestRunsListOutputFormats:
         assert result.exit_code == 0
         assert "test-run" in result.output
 
+    def test_output_respects_json_format(self, runner, mock_client, tmp_path):
+        """--output writes a JSON array when --format json is explicit."""
+        mock_client.list_runs.return_value = iter([create_run(name="test-run")])
+        output_file = tmp_path / "runs.json"
+
+        result = runner.invoke(
+            cli,
+            [
+                "runs",
+                "list",
+                "--format",
+                "json",
+                "--output",
+                str(output_file),
+            ],
+        )
+
+        assert result.exit_code == 0
+        data = json.loads(output_file.read_text())
+        assert isinstance(data, list)
+        assert data[0]["name"] == "test-run"
+
 
 class TestRunsListTruncation:
     """Truncation behavior tests."""
