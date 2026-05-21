@@ -14,6 +14,7 @@ from langsmith_cli.utils import (
     fetch_from_projects,
     fields_option,
     get_or_create_client,
+    is_json_context,
     json_dumps,
     parse_fields_option,
     raise_if_all_failed_with_suggestions,
@@ -173,7 +174,7 @@ def export_runs(
         result.report_failures_to_logger(logger)
 
     if not fetched_runs:
-        if ctx.obj.get("json"):
+        if is_json_context(ctx):
             click.echo(
                 json_dumps(
                     {"status": "success", "exported": 0, "directory": str(out_dir)}
@@ -236,7 +237,7 @@ def export_runs(
         except OSError as e:
             errors.append({"run_id": str(run.id), "error": str(e)})
 
-    if ctx.obj.get("json"):
+    if is_json_context(ctx):
         click.echo(
             json_dumps(
                 {

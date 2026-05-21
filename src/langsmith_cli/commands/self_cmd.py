@@ -8,7 +8,7 @@ from typing import Any
 
 import click
 
-from langsmith_cli.utils import json_dumps
+from langsmith_cli.utils import is_json_context, json_dumps
 
 
 def _detect_install_method(dist: Any) -> str:
@@ -126,7 +126,7 @@ def detect(ctx: click.Context) -> None:
     """Show installation details (version, install method, paths)."""
     data = detect_installation()
 
-    if ctx.obj.get("json"):
+    if is_json_context(ctx):
         click.echo(json_dumps(data))
         return
 
@@ -196,7 +196,7 @@ def skill_docs(ctx: click.Context, doc: str | None, list_docs: bool) -> None:
     available = _discover_skill_docs()
 
     if list_docs:
-        if ctx.obj.get("json"):
+        if is_json_context(ctx):
             click.echo(json_dumps({"docs": sorted(available.keys()), "main": "skill"}))
         else:
             click.echo("Available skill docs (use: langsmith-cli self skill <name>):\n")
@@ -218,7 +218,7 @@ def skill_docs(ctx: click.Context, doc: str | None, list_docs: bool) -> None:
         )
 
     text = path.read_text(encoding="utf-8")
-    if ctx.obj.get("json"):
+    if is_json_context(ctx):
         click.echo(json_dumps({"doc": doc or "skill", "content": text}))
     else:
         click.echo(text)
@@ -233,7 +233,7 @@ def update(ctx: click.Context) -> None:
     info = detect_installation()
     current = info["version"]
     method = info["install_method"]
-    json_mode = ctx.obj.get("json")
+    json_mode = is_json_context(ctx)
 
     # Check latest version on PyPI
     latest = check_latest_version()

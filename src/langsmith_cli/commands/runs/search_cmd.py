@@ -20,6 +20,7 @@ from langsmith_cli.utils import (
     fields_option,
     filter_fields,
     get_or_create_client,
+    is_json_context,
     json_dumps,
     output_formatted_data,
     output_option,
@@ -474,7 +475,7 @@ def sample_runs(
 
     format_type = output_format
     if format_type is None:
-        format_type = "json" if ctx.obj.get("json") and output is None else "jsonl"
+        format_type = "json" if is_json_context(ctx) and output is None else "jsonl"
 
     if output:
         write_output_to_file(all_samples, output, console, format_type=format_type)

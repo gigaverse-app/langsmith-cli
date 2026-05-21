@@ -8,6 +8,7 @@ from langsmith_cli.commands.runs._group import runs, console
 from langsmith_cli.utils import (
     add_project_filter_options,
     get_or_create_client,
+    is_json_context,
     json_dumps,
     resolve_project_filters,
 )
@@ -56,7 +57,7 @@ def run_stats(
                 resolved_project_ids.append(proj_name)
 
     if not resolved_project_ids:
-        if ctx.obj.get("json"):
+        if is_json_context(ctx):
             click.echo(
                 json_dumps(
                     {"error": "NotFoundError", "message": "No matching projects found."}
@@ -68,7 +69,7 @@ def run_stats(
 
     stats = client.get_run_stats(project_ids=resolved_project_ids)
 
-    if ctx.obj.get("json"):
+    if is_json_context(ctx):
         click.echo(json_dumps(stats))
         return
 

@@ -6,6 +6,7 @@ from langsmith_cli.utils import (
     LazyConsole,
     configure_logger_streams,
     get_or_create_client,
+    is_json_context,
     json_dumps,
     not_found_as_click_exception,
 )
@@ -41,7 +42,7 @@ def results(ctx, name):
     run_stats = experiment_results.get("run_stats", {})
     feedback_stats = experiment_results.get("feedback_stats", {})
 
-    if ctx.obj.get("json"):
+    if is_json_context(ctx):
         # Serialize timedeltas and Decimals to JSON-safe values
         run_stats_json: dict = {}
         for k, v in run_stats.items():

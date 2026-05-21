@@ -19,6 +19,7 @@ from langsmith_cli.utils import (
     filter_runs_by_tags,
     get_full_model_name,
     get_or_create_client,
+    is_json_context,
     json_dumps,
     resolve_project_filters,
 )
@@ -98,7 +99,7 @@ def pricing_check(
     from collections import defaultdict
 
     logger = ctx.obj["logger"]
-    is_json = bool(ctx.obj.get("json")) or output_format == "json"
+    is_json = is_json_context(ctx) or output_format == "json"
     configure_logger_streams(ctx, logger, output_format=output_format)
 
     # Fetch runs

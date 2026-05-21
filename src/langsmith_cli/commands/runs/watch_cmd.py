@@ -11,6 +11,7 @@ from langsmith_cli.commands.runs._group import runs
 from langsmith_cli.utils import (
     add_project_filter_options,
     get_or_create_client,
+    is_json_context,
     json_dumps,
     resolve_project_filters,
 )
@@ -31,7 +32,7 @@ def open_run(ctx, run_id):
     run = client.read_run(run_id)
     url = client.get_run_url(run=run)
 
-    if ctx.obj.get("json"):
+    if is_json_context(ctx):
         click.echo(json_dumps({"run_id": run_id, "url": url}))
     else:
         click.echo(f"Opening run {run_id} in browser...")

@@ -21,6 +21,7 @@ from langsmith_cli.utils import (
     count_option,
     fields_option,
     get_or_create_client,
+    is_json_context,
     output_option,
     parse_fields_option,
     partition_metadata_filters,
@@ -127,7 +128,7 @@ def cache_download(
     )
 
     logger = ctx.obj["logger"]
-    is_json = ctx.obj.get("json", False)
+    is_json = is_json_context(ctx)
     configure_logger_streams(ctx, logger)
 
     client = get_or_create_client(ctx)
@@ -450,7 +451,7 @@ def cache_list(ctx: click.Context) -> None:
         logger.info("No cached projects. Use 'runs cache download' to cache runs.")
         return
 
-    if ctx.obj.get("json"):
+    if is_json_context(ctx):
         data = []
         for p in projects:
             entry = p.model_dump(mode="json")
@@ -649,7 +650,7 @@ def cache_schema(
     )
 
     logger = ctx.obj["logger"]
-    is_json = ctx.obj.get("json", False)
+    is_json = is_json_context(ctx)
     configure_logger_streams(ctx, logger)
 
     try:

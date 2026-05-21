@@ -27,6 +27,7 @@ from langsmith_cli.utils import (
     filter_runs_by_tags,
     get_full_model_name,
     get_or_create_client,
+    is_json_context,
     output_formatted_data,
     output_option,
     resolve_project_filters,
@@ -216,7 +217,7 @@ def _extract_input_context(run: Run) -> dict[str, str]:
 
 def _emit_empty_usage_json(output_format: str | None, ctx: Any, interval: str) -> None:
     """Emit an empty usage JSON summary when no data matches filters."""
-    format_type = determine_output_format(output_format, ctx.obj.get("json"))
+    format_type = determine_output_format(output_format, is_json_context(ctx))
     if format_type == "table":
         return
     empty_data: dict[str, Any] = {
@@ -752,7 +753,7 @@ def usage_runs(
     summary = _summarize_usage(results, interval)
 
     # Determine output format
-    format_type = determine_output_format(output_format, ctx.obj.get("json"))
+    format_type = determine_output_format(output_format, is_json_context(ctx))
 
     # Handle file output — write results to file and return
     if output:

@@ -18,6 +18,7 @@ from langsmith_cli.utils import (
     filter_fields,
     get_or_create_client,
     get_project_suggestions,
+    is_json_context,
     output_formatted_data,
     output_option,
     output_single_item,
@@ -327,12 +328,12 @@ def view_file(ctx, pattern, no_truncate, fields):
 
     if not all_runs:
         logger.warning("No valid runs found in files.")
-        if ctx.obj.get("json"):
+        if is_json_context(ctx):
             click.echo(json.dumps([]))
         return
 
     # Handle JSON output
-    if ctx.obj.get("json"):
+    if is_json_context(ctx):
         data = filter_fields(all_runs, fields)
         output_formatted_data(data, "json")
         return

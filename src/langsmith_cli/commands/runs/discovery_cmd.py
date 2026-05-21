@@ -16,6 +16,7 @@ from langsmith_cli.utils import (
     configure_logger_streams,
     fetch_from_projects,
     get_or_create_client,
+    is_json_context,
     json_dumps,
     resolve_project_filters,
 )
@@ -191,7 +192,7 @@ def discover_tags(
     }
 
     # Output
-    if ctx.obj.get("json"):
+    if is_json_context(ctx):
         click.echo(json_dumps(result))
     else:
         from rich.table import Table
@@ -287,7 +288,7 @@ def discover_metadata_keys(
     result = {"metadata_keys": sorted(metadata_keys)}
 
     # Output
-    if ctx.obj.get("json"):
+    if is_json_context(ctx):
         click.echo(json_dumps(result))
     else:
         from rich.table import Table
@@ -373,7 +374,7 @@ def _field_analysis_common(
     )
 
     if not discovery.runs:
-        if ctx.obj.get("json"):
+        if is_json_context(ctx):
             click.echo(json_dumps({"fields": [], "total_runs": 0}))
         else:
             discovery.logger.warning("No runs found.")
@@ -392,7 +393,7 @@ def _field_analysis_common(
     stats_list = filter_fields_by_path(stats_list, include_paths, exclude_paths)
 
     # Output JSON (same format for both commands)
-    if ctx.obj.get("json"):
+    if is_json_context(ctx):
         output = {
             "fields": [s.to_dict() for s in stats_list],
             "total_runs": len(discovery.runs),

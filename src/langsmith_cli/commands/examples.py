@@ -11,6 +11,7 @@ from langsmith_cli.utils import (
     fields_option,
     filter_fields,
     get_or_create_client,
+    is_json_context,
     json_dumps,
     not_found_as_click_exception,
     output_option,
@@ -304,7 +305,7 @@ def delete_examples(ctx, example_ids, confirm):
         except (LangSmithNotFoundError, LangSmithError) as e:
             errors.append({"id": eid, "error": str(e)})
 
-    if ctx.obj.get("json"):
+    if is_json_context(ctx):
         click.echo(
             json_dumps({"status": "success", "deleted": deleted, "errors": errors})
         )

@@ -19,6 +19,7 @@ from langsmith_cli.utils import (
     extract_regex_search_term,
     fields_option,
     filter_fields,
+    is_json_context,
     parse_fields_option,
     count_option,
     exclude_option,
@@ -184,7 +185,7 @@ def list_projects(
         ]
 
     # Client-side sorting for table output
-    if sort_by and not ctx.obj.get("json"):
+    if sort_by and not is_json_context(ctx):
         # Map sort field to project attribute
         sort_key_map = {
             "name": lambda p: (p.name or "").lower(),
@@ -278,7 +279,7 @@ def list_projects(
         return
 
     # Show message if we hit the limit (not in count mode or JSON mode)
-    if hit_limit and not count and not ctx.obj.get("json"):
+    if hit_limit and not count and not is_json_context(ctx):
         # Show the exact number we know
         logger.info(
             f"Showing {len(projects_list)} of {total_count} projects. "

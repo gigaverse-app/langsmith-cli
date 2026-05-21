@@ -11,6 +11,7 @@ from langsmith_cli.utils import (
     fields_option,
     filter_fields,
     get_or_create_client,
+    is_json_context,
     json_dumps,
     output_option,
     output_single_item,
@@ -321,7 +322,7 @@ def delete_prompt(ctx, name, confirm):
     try:
         client.delete_prompt(name)
     except LangSmithNotFoundError:
-        if ctx.obj.get("json"):
+        if is_json_context(ctx):
             click.echo(
                 json_dumps({"status": "error", "message": f"Prompt '{name}' not found"})
             )
@@ -374,7 +375,7 @@ def create_prompt_cmd(ctx, name, description, tags, is_public, public, private):
             success_message=f"Created prompt '{prompt.full_name}'",
         )
     except LangSmithConflictError:
-        if ctx.obj.get("json"):
+        if is_json_context(ctx):
             click.echo(
                 json_dumps(
                     {"status": "error", "message": f"Prompt '{name}' already exists"}

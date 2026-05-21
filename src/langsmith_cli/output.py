@@ -25,6 +25,15 @@ def json_dumps(obj: Any, **kwargs: Any) -> str:
     return json.dumps(obj, ensure_ascii=False, default=str, **kwargs)
 
 
+def is_json_context(ctx: click.Context) -> bool:
+    """Return whether the root CLI context requested strict JSON output."""
+    if ctx.obj is None:
+        return False
+    if "json" not in ctx.obj:
+        return False
+    return bool(ctx.obj["json"])
+
+
 def is_machine_readable_output(
     ctx: click.Context,
     *,
@@ -44,7 +53,7 @@ def is_machine_readable_output(
 
     Centralizing the rule prevents drift between commands that compute it inline.
     """
-    if ctx.obj.get("json"):
+    if is_json_context(ctx):
         return True
     if output:
         return True
@@ -263,7 +272,7 @@ def render_output(
         return
 
     # Determine output format
-    format_type = determine_output_format(output_format, ctx.obj.get("json"))
+    format_type = determine_output_format(output_format, is_json_context(ctx))
 
     # File output respects --format. Tables aren't sensible in files, so fall
     # back to JSONL (the historical default) when --format is table or unset.
@@ -417,7 +426,7 @@ def emit_action_result(
     if model is None and payload is None:
         raise ValueError("emit_action_result requires either model= or payload=.")
 
-    if ctx.obj.get("json"):
+    if is_json_context(ctx):
         data = safe_model_dump(model) if model is not None else payload
         click.echo(json_dumps(data))
         return
@@ -451,7 +460,7 @@ def output_single_item(
         write_output_to_file(data, output, console, format_type="json")
         return
 
-    if ctx.obj.get("json"):
+    if is_json_context(ctx):
         click.echo(json_dumps(data))
         return
 

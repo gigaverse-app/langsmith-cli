@@ -18,6 +18,7 @@ from langsmith_cli.utils import (
     determine_output_format,
     fetch_from_projects,
     get_or_create_client,
+    is_json_context,
     output_formatted_data,
     resolve_project_filters,
 )
@@ -568,7 +569,7 @@ def analyze_runs(
     results.sort(key=lambda r: r["group"])
 
     # Determine output format
-    format_type = determine_output_format(output_format, ctx.obj.get("json"))
+    format_type = determine_output_format(output_format, is_json_context(ctx))
 
     # Handle non-table formats
     if format_type != "table":

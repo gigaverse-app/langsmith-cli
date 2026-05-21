@@ -26,6 +26,7 @@ from langsmith_cli.utils import (
     filter_fields,
     get_matching_items,
     get_or_create_client,
+    is_json_context,
     output_formatted_data,
     output_option,
     parse_duration_to_seconds,
@@ -290,7 +291,7 @@ def list_runs(
 
     # Determine output format early so field selection can be pushed to the SDK
     # without starving table rendering of required columns.
-    format_type = determine_output_format(output_format, ctx.obj.get("json"))
+    format_type = determine_output_format(output_format, is_json_context(ctx))
     is_machine_readable = configure_logger_streams(
         ctx,
         logger,
@@ -560,7 +561,7 @@ def list_runs(
         )
 
     # Client-side sorting for table output
-    if sort_by and not ctx.obj.get("json"):
+    if sort_by and not is_json_context(ctx):
         # Map sort field to run attribute
         sort_key_map = {
             "name": lambda r: (r.name or "").lower(),
@@ -580,7 +581,7 @@ def list_runs(
     hit_limit = limit is not None and limit > 0 and total_count > limit
 
     # Report filtering results if client-side filtering was used
-    if needs_client_filtering and not ctx.obj.get("json"):
+    if needs_client_filtering and not is_json_context(ctx):
         matches_found = len(runs)
 
         if limit and matches_found < limit:
@@ -694,7 +695,7 @@ def list_runs(
         console.print(table)
 
         # Show message if we hit the limit (not in count mode or JSON mode)
-        if hit_limit and not count and not ctx.obj.get("json"):
+        if hit_limit and not count and not is_json_context(ctx):
             # Show the exact number we know
             logger.info(
                 f"Showing {len(runs)} of {total_count} runs. "
