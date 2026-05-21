@@ -14,6 +14,7 @@ from langsmith_cli.utils import (
     build_tag_fql_filters,
     build_time_fql_filters,
     combine_fql_filters,
+    configure_logger_streams,
     filter_runs_by_tags,
     get_or_create_client,
     json_dumps,
@@ -105,7 +106,7 @@ def pricing_check(
 
     logger = ctx.obj["logger"]
     is_json = bool(ctx.obj.get("json")) or output_format == "json"
-    logger.use_stderr = bool(is_json) or output_format == "yaml"
+    configure_logger_streams(ctx, logger, output_format=output_format)
 
     # Fetch runs
     all_runs: list[Run] = []
