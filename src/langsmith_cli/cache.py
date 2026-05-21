@@ -4,19 +4,23 @@ Provides offline storage and fast re-analysis of runs without hitting the API.
 Each project gets its own JSONL file with a metadata sidecar for incremental updates.
 """
 
+from __future__ import annotations
+
 import json
 import re
 from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, overload
+from typing import TYPE_CHECKING, Any, overload
 
-from langsmith.schemas import Run
 from platformdirs import user_cache_dir
 from pydantic import BaseModel, Field, model_validator
 
 from langsmith_cli.time_parsing import ensure_aware_datetime
 from langsmith_cli.utils import FetchResult
+
+if TYPE_CHECKING:
+    from langsmith.schemas import Run
 
 
 # Threshold for stripping large base64/binary strings from cache.
@@ -175,6 +179,7 @@ def read_cached_runs(
         return []
 
     import logging
+    from langsmith.schemas import Run
 
     logger = logging.getLogger(__name__)
     runs: list[Run] = []
