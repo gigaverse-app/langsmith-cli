@@ -93,20 +93,20 @@ langsmith-cli --json datasets create "qa-pairs" \
 Delete a dataset by name or ID.
 
 ```bash
-langsmith-cli --json datasets delete <name-or-id> --confirm
+langsmith-cli --json datasets delete <name-or-id> --yes
 ```
 
 **Arguments:**
 - `name-or-id` (required) - Dataset name or UUID (auto-detected)
 
 **Options:**
-- `--confirm` - Skip confirmation prompt (required for non-interactive use)
+- `--yes`, `--confirm` - Skip confirmation prompt (required for non-interactive use)
 
 **Output:** `{"status": "success", "name": "<dataset-name>"}`
 
 **Example:**
 ```bash
-langsmith-cli --json datasets delete "old-test-data" --confirm
+langsmith-cli --json datasets delete "old-test-data" --yes
 ```
 
 ### `datasets push`
@@ -128,6 +128,7 @@ langsmith-cli --json datasets push <file.jsonl> [OPTIONS]
 {"inputs": {"query": "What is AI?"}, "outputs": {"answer": "Artificial Intelligence..."}}
 {"inputs": {"query": "Define ML"}, "outputs": {"answer": "Machine Learning..."}}
 ```
+Rows must be JSON objects with an `inputs` object. `outputs` is optional, but if present it must be an object or `null`. Malformed rows fail fast with the JSONL line number.
 
 **Output:** Upload summary with count of examples added
 

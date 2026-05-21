@@ -59,6 +59,47 @@ def test_annotation_queues_list_json(runner):
         assert data[0]["name"] == "test-queue"
 
 
+def test_annotation_queues_list_count(runner):
+    """INVARIANT: annotation-queues list supports the standard --count flag."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_annotation_queues.return_value = iter(
+            [
+                create_annotation_queue(name="review-queue"),
+                create_annotation_queue(name="quality-queue"),
+            ]
+        )
+        result = runner.invoke(cli, ["annotation-queues", "list", "--count"])
+        assert result.exit_code == 0
+        assert result.output.strip() == "2"
+
+
+def test_annotation_queues_list_format_json_without_global_flag(runner):
+    """INVARIANT: annotation-queues list supports the standard --format json flag."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_annotation_queues.return_value = iter(
+            [create_annotation_queue(name="review-queue")]
+        )
+        result = runner.invoke(cli, ["annotation-queues", "list", "--format", "json"])
+        assert result.exit_code == 0
+        data = parse_json_output(result.output)
+        assert data[0]["name"] == "review-queue"
+
+
+def test_annotation_queues_list_output_file(runner, tmp_path):
+    """INVARIANT: annotation-queues list supports the standard --output file flag."""
+    out = tmp_path / "queues.jsonl"
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_annotation_queues.return_value = iter(
+            [create_annotation_queue(name="review-queue")]
+        )
+        result = runner.invoke(cli, ["annotation-queues", "list", "--output", str(out)])
+        assert result.exit_code == 0
+        assert "review-queue" in out.read_text()
+
+
 def test_annotation_queues_get_exits_zero(runner):
     """INVARIANT: annotation-queues get returns a single queue by ID."""
     with patch("langsmith.Client") as MockClient:
@@ -92,6 +133,60 @@ def test_annotation_queues_get_json(runner):
         assert result.exit_code == 0
         data = parse_json_output(result.output)
         assert data["name"] == "my-queue"
+
+
+def test_annotation_queues_get_human_fields_skips_omitted_values(runner):
+    """INVARIANT: human --fields output does not render omitted fields as None."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        q = create_annotation_queue(
+            id_str="33333333-3333-3333-3333-333333333333",
+            name="my-queue",
+        )
+        mock_client.read_annotation_queue.return_value = q
+        result = runner.invoke(
+            cli,
+            [
+                "annotation-queues",
+                "get",
+                "33333333-3333-3333-3333-333333333333",
+                "--fields",
+                "name",
+            ],
+        )
+
+        assert result.exit_code == 0
+        output = strip_ansi(result.output)
+        assert "Name: my-queue" in output
+        assert "ID:" not in output
+        assert "None" not in output
+
+
+def test_annotation_queues_get_output_file(runner, tmp_path):
+    """INVARIANT: annotation-queues get supports the standard --output file flag."""
+    out = tmp_path / "queue.json"
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        q = create_annotation_queue(
+            id_str="33333333-3333-3333-3333-333333333333",
+            name="output-queue",
+        )
+        mock_client.read_annotation_queue.return_value = q
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "annotation-queues",
+                "get",
+                "33333333-3333-3333-3333-333333333333",
+                "--output",
+                str(out),
+            ],
+        )
+
+        assert result.exit_code == 0
+        data = parse_json_output(out.read_text())
+        assert data["name"] == "output-queue"
 
 
 def test_annotation_queues_create_exits_zero(runner):
@@ -156,11 +251,14 @@ def test_annotation_queues_delete_requires_confirm(runner):
         mock_client = MockClient.return_value
         q = create_annotation_queue(id_str="33333333-3333-3333-3333-333333333333")
         mock_client.read_annotation_queue.return_value = q
-        runner.invoke(
+        result = runner.invoke(
             cli,
             ["annotation-queues", "delete", "33333333-3333-3333-3333-333333333333"],
             input="n\n",
         )
+        assert result.exit_code != 0
+        assert "Cancelled" in result.output
+        assert "Aborted" not in result.output
         mock_client.delete_annotation_queue.assert_not_called()
 
 
@@ -178,6 +276,26 @@ def test_annotation_queues_delete_with_confirm(runner):
                 "delete",
                 "33333333-3333-3333-3333-333333333333",
                 "--confirm",
+            ],
+        )
+        assert result.exit_code == 0
+        mock_client.delete_annotation_queue.assert_called_once()
+
+
+def test_annotation_queues_delete_yes_alias(runner):
+    """INVARIANT: annotation-queues delete accepts --yes as confirmation alias."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        q = create_annotation_queue(id_str="33333333-3333-3333-3333-333333333333")
+        mock_client.read_annotation_queue.return_value = q
+        mock_client.delete_annotation_queue.return_value = None
+        result = runner.invoke(
+            cli,
+            [
+                "annotation-queues",
+                "delete",
+                "33333333-3333-3333-3333-333333333333",
+                "--yes",
             ],
         )
         assert result.exit_code == 0
@@ -218,3 +336,22 @@ def test_annotation_queues_update_not_found(runner):
         )
         assert result.exit_code != 0
         assert "not found" in result.output.lower()
+
+
+def test_annotation_queues_list_format_json_routes_diagnostics_to_stderr(runner):
+    """INVARIANT: `--format json` alone is enough to flip diagnostics to stderr.
+
+    Without this routing rule, `annotation-queues list --format json | jq` would
+    fail because INFO/DEBUG lines would land on stdout. The fix delegates to
+    is_machine_readable_output via configure_logger_streams.
+    """
+    import json as _json
+
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_annotation_queues.return_value = []
+
+        result = runner.invoke(cli, ["annotation-queues", "list", "--format", "json"])
+
+        assert result.exit_code == 0
+        _json.loads(result.output.strip())

@@ -4,19 +4,23 @@ Provides offline storage and fast re-analysis of runs without hitting the API.
 Each project gets its own JSONL file with a metadata sidecar for incremental updates.
 """
 
+from __future__ import annotations
+
 import json
 import re
 from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, overload
+from typing import TYPE_CHECKING, Any, overload
 
-from langsmith.schemas import Run
 from platformdirs import user_cache_dir
 from pydantic import BaseModel, Field, model_validator
 
 from langsmith_cli.time_parsing import ensure_aware_datetime
 from langsmith_cli.utils import FetchResult
+
+if TYPE_CHECKING:
+    from langsmith.schemas import Run
 
 
 # Threshold for stripping large base64/binary strings from cache.
@@ -175,6 +179,8 @@ def read_cached_runs(
         return []
 
     import logging
+    from langsmith.schemas import Run
+    from pydantic import ValidationError
 
     logger = logging.getLogger(__name__)
     runs: list[Run] = []
@@ -184,7 +190,7 @@ def read_cached_runs(
             continue
         try:
             run = Run.model_validate(json.loads(line))
-        except Exception as e:
+        except (json.JSONDecodeError, ValidationError) as e:
             logger.warning("Skipping corrupt cache line in %s: %s", cache_path, e)
             continue
         start = ensure_aware_datetime(run.start_time)
@@ -222,6 +228,20 @@ def _update_meta_times(meta: CacheMetadata, t: datetime) -> None:
         meta.oldest_run_start_time = t
     if meta.newest_run_start_time is None or t > meta.newest_run_start_time:
         meta.newest_run_start_time = t
+
+
+def _cache_row_start_time(raw_row: object) -> str | None:
+    """Return the optional start_time field from a cached JSONL object."""
+    if not isinstance(raw_row, dict):
+        raise TypeError(
+            f"Expected cached run row to be an object, got {type(raw_row).__name__}"
+        )
+    if "start_time" not in raw_row:
+        return None
+    value = raw_row["start_time"]
+    if value is None:
+        return None
+    return str(value)
 
 
 def append_runs_streaming(
@@ -356,14 +376,14 @@ def repair_cache_metadata(project_name: str) -> CacheMetadata:
             continue
         try:
             data = json.loads(line)
-        except Exception:
+        except json.JSONDecodeError:
             continue
-        t_str = data.get("start_time")
+        t_str = _cache_row_start_time(data)
         if t_str:
             try:
-                t = datetime.fromisoformat(str(t_str).replace("Z", "+00:00"))
+                t = datetime.fromisoformat(t_str.replace("Z", "+00:00"))
                 _update_meta_times(meta, t)
-            except Exception as e:
+            except (TypeError, ValueError) as e:
                 logger.debug("Could not parse start_time %r: %s", t_str, e)
         meta.run_count += 1
 
@@ -415,7 +435,7 @@ def sample_raw_json_lines(
             continue
         try:
             samples.append(json.loads(line))
-        except Exception:
+        except json.JSONDecodeError:
             continue
         if len(samples) >= n:
             break

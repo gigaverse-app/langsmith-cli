@@ -1,9 +1,10 @@
 """Export command for runs."""
 
-from typing import Any
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
 
 import click
-from langsmith.schemas import Run
 
 from langsmith_cli.commands.runs._group import runs
 from langsmith_cli.utils import (
@@ -13,11 +14,16 @@ from langsmith_cli.utils import (
     fetch_from_projects,
     fields_option,
     get_or_create_client,
+    is_json_context,
     json_dumps,
     parse_fields_option,
     raise_if_all_failed_with_suggestions,
     resolve_project_filters,
+    resolve_root_scope,
 )
+
+if TYPE_CHECKING:
+    from langsmith.schemas import Run
 
 
 @runs.command("export")
@@ -28,11 +34,21 @@ from langsmith_cli.utils import (
     "--status", type=click.Choice(["success", "error"]), help="Filter by status."
 )
 @click.option("--filter", "filter_", help="LangSmith FQL filter.")
-@click.option("--is-root", type=bool, help="Filter root traces only (true/false).")
+@click.option(
+    "--is-root",
+    type=bool,
+    hidden=True,
+    help="Legacy root-run filter. Use --roots or --all-runs instead.",
+)
 @click.option(
     "--roots",
     is_flag=True,
     help="Export only root traces.",
+)
+@click.option(
+    "--all-runs",
+    is_flag=True,
+    help="Export all runs including nested child runs.",
 )
 @click.option("--run-type", help="Filter by run type (llm, chain, tool, etc).")
 @click.option(
@@ -62,6 +78,7 @@ def export_runs(
     filter_,
     is_root,
     roots,
+    all_runs,
     run_type,
     tag,
     since,
@@ -79,13 +96,10 @@ def export_runs(
     Examples:
         # Export last 50 root traces
         langsmith-cli runs export ./traces --project my-project --roots
-
         # Export error traces from last 24h
         langsmith-cli runs export ./errors --project my-project --status error --last 24h
-
         # Export with custom filenames
         langsmith-cli runs export ./traces --project my-project --filename-pattern "{name}_{run_id}.json"
-
         # Export with field pruning for smaller files
         langsmith-cli runs export ./traces --project my-project --fields name,inputs,outputs,status,latency
     """
@@ -115,9 +129,7 @@ def export_runs(
     )
     projects_to_query = pq.names
 
-    # Handle --roots flag
-    if roots:
-        is_root = True
+    is_root = resolve_root_scope(roots=roots, all_runs=all_runs, is_root=is_root)
 
     # Build filter using shared helper (reuse canonical filter builder)
     combined_filter, error_filter = build_runs_list_filter(
@@ -150,7 +162,7 @@ def export_runs(
         console=None,
         show_warnings=False,
     )
-    all_runs: list[Run] = result.items
+    fetched_runs: list[Run] = result.items
 
     # If all sources failed, raise with suggestions (reports failures internally).
     # Otherwise, report partial failures.
@@ -158,8 +170,8 @@ def export_runs(
     if result.has_failures:
         result.report_failures_to_logger(logger)
 
-    if not all_runs:
-        if ctx.obj.get("json"):
+    if not fetched_runs:
+        if is_json_context(ctx):
             click.echo(
                 json_dumps(
                     {"status": "success", "exported": 0, "directory": str(out_dir)}
@@ -170,8 +182,8 @@ def export_runs(
         return
 
     # Apply limit across all projects
-    if len(all_runs) > limit:
-        all_runs = all_runs[:limit]
+    if len(fetched_runs) > limit:
+        fetched_runs = fetched_runs[:limit]
 
     include_fields = parse_fields_option(fields)
 
@@ -197,7 +209,7 @@ def export_runs(
     exported_files: list[str] = []
     errors: list[dict[str, str]] = []
 
-    for index, run in enumerate(all_runs):
+    for index, run in enumerate(fetched_runs):
         try:
             # Build filename from pattern
             safe_name = _sanitize_filename(run.name or "unnamed")
@@ -222,7 +234,7 @@ def export_runs(
         except OSError as e:
             errors.append({"run_id": str(run.id), "error": str(e)})
 
-    if ctx.obj.get("json"):
+    if is_json_context(ctx):
         click.echo(
             json_dumps(
                 {

@@ -1,17 +1,29 @@
 """Filtering, sorting, and search utilities."""
 
+from __future__ import annotations
+
 import json
 import re
-from typing import Any, Callable, TypeVar, overload
+from collections.abc import Iterable, Iterator, Mapping
+from typing import TYPE_CHECKING, Any, Callable, Protocol, TypeVar, cast, overload
 
 import click
-from langsmith.schemas import Run
-from pydantic import BaseModel
 
 from langsmith_cli.output import ConsoleProtocol, json_dumps
 
+if TYPE_CHECKING:
+    from langsmith.schemas import Run
+
 T = TypeVar("T")
-ModelT = TypeVar("ModelT", bound=BaseModel)
+
+
+class ModelDumpable(Protocol):
+    def model_dump(
+        self, *, include: set[str] | None = None, mode: str = "json"
+    ) -> dict[str, Any]: ...
+
+
+ModelT = TypeVar("ModelT", bound=ModelDumpable)
 
 
 @overload
@@ -107,6 +119,67 @@ def fields_option(
         "--fields",
         type=str,
         default=None,
+        help=help_text,
+    )
+
+
+def require_confirmation(skip: bool, prompt: str) -> None:
+    """Ask the user for confirmation, or abort with a uniform "Cancelled." error.
+
+    Every destructive command shares the same two-step dance: skip the prompt
+    if ``--confirm``/``--yes`` was passed, otherwise call ``click.confirm`` and
+    raise ``ClickException("Cancelled.")`` if the user declines. Centralizing
+    this keeps the abort message identical everywhere and makes future
+    changes (e.g. adding a second confirmation step) a one-place edit.
+
+    Args:
+        skip: True if the user passed ``--confirm`` / ``--yes`` and the prompt
+            should be skipped.
+        prompt: The yes/no question to put to the user.
+
+    Raises:
+        click.ClickException: If ``skip`` is False and the user declined.
+
+    Example::
+
+        require_confirmation(
+            confirm, f"Are you sure you want to delete dataset '{name}'?"
+        )
+    """
+    if skip:
+        return
+    if not click.confirm(prompt):
+        raise click.ClickException("Cancelled.")
+
+
+def confirm_option(
+    help_text: str = "Skip confirmation prompt.",
+) -> Any:
+    """Reusable Click option decorator for the ``--confirm`` / ``--yes`` flag.
+
+    Use this on every destructive command so the spelling stays in sync —
+    older versions exposed only ``--confirm`` and switching to ``--yes`` on
+    one command without the others would create silent UX drift.
+
+    Args:
+        help_text: Custom help text for the option.
+
+    Returns:
+        Click option decorator.
+
+    Example:
+        @datasets.command("delete")
+        @click.argument("name_or_id")
+        @confirm_option()
+        @click.pass_context
+        def delete_dataset(ctx, name_or_id, confirm):
+            require_confirmation(confirm, "Delete?")
+            ...
+    """
+    return click.option(
+        "--confirm",
+        "--yes",
+        is_flag=True,
         help=help_text,
     )
 
@@ -369,10 +442,11 @@ def sort_items(
     Args:
         items: List of items to sort
         sort_by: Sort specification (e.g., "name" or "-name" for descending)
-        sort_key_map: Dictionary mapping field names to key functions.
-                      If None, uses getattr to look up the field directly.
+        sort_key_map: Dictionary mapping field names to key functions. Required
+                      when ``sort_by`` is provided so sorting stays typed and
+                      explicit at command boundaries.
                       Any is acceptable for key return type - can be str, int, datetime, etc.
-        console: Rich console for printing warnings. If None, warnings are skipped.
+        console: Deprecated compatibility argument. Sorting errors are raised.
 
     Returns:
         Sorted list of items
@@ -382,31 +456,23 @@ def sort_items(
 
     reverse = sort_by.startswith("-")
     sort_field = sort_by.lstrip("-")
+    _ = console
 
-    if sort_key_map is not None:
-        if sort_field not in sort_key_map:
-            if console is not None:
-                console.print(
-                    f"[yellow]Warning: Unknown sort field '{sort_field}'. "
-                    f"Available: {', '.join(sort_key_map.keys())}[/yellow]"
-                )
-            return items
-        key_func: Callable[[T], Any] = sort_key_map[sort_field]
-    else:
-
-        def _attr_key(item: T) -> Any:
-            return getattr(item, sort_field, None)
-
-        key_func = _attr_key
+    if sort_key_map is None:
+        raise RuntimeError(
+            "sort_items requires an explicit sort_key_map when sort_by is provided."
+        )
+    if sort_field not in sort_key_map:
+        available = ", ".join(sort_key_map.keys())
+        raise click.BadParameter(
+            f"Unknown sort field '{sort_field}'. Available: {available}"
+        )
+    key_func: Callable[[T], Any] = sort_key_map[sort_field]
 
     try:
         return sorted(items, key=key_func, reverse=reverse)
-    except Exception as e:
-        if console is not None:
-            console.print(
-                f"[yellow]Warning: Could not sort by {sort_field}: {e}[/yellow]"
-            )
-        return items
+    except TypeError as e:
+        raise click.ClickException(f"Could not sort by '{sort_field}': {e}") from e
 
 
 def apply_regex_filter(
@@ -636,26 +702,20 @@ def apply_grep_filter(
         flags = re.IGNORECASE if ignore_case else 0
         compiled_pattern = re.compile(escaped_pattern, flags)
 
-    filtered_items = []
+    filtered_items: list[T] = []
     for item in items:
         # Convert item to dict for searching
-        if hasattr(item, "model_dump"):
-            # Type-safe call: we verified the method exists
-            model_dump_method = getattr(item, "model_dump")
-            item_dict: dict[str, Any] = model_dump_method(mode="json")
-        elif isinstance(item, dict):
+        if isinstance(item, dict):
             item_dict = item
         else:
-            # Skip items we can't convert to dict
-            continue
+            dumpable = cast(ModelDumpable, item)
+            item_dict = dumpable.model_dump(mode="json")
 
         # Determine which fields to search
         if grep_fields:
             # Search only specified fields
             fields_to_search = {
-                field: item_dict.get(field)
-                for field in grep_fields
-                if field in item_dict
+                field: item_dict[field] for field in grep_fields if field in item_dict
             }
         else:
             # Search all fields
@@ -673,6 +733,29 @@ def apply_grep_filter(
     return filtered_items
 
 
+def quote_fql_string(value: str) -> str:
+    """Safely quote a string for use as an FQL string literal.
+
+    Uses JSON encoding to escape embedded quotes, backslashes, control characters,
+    and non-ASCII characters so the result is always a valid FQL string literal.
+
+    Args:
+        value: The raw string to embed in an FQL expression.
+
+    Returns:
+        The value wrapped in double quotes with all dangerous characters escaped.
+
+    Example:
+        >>> quote_fql_string('foo')
+        '"foo"'
+        >>> quote_fql_string('she said "hi"')
+        '"she said \\"hi\\""'
+    """
+    import json as _json
+
+    return _json.dumps(value)
+
+
 def build_tag_fql_filters(tags: tuple[str, ...] | list[str]) -> list[str]:
     """Build FQL filter clauses for tag filtering (AND logic).
 
@@ -682,7 +765,7 @@ def build_tag_fql_filters(tags: tuple[str, ...] | list[str]) -> list[str]:
     Returns:
         List of FQL filter strings, one per tag
     """
-    return [f'has(tags, "{t}")' for t in tags]
+    return [f"has(tags, {quote_fql_string(t)})" for t in tags]
 
 
 def filter_runs_by_tags(
@@ -730,9 +813,9 @@ def partition_metadata_filters(
 
 
 def apply_metadata_filter(
-    runs_iter: Any,
+    runs_iter: Iterable["Run"],
     metadata_filters: tuple[str, ...],
-) -> Any:
+) -> Iterator["Run"]:
     """Apply client-side metadata wildcard filters to a run iterator/list.
 
     Accesses run.extra["metadata"] for each run. Filters are in "key=value" or
@@ -748,19 +831,28 @@ def apply_metadata_filter(
     import fnmatch
 
     if not metadata_filters:
-        return runs_iter
+        return iter(runs_iter)
 
     parsed: list[tuple[str, str]] = []
     for mf in metadata_filters:
         key, value = mf.split("=", 1)
         parsed.append((key, value))
 
-    def _matches(run: Any) -> bool:
-        meta: dict[str, Any] = (getattr(run, "extra", None) or {}).get("metadata", {})
+    def _matches(run: Run) -> bool:
+        extra = run.extra or {}
+        if not isinstance(extra, Mapping):
+            raise TypeError(
+                f"Expected run.extra to be a mapping, got {type(extra).__name__}"
+            )
+        metadata = extra["metadata"] if "metadata" in extra else {}
+        if not isinstance(metadata, Mapping):
+            raise TypeError(
+                f"Expected run.extra.metadata to be a mapping, got {type(metadata).__name__}"
+            )
         for key, pattern in parsed:
-            val = str(meta.get(key, ""))
+            val = str(metadata[key]) if key in metadata else ""
             if not fnmatch.fnmatch(val, pattern):
                 return False
         return True
 
-    return (r for r in runs_iter if _matches(r))
+    return cast(Iterator["Run"], (r for r in runs_iter if _matches(r)))

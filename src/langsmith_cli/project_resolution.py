@@ -1,24 +1,80 @@
 """Project resolution, fetch helpers, and multi-project query utilities."""
 
+from __future__ import annotations
+
 import re
 import time
-from dataclasses import dataclass
-from typing import Any, Callable, Generic, TypeVar
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Callable, Generic, TypeVar
 
 import click
-import langsmith
-from langsmith.utils import LangSmithError, LangSmithNotFoundError
-from pydantic import BaseModel, Field
 
-from langsmith_cli.utils import apply_regex_filter, apply_wildcard_filter
+from langsmith_cli.filtering import apply_regex_filter, apply_wildcard_filter
+
+if TYPE_CHECKING:
+    from langsmith import Client
+    from langsmith_cli.cli_logging import CLILogger
 
 T = TypeVar("T")
 
 
-def _is_rate_limited(error_msg: str) -> bool:
-    """Check if an error message indicates a rate limit (429) response."""
-    msg = error_msg.lower()
-    return "429" in msg or "too many requests" in msg or "rate limit" in msg
+def _project_fetch_error_types() -> tuple[type[BaseException], ...]:
+    """Errors that represent expected LangSmith/http fetch failures."""
+    import httpx
+    from langsmith.utils import LangSmithError
+
+    return (LangSmithError, httpx.HTTPError)
+
+
+@contextmanager
+def not_found_as_click_exception(entity: str, identifier: str | Any) -> Iterator[None]:
+    """Translate ``LangSmithNotFoundError`` into a uniform ``ClickException``.
+
+    Almost every ``get``/``update``/``delete`` command in the CLI wraps a single
+    SDK read with the same try/except dance::
+
+        from langsmith.utils import LangSmithNotFoundError
+        try:
+            x = client.read_x(xid)
+        except LangSmithNotFoundError:
+            raise click.ClickException(f"X '{xid}' not found.")
+
+    Centralizing this stops the message format from drifting (e.g. one
+    command saying "X '<id>' not found." and another saying "Could not
+    find X with id <id>"), and removes the duplicated function-scope
+    ``from langsmith.utils import LangSmithNotFoundError`` imports.
+
+    Args:
+        entity: Human-readable entity name, e.g. ``"Feedback"`` or ``"Annotation queue"``.
+        identifier: The id/name the user supplied — interpolated into the message.
+
+    Example::
+
+        with not_found_as_click_exception("Feedback", feedback_id):
+            fb = client.read_feedback(feedback_id)
+    """
+    from langsmith.utils import LangSmithNotFoundError
+
+    try:
+        yield
+    except LangSmithNotFoundError:
+        raise click.ClickException(f"{entity} '{identifier}' not found.") from None
+
+
+def _is_rate_limited(error: BaseException) -> bool:
+    """Return whether an exception is an explicit rate-limit response."""
+    from langsmith.utils import LangSmithRateLimitError
+
+    if isinstance(error, LangSmithRateLimitError):
+        return True
+
+    import httpx
+
+    if isinstance(error, httpx.HTTPStatusError):
+        return error.response.status_code == 429
+    return False
 
 
 def _fetch_with_rate_limit_retry(
@@ -36,15 +92,18 @@ def _fetch_with_rate_limit_retry(
     Returns:
         List of items from the successful call
     """
+    import httpx
+    from langsmith.utils import LangSmithRateLimitError
+
     delay = initial_delay
     for attempt in range(max_retries + 1):
         try:
             items = func()
-            if hasattr(items, "__iter__") and not isinstance(items, (list, tuple)):
+            if isinstance(items, Iterable) and not isinstance(items, (list, tuple)):
                 items = list(items)
             return items  # type: ignore[return-value]
-        except Exception as e:
-            if attempt < max_retries and _is_rate_limited(str(e)):
+        except (LangSmithRateLimitError, httpx.HTTPStatusError) as e:
+            if attempt < max_retries and _is_rate_limited(e):
                 time.sleep(delay)
                 delay *= 2
             else:
@@ -70,23 +129,18 @@ class CLIFetchError(click.ClickException):
         self.suggestions = suggestions or []
 
 
-class FetchResult(BaseModel, Generic[T]):
+@dataclass
+class FetchResult(Generic[T]):
     """Result of fetching items from multiple projects/sources.
 
     Tracks both successful items and failed sources for proper error reporting.
     """
 
-    model_config = {"arbitrary_types_allowed": True}
-
     items: list[T]
     successful_sources: list[str]
-    failed_sources: list[tuple[str, str]] = Field(
-        default_factory=list, description="(source_name, error_message)"
-    )
-    item_source_map: dict[str, str] = Field(
-        default_factory=dict,
-        description="Maps item ID (str) to source name for project attribution",
-    )
+    failed_sources: list[tuple[str, str]] = field(default_factory=list)
+    failed_exceptions: dict[str, BaseException] = field(default_factory=dict)
+    item_source_map: dict[str, str] = field(default_factory=dict)
 
     @property
     def has_failures(self) -> bool:
@@ -127,7 +181,7 @@ class FetchResult(BaseModel, Generic[T]):
             remaining = len(self.failed_sources) - max_show
             console.print(f"  ... and {remaining} more")
 
-    def report_failures_to_logger(self, logger: Any, max_show: int = 3) -> None:
+    def report_failures_to_logger(self, logger: CLILogger, max_show: int = 3) -> None:
         """Report failures using the CLI logger.
 
         Use this instead of report_failures() when you need proper
@@ -156,7 +210,7 @@ class FetchResult(BaseModel, Generic[T]):
 
     def raise_if_all_failed(
         self,
-        logger: Any | None = None,
+        logger: CLILogger | None = None,
         entity_name: str = "runs",
         suggestions: list[str] | None = None,
     ) -> None:
@@ -230,7 +284,7 @@ class ProjectQuery:
 
 
 def fetch_from_projects(
-    client: langsmith.Client,
+    client: Client,
     project_names: list[str],
     fetch_func: Callable[..., Any],
     *,
@@ -269,6 +323,8 @@ def fetch_from_projects(
         >>> if result.has_failures:
         ...     result.report_failures(console)
     """
+    fetch_error_types = _project_fetch_error_types()
+
     # When project_id is available, bypass name-based iteration
     if project_query and project_query.use_id:
         try:
@@ -289,16 +345,19 @@ def fetch_from_projects(
             if show_warnings and result.has_failures and console:
                 result.report_failures(console)
             return result
-        except Exception as e:
+        except fetch_error_types as e:
+            source_name = f"id:{project_query.project_id}"
             return FetchResult(
                 items=[],
                 successful_sources=[],
-                failed_sources=[(f"id:{project_query.project_id}", str(e))],
+                failed_sources=[(source_name, str(e))],
+                failed_exceptions={source_name: e},
             )
 
     all_items: list[Any] = []
     successful: list[str] = []
     failed: list[tuple[str, str]] = []
+    failed_excs: dict[str, BaseException] = {}
 
     for proj_name in project_names:
         try:
@@ -307,11 +366,15 @@ def fetch_from_projects(
             )
             all_items.extend(items)
             successful.append(proj_name)
-        except Exception as e:
+        except fetch_error_types as e:
             failed.append((proj_name, str(e)))
+            failed_excs[proj_name] = e
 
     result = FetchResult(
-        items=all_items, successful_sources=successful, failed_sources=failed
+        items=all_items,
+        successful_sources=successful,
+        failed_sources=failed,
+        failed_exceptions=failed_excs,
     )
 
     # Automatically show warnings if requested
@@ -321,11 +384,96 @@ def fetch_from_projects(
     return result
 
 
+def collect_runs_streaming(
+    client: Client,
+    project_query: ProjectQuery,
+    *,
+    filter: str | None,
+    select: list[str] | None,
+    sample_size: int = 0,
+    on_run: Callable[[Any, str], None] | None = None,
+) -> FetchResult[Any]:
+    """Stream ``client.list_runs`` across one or more projects with optional sample cap.
+
+    Centralizes the inline ``sources = [...]; for source_label, proj_kwargs in
+    sources:`` loop that ``runs analyze``, ``runs usage`` and ``runs pricing``
+    were each carrying their own copy of. They differ only in which fields they
+    select and what they do with each run, so we expose those two as
+    ``select=`` and an ``on_run`` callback (gets the run plus the source label,
+    useful for the ``run_id → project`` map ``usage`` keeps).
+
+    Args:
+        client: LangSmith SDK client.
+        project_query: Resolved projects. When ``use_id`` is true we hit
+            ``project_id=`` once; otherwise we iterate ``names``.
+        filter: Combined FQL filter (or None).
+        select: Sparse field list to push to the SDK for speed. None fetches
+            full runs.
+        sample_size: Stop collecting after this many runs total across all
+            projects. ``0`` means "no cap, drain the iterator".
+        on_run: Optional per-run callback invoked as ``on_run(run, source_label)``
+            *before* the run is added to the result. Use this to side-effect
+            extra bookkeeping (e.g. id→project maps) without forcing callers
+            to walk the items list a second time.
+
+    Returns:
+        ``FetchResult`` containing the collected runs in ``items`` and any
+        per-project errors in ``failed_sources``. Note that with ``sample_size``
+        we may stop mid-iteration on the first project, so ``successful_sources``
+        only reflects projects we actually reached.
+    """
+    sources: list[tuple[str, dict[str, Any]]]
+    if project_query.use_id:
+        sources = [
+            (f"id:{project_query.project_id}", {"project_id": project_query.project_id})
+        ]
+    else:
+        sources = [(name, {"project_name": name}) for name in project_query.names]
+
+    items: list[Any] = []
+    successful: list[str] = []
+    failed: list[tuple[str, str]] = []
+    failed_excs: dict[str, BaseException] = {}
+    fetch_error_types = _project_fetch_error_types()
+
+    collected = 0
+    for source_label, proj_kwargs in sources:
+        try:
+            runs_iter = client.list_runs(
+                **proj_kwargs,
+                filter=filter,
+                limit=None,
+                select=select,
+            )
+            reached_cap = False
+            for run in runs_iter:
+                if on_run is not None:
+                    on_run(run, source_label)
+                items.append(run)
+                collected += 1
+                if sample_size > 0 and collected >= sample_size:
+                    reached_cap = True
+                    break
+            successful.append(source_label)
+            if reached_cap:
+                break
+        except fetch_error_types as e:
+            failed.append((source_label, str(e)))
+            failed_excs[source_label] = e
+
+    return FetchResult(
+        items=items,
+        successful_sources=successful,
+        failed_sources=failed,
+        failed_exceptions=failed_excs,
+    )
+
+
 def get_or_create_client(ctx: Any) -> Any:
     """Get LangSmith client from context, or create if not exists.
 
-    Note: langsmith module is imported at module level for testability,
-    but Client instantiation is still lazy (only created when first needed).
+    The LangSmith SDK import and Client instantiation are both lazy so help and
+    command discovery avoid importing the SDK.
 
     Args:
         ctx: Click context object
@@ -334,7 +482,9 @@ def get_or_create_client(ctx: Any) -> Any:
         LangSmith Client instance
     """
     if "client" not in ctx.obj:
-        ctx.obj["client"] = langsmith.Client()
+        from langsmith import Client
+
+        ctx.obj["client"] = Client()
     return ctx.obj["client"]
 
 
@@ -428,7 +578,7 @@ def get_matching_items(
 
 
 def get_matching_projects(
-    client: langsmith.Client,
+    client: Client,
     *,
     project: str | None = None,
     name: str | None = None,
@@ -546,6 +696,8 @@ def resolve_by_name_or_id(
         read_by_id: Callable that reads entity by ID
         entity_name: Human-readable entity name for error messages (e.g., "Project")
     """
+    from langsmith.utils import LangSmithError, LangSmithNotFoundError
+
     if _looks_like_uuid(name_or_id):
         try:
             return read_by_id(name_or_id)
@@ -562,7 +714,7 @@ def resolve_by_name_or_id(
 
 
 def get_project_suggestions(
-    client: langsmith.Client,
+    client: Client,
     failed_name: str,
     max_suggestions: int = 5,
 ) -> list[str]:
@@ -585,7 +737,7 @@ def get_project_suggestions(
     """
     try:
         all_projects = list(client.list_projects())
-    except Exception:
+    except _project_fetch_error_types():
         return []
 
     query_lower = failed_name.lower()
@@ -625,9 +777,9 @@ def get_project_suggestions(
 
 def raise_if_all_failed_with_suggestions(
     result: FetchResult[Any],
-    client: langsmith.Client,
+    client: Client,
     project_query: ProjectQuery,
-    logger: Any | None = None,
+    logger: CLILogger | None = None,
     entity_name: str = "runs",
 ) -> None:
     """Raise if all sources failed, with project name suggestions.
@@ -658,7 +810,7 @@ def raise_if_all_failed_with_suggestions(
 
 
 def resolve_project_filters(
-    client: langsmith.Client,
+    client: Client,
     *,
     project: str | None = None,
     project_id: str | None = None,
@@ -712,7 +864,7 @@ def add_project_filter_options(func: Callable[..., Any]) -> Callable[..., Any]:
     - --project-id: Direct project UUID (bypasses name resolution)
     - --project-name: Substring/contains match
     - --project-name-exact: Exact match
-    - --project-name-pattern: Wildcard pattern (*, ?)
+    - --project-pattern / --project-name-pattern: Wildcard pattern (*, ?)
     - --project-name-regex: Regular expression
 
     Usage:
@@ -737,7 +889,9 @@ def add_project_filter_options(func: Callable[..., Any]) -> Callable[..., Any]:
         help="Regular expression pattern for project names (e.g., '^prod-.*-v[0-9]+$').",
     )(func)
     func = click.option(
+        "--project-pattern",
         "--project-name-pattern",
+        "project_name_pattern",
         help="Wildcard pattern for project names (e.g., 'dev/*', '*production*').",
     )(func)
     func = click.option(

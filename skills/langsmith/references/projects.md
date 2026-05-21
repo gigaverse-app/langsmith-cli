@@ -19,8 +19,8 @@ langsmith-cli --json projects list [OPTIONS]
 - `--exclude TEXT` - Exclude items containing substring (repeatable)
 - `--fields TEXT` - Comma-separated field names to include
 - `--count` - Output only the count of results
-- `--output TEXT` - Write output to file (JSONL format)
 - `--format [table|json|csv|yaml]` - Output format
+- `--output TEXT` - Write output to file. Defaults to JSONL unless `--format` is specified.
 
 **Output Fields:**
 - `id` (UUID) - Project identifier
@@ -130,12 +130,11 @@ langsmith-cli --json projects delete <name-or-id> [OPTIONS]
 - `name-or-id` (required) - Project name or UUID
 
 **Options:**
-- `--confirm` - Skip confirmation prompt
+- `--yes`, `--confirm` - Skip confirmation prompt
 
 **Output:** Success status
 
 **Example:**
 ```bash
-langsmith-cli --json projects delete "test-project" --confirm
+langsmith-cli --json projects delete "test-project" --yes
 ```
-

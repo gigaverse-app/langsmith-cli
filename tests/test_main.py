@@ -6,6 +6,27 @@ import click
 from langsmith_cli.main import cli
 
 
+def _wrapped_langsmith_http_error(status_code: int, reason: str) -> Exception:
+    """Build the SDK shape where LangSmithError wraps requests.HTTPError."""
+    import requests
+    from langsmith.utils import LangSmithError
+
+    response = requests.Response()
+    response.status_code = status_code
+    response.reason = reason
+    response.url = "https://api.smith.langchain.com/sessions"
+
+    try:
+        try:
+            raise requests.HTTPError(
+                f"{status_code} Client Error: {reason}", response=response
+            )
+        except requests.HTTPError as inner:
+            raise LangSmithError(f"Failed to GET /sessions: {reason}") from inner
+    except LangSmithError as wrapped:
+        return wrapped
+
+
 def test_main_version(runner):
     """Test that the CLI can display its version."""
     result = runner.invoke(cli, ["--version"])
@@ -27,6 +48,113 @@ def test_json_flag(runner):
     result = runner.invoke(cli, ["--help"])
     assert result.exit_code == 0
     assert "--json" in result.output
+
+
+def test_help_mentions_json_can_appear_anywhere(runner):
+    """Root help should not claim --json must be first."""
+    result = runner.invoke(cli, ["--help"])
+    assert result.exit_code == 0
+    assert "Pass --json anywhere" in result.output
+    assert "Always pass --json FIRST" not in result.output
+
+
+def test_http_status_extraction_from_httpx_error():
+    """HTTP status extraction uses exception contracts, not message matching."""
+    import httpx
+    from langsmith_cli.main import _http_status_from_exception
+
+    request = httpx.Request("GET", "https://api.smith.langchain.com/sessions")
+    response = httpx.Response(403, request=request)
+    error = httpx.HTTPStatusError("forbidden", request=request, response=response)
+
+    assert _http_status_from_exception(error) == 403
+
+
+def test_http_status_extraction_unknown_error():
+    """Non-HTTP errors have no extracted status."""
+    from langsmith_cli.main import _http_status_from_exception
+
+    assert _http_status_from_exception(RuntimeError("boom")) is None
+
+
+def test_json_mode_helper_defaults_false_without_obj_or_flag():
+    """JSON-mode detection should be explicit and safe for early Click errors."""
+    from langsmith_cli.main import _is_json_mode
+
+    command = click.Command("cmd")
+    no_obj_ctx = click.Context(command)
+    assert _is_json_mode(no_obj_ctx) is False
+
+    no_json_key_ctx = click.Context(command)
+    no_json_key_ctx.obj = {}
+    assert _is_json_mode(no_json_key_ctx) is False
+
+
+def test_close_cached_client_noops_without_cached_client():
+    """Cleanup should be harmless for commands that never create a client."""
+    from langsmith_cli.main import _close_cached_client
+
+    command = click.Command("cmd")
+    no_obj_ctx = click.Context(command)
+    _close_cached_client(no_obj_ctx)
+
+    no_client_ctx = click.Context(command)
+    no_client_ctx.obj = {}
+    _close_cached_client(no_client_ctx)
+
+
+def test_command_path_helpers_preserve_nested_subcommands():
+    """Structured errors need the nested command path, not just the root command."""
+    from langsmith_cli.main import (
+        _command_path_for_ctx,
+        _command_path_from_args,
+        _command_path_from_exception,
+    )
+
+    root = click.Group("langsmith-cli")
+    runs = click.Group("runs")
+    get = click.Command("get")
+    runs.add_command(get)
+    root.add_command(runs)
+
+    assert (
+        _command_path_from_args(
+            "langsmith-cli", root, ["--json", "runs", "get", "run-id"]
+        )
+        == "langsmith-cli runs get"
+    )
+    assert (
+        _command_path_from_args("langsmith-cli", root, ["runs", "unknown"])
+        == "langsmith-cli runs"
+    )
+
+    root_ctx = click.Context(root, info_name="langsmith-cli")
+    runs_ctx = click.Context(runs, info_name="runs", parent=root_ctx)
+    get_ctx = click.Context(get, info_name="get", parent=runs_ctx)
+    assert _command_path_for_ctx(get_ctx) == "langsmith-cli runs get"
+
+    def raise_with_click_context() -> None:
+        ctx = get_ctx
+        if ctx.info_name == "":
+            raise AssertionError("unreachable")
+        raise RuntimeError("boom")
+
+    try:
+        raise_with_click_context()
+    except RuntimeError as exc:
+        assert _command_path_from_exception(exc) == "langsmith-cli runs get"
+
+
+def test_cached_client_is_closed_after_invocation(runner, mock_client):
+    """LangSmith client resources are closed after command invocation when supported."""
+    from conftest import create_project
+
+    mock_client.list_projects.return_value = iter([create_project("test-project")])
+
+    result = runner.invoke(cli, ["projects", "list"])
+
+    assert result.exit_code == 0
+    mock_client.close.assert_called_once()
 
 
 class TestJsonFlagPlacement:
@@ -97,12 +225,11 @@ def test_auth_error_handling(runner):
 def test_forbidden_error_handling(runner):
     """Test that 403 Forbidden errors show helpful message."""
     from unittest.mock import patch
-    from langsmith.utils import LangSmithError
 
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
-        mock_client.list_projects.side_effect = LangSmithError(
-            "Failed to GET /sessions in LangSmith API. HTTPError('403 Client Error: Forbidden for url: https://api.smith.langchain.com/sessions')"
+        mock_client.list_projects.side_effect = _wrapped_langsmith_http_error(
+            403, "Forbidden"
         )
 
         result = runner.invoke(cli, ["projects", "list"])
@@ -120,13 +247,12 @@ def test_forbidden_error_handling(runner):
 def test_forbidden_error_handling_json_mode(runner):
     """Test that 403 Forbidden errors in JSON mode return structured error."""
     from unittest.mock import patch
-    from langsmith.utils import LangSmithError
     import json
 
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
-        mock_client.list_projects.side_effect = LangSmithError(
-            "Failed to GET /sessions. HTTPError('403 Client Error: Forbidden')"
+        mock_client.list_projects.side_effect = _wrapped_langsmith_http_error(
+            403, "Forbidden"
         )
 
         result = runner.invoke(cli, ["--json", "projects", "list"])
@@ -202,6 +328,9 @@ def test_not_found_error_handling_json_mode(runner):
         error_data = json.loads(result.output)
         assert error_data["error"] == "NotFoundError"
         assert "not found" in error_data["message"].lower()
+        # INVARIANT: structured errors carry the invoked command path so
+        # callers can correlate the failure with the call that produced it.
+        assert error_data["command"].endswith("runs get")
 
 
 def test_conflict_error_handling(runner):
@@ -247,15 +376,41 @@ def test_conflict_error_handling_json_mode(runner):
         assert "already exists" in result.output.lower()
 
 
+def test_global_conflict_handler_emits_structured_json(runner):
+    """Unhandled SDK conflicts should still produce sparse structured JSON."""
+    from langsmith.utils import LangSmithConflictError
+    from langsmith_cli.main import LangSmithCLIGroup
+
+    @click.group(cls=LangSmithCLIGroup)
+    @click.option("--json", "json_mode", is_flag=True)
+    @click.pass_context
+    def command_group(ctx, json_mode):
+        ctx.ensure_object(dict)
+        ctx.obj["json"] = json_mode
+
+    @command_group.command("conflict")
+    def conflict_command():
+        raise LangSmithConflictError("resource already exists")
+
+    result = runner.invoke(command_group, ["--json", "conflict"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload == {
+        "error": "ConflictError",
+        "message": "resource already exists",
+        "command": "command conflict",
+    }
+
+
 def test_unauthorized_error_handling(runner):
     """Test that 401 Unauthorized errors show helpful message."""
     from unittest.mock import patch
-    from langsmith.utils import LangSmithError
 
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
-        mock_client.list_projects.side_effect = LangSmithError(
-            "Failed to GET /sessions. HTTPError('401 Client Error: Unauthorized')"
+        mock_client.list_projects.side_effect = _wrapped_langsmith_http_error(
+            401, "Unauthorized"
         )
 
         result = runner.invoke(cli, ["projects", "list"])
@@ -269,13 +424,12 @@ def test_unauthorized_error_handling(runner):
 def test_unauthorized_error_handling_json_mode(runner):
     """Test that 401 Unauthorized errors in JSON mode return structured error."""
     from unittest.mock import patch
-    from langsmith.utils import LangSmithError
     import json
 
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
-        mock_client.list_projects.side_effect = LangSmithError(
-            "Failed to GET /sessions. HTTPError('401 Unauthorized')"
+        mock_client.list_projects.side_effect = _wrapped_langsmith_http_error(
+            401, "Unauthorized"
         )
 
         result = runner.invoke(cli, ["--json", "projects", "list"])
@@ -510,7 +664,9 @@ class TestCLIFetchErrorHandling:
 
     def test_json_mode_includes_structured_fields(self, runner, mock_client):
         """INVARIANT: JSON error output includes failed_sources and suggestions fields."""
-        mock_client.list_runs.side_effect = Exception("Project not found")
+        from langsmith.utils import LangSmithError
+
+        mock_client.list_runs.side_effect = LangSmithError("Project not found")
         mock_client.list_projects.return_value = []
 
         result = runner.invoke(
@@ -528,8 +684,9 @@ class TestCLIFetchErrorHandling:
     def test_json_mode_includes_suggestions(self, runner, mock_client):
         """INVARIANT: JSON error includes similar project names when available."""
         from unittest.mock import MagicMock
+        from langsmith.utils import LangSmithError
 
-        mock_client.list_runs.side_effect = Exception("Project not found")
+        mock_client.list_runs.side_effect = LangSmithError("Project not found")
         proj = MagicMock()
         proj.name = "prd/promotion_service"
         mock_client.list_projects.return_value = [proj]
@@ -547,7 +704,9 @@ class TestCLIFetchErrorHandling:
 
     def test_json_mode_failed_sources_have_name_and_error(self, runner, mock_client):
         """INVARIANT: Each failed_source has name and error fields."""
-        mock_client.list_runs.side_effect = Exception("SDK error message")
+        from langsmith.utils import LangSmithError
+
+        mock_client.list_runs.side_effect = LangSmithError("SDK error message")
         mock_client.list_projects.return_value = []
 
         result = runner.invoke(
@@ -564,7 +723,9 @@ class TestCLIFetchErrorHandling:
 
     def test_human_mode_shows_error_message(self, runner, mock_client):
         """INVARIANT: Human mode shows readable error with failure details."""
-        mock_client.list_runs.side_effect = Exception("Project not found")
+        from langsmith.utils import LangSmithError
+
+        mock_client.list_runs.side_effect = LangSmithError("Project not found")
         mock_client.list_projects.return_value = []
 
         result = runner.invoke(cli, ["runs", "list", "--project", "nonexistent"])
