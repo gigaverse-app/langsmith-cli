@@ -61,7 +61,11 @@ def prompts():
 @prompts.command("list")
 @click.option("--limit", default=20, help="Limit number of prompts (default 20).")
 @click.option(
-    "--is-public", type=bool, default=None, help="Filter by public/private status."
+    "--is-public",
+    type=bool,
+    default=None,
+    hidden=True,
+    help="Legacy visibility filter. Use --public or --private instead.",
 )
 @click.option(
     "--public",
@@ -208,7 +212,13 @@ def get_prompt(ctx, name, commit, fields, output):
 @click.argument("file_path", type=click.Path(exists=True))
 @click.option("--description", help="Prompt description.")
 @click.option("--tags", help="Comma-separated tags.")
-@click.option("--is-public", type=bool, default=False, help="Make prompt public.")
+@click.option(
+    "--is-public",
+    type=bool,
+    default=False,
+    hidden=True,
+    help="Legacy visibility flag. Use --public or --private instead.",
+)
 @click.option("--public", "public", is_flag=True, help="Make prompt public.")
 @click.option("--private", "private", is_flag=True, help="Make prompt private.")
 @click.pass_context
@@ -342,7 +352,13 @@ def delete_prompt(ctx, name, confirm):
 @click.argument("name")
 @click.option("--description", help="Prompt description.")
 @click.option("--tags", help="Comma-separated tags.")
-@click.option("--is-public", type=bool, default=False, help="Make prompt public.")
+@click.option(
+    "--is-public",
+    type=bool,
+    default=False,
+    hidden=True,
+    help="Legacy visibility flag. Use --public or --private instead.",
+)
 @click.option("--public", "public", is_flag=True, help="Make prompt public.")
 @click.option("--private", "private", is_flag=True, help="Make prompt private.")
 @click.pass_context

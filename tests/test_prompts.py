@@ -139,6 +139,34 @@ def test_prompts_list_public_private_aliases(runner):
         assert mock_client.list_prompts.call_args[1]["is_public"] is False
 
 
+def test_prompts_legacy_is_public_still_works_but_is_hidden(runner, tmp_path):
+    """--is-public remains compatible but no longer clutters prompt help."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.list_prompts.return_value = ListPromptsResponse(repos=[], total=0)
+
+        result = runner.invoke(cli, ["prompts", "list", "--is-public", "true"])
+        assert result.exit_code == 0
+        assert mock_client.list_prompts.call_args[1]["is_public"] is True
+
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("Hello")
+        mock_client.push_prompt.return_value = None
+        result = runner.invoke(
+            cli,
+            ["prompts", "push", "my-prompt", str(prompt_file), "--is-public", "true"],
+        )
+        assert result.exit_code == 0
+        assert mock_client.push_prompt.call_args[1]["is_public"] is True
+
+        for command in (["list"], ["push"], ["create"]):
+            help_result = runner.invoke(cli, ["prompts", *command, "--help"])
+            assert help_result.exit_code == 0
+            assert "--is-public" not in help_result.output
+            assert "--public" in help_result.output
+            assert "--private" in help_result.output
+
+
 @pytest.mark.parametrize(
     "args,message",
     [
