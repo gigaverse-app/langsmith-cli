@@ -230,18 +230,18 @@ def get_latest_run(
                 continue
 
     if not latest_run:
-        logger.warning("No runs found matching the specified filters")
+        message_parts = ["No runs found matching the specified filters."]
 
         # Show failed projects if any
         if failed_projects:
-            logger.warning("Some projects failed to fetch:")
+            message_parts.append("Some projects failed to fetch:")
             for proj, error_msg in failed_projects[:3]:
                 short_error = (
                     error_msg[:100] + "..." if len(error_msg) > 100 else error_msg
                 )
-                logger.warning(f"  • {proj}: {short_error}")
+                message_parts.append(f"  {proj}: {short_error}")
             if len(failed_projects) > 3:
-                logger.warning(f"  • ... and {len(failed_projects) - 3} more")
+                message_parts.append(f"  ... and {len(failed_projects) - 3} more")
 
             # Suggest similar project names for single-project failures
             failed_names = [
@@ -251,9 +251,9 @@ def get_latest_run(
                 suggestions = get_project_suggestions(client, failed_names[0])
                 if suggestions:
                     suggestion_list = ", ".join(f"'{s}'" for s in suggestions[:5])
-                    logger.info(f"Did you mean: {suggestion_list}?")
+                    message_parts.append(f"Did you mean: {suggestion_list}?")
 
-        raise click.Abort()
+        raise click.ClickException("\n".join(message_parts))
 
     data = filter_fields(latest_run, fields)
 
@@ -296,8 +296,7 @@ def view_file(ctx, pattern, no_truncate, fields):
     file_paths = glob.glob(pattern)
 
     if not file_paths:
-        logger.error(f"No files match pattern: {pattern}")
-        raise click.Abort()
+        raise click.ClickException(f"No files match pattern: {pattern}")
 
     # Read all runs from matching files
     all_runs: list[Run] = []

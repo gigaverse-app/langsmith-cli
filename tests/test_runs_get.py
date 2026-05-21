@@ -356,6 +356,21 @@ class TestRunsGetLatest:
 
         assert result.exit_code == 1
         assert "No runs found" in result.output
+        assert "Aborted" not in result.output
+
+    def test_get_latest_no_runs_json_error(self, runner, mock_client):
+        """INVARIANT: --json get-latest no-match returns structured error JSON."""
+        mock_client.list_runs.return_value = iter([])
+
+        result = runner.invoke(
+            cli, ["--json", "runs", "get-latest", "--project", "test", "--failed"]
+        )
+
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert data["error"] == "ClickException"
+        assert "No runs found" in data["message"]
+        assert "Aborted" not in result.output
 
     def test_get_latest_with_multiple_projects(self, runner, mock_client):
         """Get-latest searches multiple projects with pattern."""
