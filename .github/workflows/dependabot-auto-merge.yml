@@ -23,6 +23,7 @@ jobs:
         id: pr
         env:
           PR_REF: ${{ github.event.pull_request.html_url || github.event.inputs.pr }}
+          GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
@@ -52,5 +53,6 @@ jobs:
         if: steps.pr.outputs.skip != 'true'
         env:
           PR_URL: ${{ steps.pr.outputs.url }}
+          GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh pr merge "$PR_URL" --auto --squash --delete-branch
