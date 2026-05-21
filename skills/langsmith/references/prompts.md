@@ -10,8 +10,8 @@ langsmith-cli --json prompts list [OPTIONS]
 
 **Options:**
 - `--limit INTEGER` - Maximum results (default: 20)
-- `--public` / `--private` - Filter by visibility
-- `--is-public BOOLEAN` - Legacy visibility filter: `true` or `false`
+- `--public` / `--private` - Filter by visibility (preferred)
+- `--is-public BOOLEAN` - Legacy visibility filter: `true` or `false`; do not combine with paired visibility flags
 - `--exclude TEXT` - Exclude items containing substring (repeatable)
 - `--fields TEXT` - Comma-separated field names to include
 - `--count` - Output only the count of results
@@ -96,8 +96,8 @@ langsmith-cli --json prompts push <name> <file-path> [OPTIONS]
 **Options:**
 - `--description TEXT` - Prompt description
 - `--tags TEXT` - Comma-separated tags
-- `--public` / `--private` - Set prompt visibility
-- `--is-public BOOLEAN` - Legacy visibility flag: `true` or `false`
+- `--public` / `--private` - Set prompt visibility (preferred)
+- `--is-public BOOLEAN` - Legacy visibility flag: `true` or `false`; do not combine with paired visibility flags
 
 **File Format (JSON):**
 ```json
@@ -185,8 +185,8 @@ langsmith-cli --json prompts create <name> [OPTIONS]
 
 **Options:**
 - `--description TEXT` - Prompt description
-- `--public` / `--private` - Set prompt visibility (default: private)
-- `--is-public BOOLEAN` - Legacy visibility flag: `true` or `false`
+- `--public` / `--private` - Set prompt visibility (default: private; preferred)
+- `--is-public BOOLEAN` - Legacy visibility flag: `true` or `false`; do not combine with paired visibility flags
 - `--tags TEXT` - Comma-separated tags
 
 **Output:** Created prompt object

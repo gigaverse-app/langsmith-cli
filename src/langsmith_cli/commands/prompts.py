@@ -23,6 +23,32 @@ from langsmith_cli.utils import (
 console = Console()
 
 
+def _resolve_visibility_flags(
+    ctx: click.Context,
+    *,
+    is_public: bool | None,
+    public: bool,
+    private: bool,
+) -> bool | None:
+    """Resolve prompt visibility flags and reject contradictory inputs."""
+    if public and private:
+        raise click.UsageError("Use only one of --public or --private.")
+
+    legacy_source = ctx.get_parameter_source("is_public")
+    legacy_was_set = legacy_source is click.core.ParameterSource.COMMANDLINE
+
+    if legacy_was_set and public and is_public is False:
+        raise click.UsageError("Use only one of --public or --is-public false.")
+    if legacy_was_set and private and is_public is True:
+        raise click.UsageError("Use only one of --private or --is-public true.")
+
+    if public:
+        return True
+    if private:
+        return False
+    return is_public
+
+
 @click.group()
 def prompts():
     """Manage LangSmith prompts."""
@@ -36,15 +62,14 @@ def prompts():
 )
 @click.option(
     "--public",
-    "public_filter",
-    flag_value=True,
-    default=None,
+    "public",
+    is_flag=True,
     help="Show only public prompts.",
 )
 @click.option(
     "--private",
-    "public_filter",
-    flag_value=False,
+    "private",
+    is_flag=True,
     help="Show only private prompts.",
 )
 @sort_by_option(fields="full_name, created_at, updated_at")
@@ -63,7 +88,8 @@ def list_prompts(
     ctx,
     limit,
     is_public,
-    public_filter,
+    public,
+    private,
     sort_by,
     output_format,
     exclude,
@@ -77,8 +103,9 @@ def list_prompts(
         ctx, logger, output=output, output_format=output_format, fields=fields
     )
 
-    if public_filter is not None:
-        is_public = public_filter
+    is_public = _resolve_visibility_flags(
+        ctx, is_public=is_public, public=public, private=private
+    )
 
     logger.debug(f"Listing prompts: limit={limit}, is_public={is_public}")
 
@@ -180,20 +207,20 @@ def get_prompt(ctx, name, commit, fields, output):
 @click.option("--description", help="Prompt description.")
 @click.option("--tags", help="Comma-separated tags.")
 @click.option("--is-public", type=bool, default=False, help="Make prompt public.")
-@click.option(
-    "--public/--private",
-    "public_flag",
-    default=None,
-    help="Set prompt visibility without passing a boolean value.",
-)
+@click.option("--public", "public", is_flag=True, help="Make prompt public.")
+@click.option("--private", "private", is_flag=True, help="Make prompt private.")
 @click.pass_context
-def push_prompt(ctx, name, file_path, description, tags, is_public, public_flag):
+def push_prompt(ctx, name, file_path, description, tags, is_public, public, private):
     """Push a local prompt file to LangSmith."""
     logger = ctx.obj["logger"]
     is_machine_readable = ctx.obj.get("json")
     logger.use_stderr = is_machine_readable
 
     logger.debug(f"Pushing prompt: name={name}, file={file_path}")
+
+    prompt_is_public = _resolve_visibility_flags(
+        ctx, is_public=is_public, public=public, private=private
+    )
 
     client = get_or_create_client(ctx)
 
@@ -202,7 +229,6 @@ def push_prompt(ctx, name, file_path, description, tags, is_public, public_flag)
 
     # Parse tags if provided
     tags_list = parse_comma_separated_list(tags)
-    prompt_is_public = public_flag if public_flag is not None else is_public
 
     # Push prompt with metadata
     try:
@@ -316,14 +342,10 @@ def delete_prompt(ctx, name, confirm):
 @click.option("--description", help="Prompt description.")
 @click.option("--tags", help="Comma-separated tags.")
 @click.option("--is-public", type=bool, default=False, help="Make prompt public.")
-@click.option(
-    "--public/--private",
-    "public_flag",
-    default=None,
-    help="Set prompt visibility without passing a boolean value.",
-)
+@click.option("--public", "public", is_flag=True, help="Make prompt public.")
+@click.option("--private", "private", is_flag=True, help="Make prompt private.")
 @click.pass_context
-def create_prompt_cmd(ctx, name, description, tags, is_public, public_flag):
+def create_prompt_cmd(ctx, name, description, tags, is_public, public, private):
     """Create a new empty prompt repository."""
     from langsmith.utils import LangSmithConflictError
 
@@ -333,9 +355,11 @@ def create_prompt_cmd(ctx, name, description, tags, is_public, public_flag):
 
     logger.debug(f"Creating prompt: {name}")
 
-    client = get_or_create_client(ctx)
     tags_list = parse_comma_separated_list(tags)
-    prompt_is_public = public_flag if public_flag is not None else is_public
+    prompt_is_public = _resolve_visibility_flags(
+        ctx, is_public=is_public, public=public, private=private
+    )
+    client = get_or_create_client(ctx)
 
     try:
         prompt = client.create_prompt(

@@ -11,6 +11,7 @@ langsmith.schemas, ensuring compatibility with the actual SDK.
 from langsmith_cli.main import cli
 from unittest.mock import patch
 import json
+import pytest
 from conftest import (
     create_prompt,
     create_prompt_commit,
@@ -136,6 +137,26 @@ def test_prompts_list_public_private_aliases(runner):
         result = runner.invoke(cli, ["prompts", "list", "--private"])
         assert result.exit_code == 0
         assert mock_client.list_prompts.call_args[1]["is_public"] is False
+
+
+@pytest.mark.parametrize(
+    "args,message",
+    [
+        (["--public", "--private"], "Use only one of --public or --private"),
+        (["--public", "--is-public", "false"], "Use only one of --public"),
+        (["--private", "--is-public", "true"], "Use only one of --private"),
+    ],
+)
+def test_prompts_list_conflicting_visibility_flags_fail_fast(runner, args, message):
+    """Contradictory prompt visibility filters should not silently pick one."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        result = runner.invoke(cli, ["prompts", "list", *args])
+
+        assert result.exit_code != 0
+        assert message in result.output
+        mock_client.list_prompts.assert_not_called()
 
 
 def test_prompts_list_with_filter(runner):
@@ -499,6 +520,32 @@ def test_prompts_push_public_private_aliases(runner, tmp_path):
         assert mock_client.push_prompt.call_args[1]["is_public"] is True
 
 
+@pytest.mark.parametrize(
+    "args,message",
+    [
+        (["--public", "--private"], "Use only one of --public or --private"),
+        (["--public", "--is-public", "false"], "Use only one of --public"),
+        (["--private", "--is-public", "true"], "Use only one of --private"),
+    ],
+)
+def test_prompts_push_conflicting_visibility_flags_fail_fast(
+    runner, tmp_path, args, message
+):
+    """Contradictory prompt push visibility flags should fail before upload."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+        prompt_file = tmp_path / "my_prompt.txt"
+        prompt_file.write_text("Test prompt")
+
+        result = runner.invoke(
+            cli, ["prompts", "push", "my-prompt", str(prompt_file), *args]
+        )
+
+        assert result.exit_code != 0
+        assert message in result.output
+        mock_client.push_prompt.assert_not_called()
+
+
 # ===== prompts pull tests =====
 
 
@@ -761,6 +808,26 @@ def test_prompts_create_public_private_aliases(runner):
 
         assert result.exit_code == 0
         assert mock_client.create_prompt.call_args[1]["is_public"] is True
+
+
+@pytest.mark.parametrize(
+    "args,message",
+    [
+        (["--public", "--private"], "Use only one of --public or --private"),
+        (["--public", "--is-public", "false"], "Use only one of --public"),
+        (["--private", "--is-public", "true"], "Use only one of --private"),
+    ],
+)
+def test_prompts_create_conflicting_visibility_flags_fail_fast(runner, args, message):
+    """Contradictory prompt create visibility flags should fail before create."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        result = runner.invoke(cli, ["prompts", "create", "new-prompt", *args])
+
+        assert result.exit_code != 0
+        assert message in result.output
+        mock_client.create_prompt.assert_not_called()
 
 
 def test_prompts_create_already_exists(runner):
