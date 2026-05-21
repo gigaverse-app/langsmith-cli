@@ -1,8 +1,8 @@
 """Runs list command."""
 
+import json
+
 import click
-import httpx
-import requests
 
 from langsmith_cli.commands.runs._group import _make_fetch_runs, console, runs
 from langsmith_cli.utils import (
@@ -37,25 +37,54 @@ from langsmith_cli.utils import (
     write_output_to_file,
 )
 
+_FREEFORM_QUERY_REJECTION_DETAIL = "Failed to generate filter from freeform query"
+
 
 def _is_query_rejection(exc: BaseException) -> bool:
     """True when ``exc`` looks like the server rejecting the ``query=`` param.
 
-    The LangSmith SDK surfaces HTTP errors as raw ``httpx``/``requests`` errors
-    (see :func:`langsmith.utils.raise_for_status_with_text`), so we inspect the
-    response status code directly. 422 means the request body was unprocessable —
-    which is exactly what happens when the freeform ``query=`` value can't be
-    parsed server-side. Any other failure mode (auth, network, not-found) is
-    *not* a query-shape problem and must not trigger the FQL fallback retry.
+    The SDK usually exposes raw ``httpx``/``requests`` HTTP errors with response
+    bodies, but some paths wrap them in ``LangSmithError`` and preserve only the
+    chained exception/body args. This adapter keeps that SDK-specific extraction
+    localized and only accepts the structured server detail for freeform query
+    rejection; auth/network/not-found errors must not trigger the retry.
     """
-    response = None
-    if isinstance(exc, httpx.HTTPStatusError):
-        response = exc.response
-    elif isinstance(exc, requests.HTTPError):
-        response = exc.response
-    if response is None:
+    import httpx
+    import requests
+
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+
+        if isinstance(current, (httpx.HTTPStatusError, requests.HTTPError)):
+            response = getattr(current, "response", None)
+            if response is not None:
+                status_code = getattr(response, "status_code", None)
+                if status_code == 422:
+                    return True
+                if _error_body_detail(getattr(response, "text", None)):
+                    return True
+
+            if len(current.args) > 1 and _error_body_detail(current.args[1]):
+                return True
+
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def _error_body_detail(body: object) -> bool:
+    """Return True when an SDK HTTP error body has the query rejection detail."""
+    if not isinstance(body, str):
         return False
-    return getattr(response, "status_code", None) == 422
+    try:
+        parsed = json.loads(body)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(parsed, dict):
+        return False
+    detail = parsed["detail"] if "detail" in parsed else None
+    return detail == _FREEFORM_QUERY_REJECTION_DETAIL
 
 
 def _all_failures_are_query_rejection(

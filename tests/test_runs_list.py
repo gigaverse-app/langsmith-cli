@@ -830,6 +830,37 @@ class TestRunsListQueryFallback:
         assert retry_kwargs.get("query") is None
         assert 'search("some text")' in (retry_kwargs.get("filter") or "")
 
+    def test_wrapped_langsmith_query_rejection_triggers_retry(
+        self, runner, mock_client
+    ):
+        """INVARIANT: SDK-wrapped query rejection still triggers FQL fallback."""
+        import requests
+        from langsmith.utils import LangSmithError
+
+        try:
+            try:
+                raise requests.HTTPError(
+                    "400 Client Error",
+                    '{"detail":"Failed to generate filter from freeform query"}',
+                )
+            except requests.HTTPError as inner:
+                raise LangSmithError("Failed to POST /runs/query") from inner
+        except LangSmithError as wrapped_rejection:
+            rejection = wrapped_rejection
+
+        mock_client.list_runs.side_effect = [
+            rejection,
+            iter([create_run(name="found via wrapped fallback")]),
+        ]
+
+        result = runner.invoke(cli, ["runs", "list", "--query", "wrapped"])
+
+        assert result.exit_code == 0, result.output
+        assert mock_client.list_runs.call_count == 2
+        retry_kwargs = mock_client.list_runs.call_args_list[1].kwargs
+        assert retry_kwargs.get("query") is None
+        assert 'search("wrapped")' in (retry_kwargs.get("filter") or "")
+
     def test_non_422_failure_does_not_trigger_retry(self, runner, mock_client):
         """INVARIANT: auth/not-found/network errors must NOT trigger the FQL fallback.
 
