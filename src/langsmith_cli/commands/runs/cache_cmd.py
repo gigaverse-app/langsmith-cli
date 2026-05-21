@@ -17,6 +17,7 @@ from langsmith_cli.utils import (
     build_runs_table,
     build_time_fql_filters,
     combine_fql_filters,
+    configure_logger_streams,
     confirm_option,
     count_option,
     fields_option,
@@ -127,7 +128,7 @@ def cache_download(
 
     logger = ctx.obj["logger"]
     is_json = ctx.obj.get("json", False)
-    logger.use_stderr = is_json
+    configure_logger_streams(ctx, logger)
 
     client = get_or_create_client(ctx)
 
@@ -648,7 +649,7 @@ def cache_schema(
 
     logger = ctx.obj["logger"]
     is_json = ctx.obj.get("json", False)
-    logger.use_stderr = is_json
+    configure_logger_streams(ctx, logger)
 
     try:
         samples = sample_raw_json_lines(project, n=sample_size)
@@ -797,14 +798,14 @@ def cache_grep(
     from langsmith_cli.filters import parse_time_filter
 
     logger = ctx.obj["logger"]
-    is_machine_readable = (
-        ctx.obj.get("json")
-        or bool(output)
-        or bool(fields)
-        or output_format in ("json", "csv", "yaml")
-        or count
+    configure_logger_streams(
+        ctx,
+        logger,
+        output=output,
+        output_format=output_format,
+        count=count,
+        fields=fields,
     )
-    logger.use_stderr = is_machine_readable
 
     def render_matches(matches: list[Any]) -> None:
         include_fields = parse_fields_option(fields)
