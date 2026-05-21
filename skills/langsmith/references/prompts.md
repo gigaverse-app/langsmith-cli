@@ -234,8 +234,9 @@ langsmith-cli --json prompts commits <name> [OPTIONS]
 - `--offset INTEGER` - Number of commits to skip
 - `--include-model` - Include model configuration
 - `--fields TEXT` - Comma-separated fields to return
+- `--format table|json|csv|yaml` - Output format
 - `--count` - Return only the count of commits
-- `--output TEXT` - Write output to file
+- `--output TEXT` - Write output to file (JSONL by default; combine with `--format`)
 
 **Output Fields:**
 - `commit_hash` (string) - Commit hash

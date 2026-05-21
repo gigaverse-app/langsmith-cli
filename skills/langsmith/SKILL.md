@@ -155,6 +155,7 @@ When your task matches one of the sections below, **you MUST load that reference
 ### → Read [references/prompts.md](references/prompts.md) when:
 - You need to pull, push, or version prompt templates
 - You need to list prompt commits or compare versions
+- Prompt commit listings support `--fields`, `--count`, `--output`, and `--format json|csv|yaml`
 
 ### → Use `feedback` commands when:
 - You need to list, get, create, or delete feedback scores on runs

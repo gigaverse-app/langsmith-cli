@@ -944,6 +944,52 @@ def test_prompts_commits_with_output_file(runner, tmp_path):
         assert data["commit_hash"] == "abc123"
 
 
+def test_prompts_commits_format_json(runner):
+    """INVARIANT: --format json outputs a JSON array without global --json."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        c1 = create_listed_prompt_commit(commit_hash="abc123")
+        mock_client.list_prompt_commits.return_value = iter([c1])
+
+        result = runner.invoke(
+            cli, ["prompts", "commits", "my-prompt", "--format", "json"]
+        )
+
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert isinstance(data, list)
+        assert data[0]["commit_hash"] == "abc123"
+
+
+def test_prompts_commits_output_respects_format_json(runner, tmp_path):
+    """INVARIANT: --output respects explicit --format json."""
+    with patch("langsmith.Client") as MockClient:
+        mock_client = MockClient.return_value
+
+        c1 = create_listed_prompt_commit(commit_hash="abc123")
+        mock_client.list_prompt_commits.return_value = iter([c1])
+
+        output_file = tmp_path / "commits.json"
+        result = runner.invoke(
+            cli,
+            [
+                "prompts",
+                "commits",
+                "my-prompt",
+                "--format",
+                "json",
+                "--output",
+                str(output_file),
+            ],
+        )
+
+        assert result.exit_code == 0
+        data = json.loads(output_file.read_text())
+        assert isinstance(data, list)
+        assert data[0]["commit_hash"] == "abc123"
+
+
 def test_prompts_commits_empty(runner):
     """INVARIANT: Empty commits list should be handled gracefully."""
     with patch("langsmith.Client") as MockClient:

@@ -17,7 +17,6 @@ from langsmith_cli.utils import (
     render_output,
     sort_by_option,
     sort_items,
-    write_output_to_file,
 )
 
 console = Console()
@@ -393,14 +392,24 @@ def create_prompt_cmd(ctx, name, description, tags, is_public, public, private):
     default=False,
     help="Include model configuration.",
 )
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["table", "json", "csv", "yaml"]),
+    help="Output format (default: table, or json if --json flag used).",
+)
 @fields_option()
 @count_option()
 @output_option()
 @click.pass_context
-def list_commits(ctx, name, limit, offset, include_model, fields, count, output):
+def list_commits(
+    ctx, name, limit, offset, include_model, output_format, fields, count, output
+):
     """List version history (commits) for a prompt."""
     logger = ctx.obj["logger"]
-    configure_logger_streams(ctx, logger, output=output, fields=fields)
+    configure_logger_streams(
+        ctx, logger, output=output, output_format=output_format, fields=fields
+    )
 
     logger.debug(f"Listing commits for prompt: {name}, limit={limit}")
 
@@ -409,12 +418,6 @@ def list_commits(ctx, name, limit, offset, include_model, fields, count, output)
         name, limit=limit, offset=offset, include_model=include_model
     )
     commits_list = list(commits_gen)
-
-    # Handle file output
-    if output:
-        data = filter_fields(commits_list, fields)
-        write_output_to_file(data, output, console, format_type="jsonl")
-        return
 
     # Define table builder
     def build_commits_table(commits):
@@ -439,5 +442,7 @@ def list_commits(ctx, name, limit, offset, include_model, fields, count, output)
         ctx,
         include_fields=include_fields,
         empty_message=f"No commits found for '{name}'",
+        output_format=output_format,
         count_flag=count,
+        output_path=output,
     )
