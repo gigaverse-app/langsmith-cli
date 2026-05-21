@@ -419,6 +419,76 @@ class TestCacheCommands:
         assert data[0]["path"].endswith(".jsonl")
         assert "test-project" in data[0]["path"]
 
+    def test_cache_list_json_empty_outputs_empty_array(
+        self, runner, tmp_path, monkeypatch
+    ):
+        """INVARIANT: cache list --json has a stable empty list shape."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+
+        result = runner.invoke(cli, ["--json", "runs", "cache", "list"])
+
+        assert result.exit_code == 0
+        assert json.loads(result.output) == []
+
+    def test_cache_list_supports_count(self, runner, tmp_path, monkeypatch):
+        """INVARIANT: cache list supports the standard list --count flag."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+
+        append_runs_to_cache("first-project", [_make_run(1)])
+        append_runs_to_cache("second-project", [_make_run(2)])
+
+        result = runner.invoke(cli, ["runs", "cache", "list", "--count"])
+
+        assert result.exit_code == 0
+        assert result.output.strip() == "2"
+
+    def test_cache_list_supports_fields(self, runner, tmp_path, monkeypatch):
+        """INVARIANT: cache list supports standard sparse --fields output."""
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)
+
+        append_runs_to_cache("test-project", [_make_run(1)])
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "runs",
+                "cache",
+                "list",
+                "--fields",
+                "project_name,run_count",
+            ],
+        )
+
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data == [{"project_name": "test-project", "run_count": 1}]
+
+    def test_cache_list_supports_output_file(self, runner, tmp_path, monkeypatch):
+        """INVARIANT: cache list supports the standard list --output flag."""
+        cache_dir = tmp_path / "cache"
+        output_path = tmp_path / "cache-list.json"
+        monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: cache_dir)
+
+        append_runs_to_cache("test-project", [_make_run(1)])
+
+        result = runner.invoke(
+            cli,
+            [
+                "runs",
+                "cache",
+                "list",
+                "--format",
+                "json",
+                "--output",
+                str(output_path),
+            ],
+        )
+
+        assert result.exit_code == 0
+        data = json.loads(output_path.read_text())
+        assert data[0]["project_name"] == "test-project"
+
     def test_cache_clear_with_yes(self, runner, tmp_path, monkeypatch):
         """Clear command removes cache with --yes flag."""
         monkeypatch.setattr("langsmith_cli.cache.get_cache_dir", lambda: tmp_path)

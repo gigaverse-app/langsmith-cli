@@ -100,7 +100,7 @@ langsmith-cli --json runs get <id> --fields inputs,outputs,error
 | Scoped content search | `langsmith-cli --json runs search "pattern" --in outputs --fields id,name,outputs --limit 20` |
 | Search cached runs | `langsmith-cli --json runs cache grep "pattern" -E --grep-in outputs --project <name> --fields id,name,outputs` |
 | Download cache | `langsmith-cli --json runs cache download --project <name> --last 7d` |
-| List cache | `langsmith-cli runs cache list` |
+| List cache | `langsmith-cli --json runs cache list --fields project_name,run_count,path` |
 | Discover cache schema | `langsmith-cli --json runs cache schema --project <name> --include outputs` |
 | Analyze token costs | `langsmith-cli --json runs usage --from-cache --breakdown model --active-only` |
 | List projects | `langsmith-cli --json projects list --name-pattern "dev/*" --fields name` |

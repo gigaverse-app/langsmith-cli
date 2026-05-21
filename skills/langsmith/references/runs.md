@@ -392,7 +392,15 @@ List cached projects with run counts and file sizes.
 
 ```bash
 langsmith-cli runs cache list
+langsmith-cli --json runs cache list --fields project_name,run_count,path
+langsmith-cli runs cache list --count
 ```
+
+**Options:**
+- `--fields TEXT` - Sparse output fields such as `project_name,run_count,path`
+- `--count` - Print only the number of cached projects
+- `--format table|json|jsonl|csv|yaml` - Choose output format
+- `--output PATH` - Write results to a file
 
 ### `runs cache clear`
 

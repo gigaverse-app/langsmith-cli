@@ -463,13 +463,30 @@ def cache_dir(ctx: click.Context) -> None:
 
 
 @cache_group.command("list")
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["table", "json", "jsonl", "csv", "yaml"]),
+    help="Output format.",
+)
+@fields_option()
+@count_option()
+@output_option()
 @click.pass_context
-def cache_list(ctx: click.Context) -> None:
+def cache_list(
+    ctx: click.Context,
+    output_format: str | None,
+    fields: str | None,
+    count: bool,
+    output: str | None,
+) -> None:
     """Show cached projects and their stats.
 
+    \b
     Examples:
-        langsmith-cli runs cache list
-        langsmith-cli --json runs cache list
+      langsmith-cli runs cache list
+      langsmith-cli --json runs cache list --fields project_name,run_count,path
+      langsmith-cli runs cache list --count
     """
     from langsmith_cli.cache import (
         find_orphaned_cache_files,
@@ -478,68 +495,100 @@ def cache_list(ctx: click.Context) -> None:
     )
 
     logger = ctx.obj["logger"]
+    configure_logger_streams(
+        ctx,
+        logger,
+        output=output,
+        output_format=output_format,
+        count=count,
+        fields=fields,
+    )
 
     projects = list_cached_projects()
     orphaned = find_orphaned_cache_files()
 
-    if not projects and not orphaned:
-        logger.info("No cached projects. Use 'runs cache download' to cache runs.")
-        return
-
-    if is_json_context(ctx):
-        data = []
-        for p in projects:
-            entry = p.model_dump(mode="json")
-            entry["path"] = str(get_cache_path(p.project_name))
-            data.append(entry)
-        click.echo(json.dumps(data, default=str))
-        if orphaned:
-            logger.warning(
-                f"{len(orphaned)} orphaned JSONL file(s) have no metadata "
-                f"(run 'runs cache repair' to fix): {', '.join(orphaned)}"
-            )
-        return
-
-    from rich.table import Table
-
-    table = Table(title="Cached Projects")
-    table.add_column("Project", style="cyan")
-    table.add_column("Runs", justify="right")
-    table.add_column("Time Range", style="green")
-    table.add_column("Size", justify="right")
-    table.add_column("Last Updated", style="yellow")
-
+    entries: list[dict[str, Any]] = []
     for p in projects:
         cache_path = get_cache_path(p.project_name)
         size_mb = (
             cache_path.stat().st_size / (1024 * 1024) if cache_path.exists() else 0
         )
+        entry = p.model_dump(mode="json")
+        entry["size_mb"] = round(size_mb, 3)
+        entry["path"] = str(cache_path)
+        entries.append(entry)
 
-        time_range = ""
-        if p.oldest_run_start_time and p.newest_run_start_time:
-            oldest = p.oldest_run_start_time.strftime("%m-%d %H:%M")
-            newest = p.newest_run_start_time.strftime("%m-%d %H:%M")
-            time_range = f"{oldest} → {newest}"
+    include_fields = parse_fields_option(fields)
 
-        updated = p.last_updated.strftime("%Y-%m-%d %H:%M") if p.last_updated else ""
+    def build_cache_table(items: list[dict[str, Any]]) -> Any:
+        from rich.table import Table
 
-        table.add_row(
-            p.project_name,
-            str(p.run_count),
-            time_range,
-            f"{size_mb:.1f}MB",
-            updated,
-        )
+        if include_fields is not None:
+            table = Table(title="Cached Projects")
+            labels = {
+                "project_name": "Project",
+                "project_id": "Project ID",
+                "oldest_run_start_time": "Oldest Run",
+                "newest_run_start_time": "Newest Run",
+                "run_count": "Runs",
+                "last_updated": "Last Updated",
+                "filters_used": "Filters",
+                "size_mb": "Size MB",
+                "path": "Path",
+            }
+            selected = [field for field in labels if field in include_fields]
+            for field in selected:
+                table.add_column(labels[field])
+            for item in items:
+                table.add_row(*(str(item[field]) for field in selected))
+            return table
 
-    console.print(table)
+        table = Table(title="Cached Projects")
+        table.add_column("Project", style="cyan")
+        table.add_column("Runs", justify="right")
+        table.add_column("Time Range", style="green")
+        table.add_column("Size", justify="right")
+        table.add_column("Last Updated", style="yellow")
+
+        for item in items:
+            time_range = ""
+            if item["oldest_run_start_time"] and item["newest_run_start_time"]:
+                oldest = str(item["oldest_run_start_time"])[5:16].replace("T", " ")
+                newest = str(item["newest_run_start_time"])[5:16].replace("T", " ")
+                time_range = f"{oldest} -> {newest}"
+
+            updated = (
+                str(item["last_updated"])[:16].replace("T", " ")
+                if item["last_updated"]
+                else ""
+            )
+
+            table.add_row(
+                str(item["project_name"]),
+                str(item["run_count"]),
+                time_range,
+                f"{item['size_mb']:.1f}MB",
+                updated,
+            )
+
+        return table
+
+    render_output(
+        entries,
+        build_cache_table,
+        ctx,
+        include_fields=include_fields,
+        empty_message="No cached projects. Use 'runs cache download' to cache runs.",
+        output_format=output_format,
+        count_flag=count,
+        output_path=output,
+    )
 
     if orphaned:
         logger.warning(
-            f"\n⚠️  {len(orphaned)} orphaned cache file(s) found (JSONL without metadata):"
+            f"{len(orphaned)} orphaned JSONL file(s) have no metadata "
+            f"(run 'runs cache repair' to fix): {', '.join(orphaned)}"
         )
-        for name in orphaned:
-            logger.warning(f"  • {name}")
-        logger.warning("Run 'langsmith-cli runs cache repair' to regenerate metadata.")
 
 
 @cache_group.command("clear")
