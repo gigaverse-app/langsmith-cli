@@ -5,6 +5,7 @@ from typing import Any
 import click
 from dotenv import load_dotenv
 from langsmith_cli.commands.annotation_queues import annotation_queues
+from langsmith_cli.commands.archive import archive
 from langsmith_cli.commands.auth import login
 from langsmith_cli.commands.datasets import datasets
 from langsmith_cli.commands.examples import examples
@@ -415,6 +416,7 @@ def auth():
 
 auth.add_command(login)
 cli_main.add_command(auth)
+cli_main.add_command(archive)
 cli_main.add_command(annotation_queues)
 cli_main.add_command(datasets)
 cli_main.add_command(examples)

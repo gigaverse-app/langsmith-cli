@@ -101,8 +101,180 @@ def _all_failures_are_query_rejection(
     return all(_is_query_rejection(exc) for exc in failed_exceptions.values())
 
 
+def _list_archived_runs(
+    *,
+    ctx: click.Context,
+    project: str | None,
+    project_id: str | None,
+    project_name: str | None,
+    project_name_exact: str | None,
+    project_name_pattern: str | None,
+    project_name_regex: str | None,
+    limit: int,
+    status: str | None,
+    filter_: str | None,
+    trace_id: str | None,
+    run_type: str | None,
+    is_root: bool | None,
+    roots: bool,
+    all_runs: bool,
+    trace_filter: str | None,
+    tree_filter: str | None,
+    reference_example_id: str | None,
+    tag: tuple[str, ...],
+    name_pattern: str | None,
+    name_regex: str | None,
+    model: str | None,
+    failed: bool,
+    succeeded: bool,
+    slow: bool,
+    recent: bool,
+    today: bool,
+    min_latency: str | None,
+    max_latency: str | None,
+    since: str | None,
+    before: str | None,
+    last: str | None,
+    query: str | None,
+    grep: str | None,
+    grep_ignore_case: bool,
+    grep_regex: bool,
+    grep_in: str | None,
+    metadata_filters: tuple[str, ...],
+    sort_by: str | None,
+    format_type: str,
+    no_truncate: bool,
+    exclude: tuple[str, ...],
+    fields: str | None,
+    count: bool,
+    output: str | None,
+    output_format: str | None,
+) -> None:
+    """Archive logic layer adapter followed by the existing view contracts."""
+    from datetime import datetime, time, timedelta, timezone
+
+    from langsmith_cli.archive.query import (
+        ArchiveRunQuery,
+        count_archive_runs,
+        query_archive_runs,
+    )
+    from langsmith_cli.time_parsing import parse_time_range
+
+    unsupported: list[str] = []
+    for enabled, flag in (
+        (filter_, "--filter"),
+        (trace_filter, "--trace-filter"),
+        (tree_filter, "--tree-filter"),
+        (reference_example_id, "--reference-example-id"),
+        (metadata_filters, "--metadata"),
+        (slow, "--slow"),
+        (min_latency, "--min-latency"),
+        (max_latency, "--max-latency"),
+    ):
+        if enabled:
+            unsupported.append(flag)
+    if unsupported:
+        raise click.ClickException(
+            "Archive backend does not yet support: " + ", ".join(unsupported)
+        )
+    if query and grep:
+        raise click.ClickException("Use either --query or --grep with --archive")
+
+    since_dt, before_dt = parse_time_range(since=since, last=last, before=before)
+    now = datetime.now(timezone.utc)
+    if recent:
+        since_dt = now - timedelta(hours=1)
+    if today:
+        since_dt = datetime.combine(now.date(), time.min, tzinfo=timezone.utc)
+
+    error_filter: bool | None = None
+    if status == "error" or failed:
+        error_filter = True
+    elif status == "success" or succeeded:
+        error_filter = False
+    root_filter = resolve_root_scope(roots=roots, all_runs=all_runs, is_root=is_root)
+    text = grep or query or model
+    if grep_in:
+        text_fields = tuple(
+            field.strip() for field in grep_in.split(",") if field.strip()
+        )
+    elif model:
+        text_fields = ("extra",)
+    else:
+        text_fields = ("inputs", "outputs", "error")
+
+    needs_local_filtering = bool(name_pattern or name_regex or exclude)
+    query_limit = 0 if count else limit
+    if needs_local_filtering and limit:
+        query_limit = max(limit * 3, 100)
+    archive_query = ArchiveRunQuery(
+        project=project,
+        project_id=project_id,
+        project_name=project_name,
+        project_name_exact=project_name_exact,
+        project_name_pattern=project_name_pattern,
+        project_name_regex=project_name_regex,
+        since=since_dt,
+        before=before_dt,
+        limit=query_limit,
+        error=error_filter,
+        trace_id=trace_id,
+        run_type=run_type,
+        is_root=root_filter,
+        tags=tuple(tag),
+        text=text,
+        text_fields=text_fields,
+        text_regex=bool(grep and grep_regex),
+        text_ignore_case=bool(grep and grep_ignore_case),
+    )
+    if count and not needs_local_filtering:
+        click.echo(str(count_archive_runs(archive_query)))
+        return
+    archived_runs = query_archive_runs(archive_query)
+    runs = get_matching_items(
+        archived_runs,
+        name_pattern=name_pattern,
+        name_regex=name_regex,
+        name_getter=lambda run: run.name or "",
+    )
+    runs = apply_exclude_filter(runs, exclude, lambda run: run.name or "")
+    if sort_by:
+        sort_key_map = {
+            "name": lambda run: (run.name or "").lower(),
+            "status": lambda run: run.status or "",
+            "latency": lambda run: run.latency if run.latency is not None else 0,
+            "start_time": lambda run: run.start_time,
+        }
+        runs = sort_items(runs, sort_by, sort_key_map, console)
+    runs = apply_client_side_limit(
+        runs, limit, has_client_filters=needs_local_filtering
+    )
+
+    if count:
+        click.echo(str(len(runs)))
+        return
+    if output:
+        data = filter_fields(runs, fields)
+        file_format = output_format if output_format is not None else "jsonl"
+        write_output_to_file(data, output, console, format_type=file_format)
+        return
+    if format_type != "table":
+        output_formatted_data(filter_fields(runs, fields), format_type)
+        return
+    table = build_runs_table(runs, "Archived Runs", no_truncate)
+    if not runs:
+        ctx.obj["logger"].warning("No archived runs found matching your criteria.")
+        return
+    console.print(table)
+
+
 @runs.command("list")
 @add_project_filter_options
+@click.option(
+    "--archive",
+    is_flag=True,
+    help="Query canonical Parquet from the configured archive instead of LangSmith.",
+)
 @click.option("--limit", default=20, help="Max runs to fetch (per project).")
 @click.option(
     "--status", type=click.Choice(["success", "error"]), help="Filter by status."
@@ -213,6 +385,7 @@ def _all_failures_are_query_rejection(
 @click.pass_context
 def list_runs(
     ctx,
+    archive,
     project,
     project_id,
     project_name,
@@ -299,6 +472,56 @@ def list_runs(
         count=count,
         fields=fields,
     )
+
+    if archive:
+        return _list_archived_runs(
+            ctx=ctx,
+            project=project,
+            project_id=project_id,
+            project_name=project_name,
+            project_name_exact=project_name_exact,
+            project_name_pattern=project_name_pattern,
+            project_name_regex=project_name_regex,
+            limit=limit,
+            status=status,
+            filter_=filter_,
+            trace_id=trace_id,
+            run_type=run_type,
+            is_root=is_root,
+            roots=roots,
+            all_runs=all_runs,
+            trace_filter=trace_filter,
+            tree_filter=tree_filter,
+            reference_example_id=reference_example_id,
+            tag=tag,
+            name_pattern=name_pattern,
+            name_regex=name_regex,
+            model=model,
+            failed=failed,
+            succeeded=succeeded,
+            slow=slow,
+            recent=recent,
+            today=today,
+            min_latency=min_latency,
+            max_latency=max_latency,
+            since=since,
+            before=before,
+            last=last,
+            query=query,
+            grep=grep,
+            grep_ignore_case=grep_ignore_case,
+            grep_regex=grep_regex,
+            grep_in=grep_in,
+            metadata_filters=metadata_filters,
+            sort_by=sort_by,
+            format_type=format_type,
+            no_truncate=no_truncate,
+            exclude=exclude,
+            fields=fields,
+            count=count,
+            output=output,
+            output_format=output_format,
+        )
 
     # When --count is used, default to unlimited (0) unless user explicitly set limit
     # Check if limit was explicitly provided by checking if it's not the default

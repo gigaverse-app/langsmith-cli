@@ -31,6 +31,11 @@ from langsmith_cli.utils import (
 
 @runs.command("search")
 @click.argument("query")
+@click.option(
+    "--archive",
+    is_flag=True,
+    help="Search canonical Parquet from the configured archive.",
+)
 @add_project_filter_options
 @add_time_filter_options
 @click.option("--limit", default=10, help="Max results.")
@@ -93,6 +98,7 @@ from langsmith_cli.utils import (
 def search_runs(
     ctx,
     query,
+    archive,
     project,
     project_id,
     project_name,
@@ -202,6 +208,7 @@ def search_runs(
         fields=fields,
         count=count,
         output=output,
+        archive=archive,
     )
 
 
