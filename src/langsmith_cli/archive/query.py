@@ -3,18 +3,25 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime, time, timedelta, timezone
 from fnmatch import fnmatchcase
 import json
 import re
 from typing import TYPE_CHECKING, Any
 
 from langsmith_cli.archive.config import load_archive_config
-from langsmith_cli.archive.storage import create_store, read_manifest
+from langsmith_cli.archive.duckdb import configure_duckdb_s3
+from langsmith_cli.archive.repository import list_project_records, read_manifest
+from langsmith_cli.archive.storage import create_store
 from langsmith_cli.time_parsing import ensure_aware_datetime
 
 if TYPE_CHECKING:
     from langsmith.schemas import Run
+
+
+# These values are interpolated as SQL identifiers, not bound values. Keeping the
+# allowlist adjacent to the typed query contract makes that safety invariant visible.
+ARCHIVE_TEXT_FIELDS = frozenset({"inputs", "outputs", "error", "extra"})
 
 
 @dataclass(frozen=True)
@@ -37,6 +44,16 @@ class ArchiveRunQuery:
     text_fields: tuple[str, ...] = ("inputs", "outputs", "error")
     text_regex: bool = False
     text_ignore_case: bool = False
+
+    def __post_init__(self) -> None:
+        if self.text is not None and not self.text_fields:
+            raise ValueError("Archive text search requires at least one field")
+        invalid_fields = set(self.text_fields) - ARCHIVE_TEXT_FIELDS
+        if invalid_fields:
+            invalid = ", ".join(sorted(invalid_fields))
+            raise ValueError(f"Unsupported archive text field(s): {invalid}")
+        if self.limit is not None and self.limit < 0:
+            raise ValueError("Archive query limit must be non-negative")
 
 
 def _project_matches(
@@ -68,7 +85,54 @@ def _canonical_uris(query: ArchiveRunQuery, config_path: str | None) -> list[str
     routes = (config.route_project(exact),) if exact is not None else config.routes
     for route in routes:
         store = create_store(route.archive_uri)
-        for key in store.list_keys("manifests"):
+        records = list_project_records(store)
+        matching_project_ids: set[str] | None = None
+        catalog_project_ids: set[str] = set()
+        if records:
+            matching_project_ids = set()
+            for project in records:
+                catalog_project_ids.add(project.project_id)
+                configured_route = config.route_project(project.project_name)
+                if configured_route.name != route.name:
+                    raise ValueError(
+                        "Archive project catalog entry is stored under the wrong "
+                        f"route: {project.project_name}"
+                    )
+                if _project_matches(query, project.project_id, project.project_name):
+                    matching_project_ids.add(project.project_id)
+        elif query.project_id is not None:
+            # Legacy archives may predate the project catalog. A project UUID still
+            # maps directly to its manifest namespace without scanning all projects.
+            matching_project_ids = {query.project_id}
+
+        if matching_project_ids is None:
+            manifest_keys = store.list_keys("manifests")
+        else:
+            manifest_keys = [
+                key
+                for project_id in sorted(matching_project_ids)
+                for key in store.list_keys(f"manifests/project_id={project_id}")
+            ]
+            if catalog_project_ids:
+                # A catalog is backfilled incrementally. Preserve visibility of
+                # legacy/unindexed project namespaces during that rollout, while
+                # avoiding GETs for unrelated projects already in the catalog.
+                legacy_keys = [
+                    key
+                    for key in store.list_keys("manifests")
+                    if (
+                        (identity := _manifest_identity_from_key(key)) is None
+                        or identity[0] not in catalog_project_ids
+                    )
+                ]
+                manifest_keys.extend(legacy_keys)
+        for key in manifest_keys:
+            identity = _manifest_identity_from_key(key)
+            key_date = identity[1] if identity is not None else None
+            if key_date is not None and not _date_partition_overlaps(
+                key_date, since, before
+            ):
+                continue
             manifest = read_manifest(store, key, known_exists=True)
             if manifest is None or manifest.canonical_key is None:
                 continue
@@ -84,16 +148,37 @@ def _canonical_uris(query: ArchiveRunQuery, config_path: str | None) -> list[str
                 continue
             if before is not None and manifest.window_start >= before:
                 continue
+            # Empty canonical generations contain no rows and need not participate
+            # in schema union. Skipping them also makes all-empty archives return an
+            # immediate, deterministic zero instead of referencing absent columns.
+            if manifest.canonical_run_count == 0:
+                continue
             uris.append(store.object_uri(manifest.canonical_key))
     return sorted(set(uris))
 
 
-def _configure_s3(connection: Any, uris: list[str]) -> None:
-    if any(uri.startswith("s3://") for uri in uris):
-        connection.execute(
-            "CREATE OR REPLACE SECRET langsmith_archive_query_s3 "
-            "(TYPE s3, PROVIDER credential_chain)"
-        )
+_MANIFEST_KEY_RE = re.compile(
+    r"^manifests/project_id=([^/]+)/date=(\d{4}-\d{2}-\d{2})\.json$"
+)
+
+
+def _manifest_identity_from_key(key: str) -> tuple[str, date] | None:
+    match = _MANIFEST_KEY_RE.fullmatch(key)
+    return (
+        (match.group(1), date.fromisoformat(match.group(2)))
+        if match is not None
+        else None
+    )
+
+
+def _date_partition_overlaps(
+    trace_date: date, since: datetime | None, before: datetime | None
+) -> bool:
+    start = datetime.combine(trace_date, time.min, tzinfo=timezone.utc)
+    end = start + timedelta(days=1)
+    return not (
+        (since is not None and end <= since) or (before is not None and start >= before)
+    )
 
 
 def _normalize_run_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -148,8 +233,10 @@ def _where_clause(query: ArchiveRunQuery) -> tuple[str, list[object]]:
     if query.run_type is not None:
         clauses.append("run_type = ?")
         parameters.append(query.run_type)
-    if query.is_root:
-        clauses.append("parent_run_id IS NULL")
+    if query.is_root is not None:
+        clauses.append(
+            "parent_run_id IS NULL" if query.is_root else "parent_run_id IS NOT NULL"
+        )
     for tag in query.tags:
         clauses.append("list_contains(tags, ?)")
         parameters.append(tag)
@@ -161,9 +248,12 @@ def _where_clause(query: ArchiveRunQuery) -> tuple[str, list[object]]:
             clauses.append(f"regexp_matches({text_sql}, ?)")
             pattern = f"(?i){query.text}" if query.text_ignore_case else query.text
             parameters.append(pattern)
-        else:
+        elif query.text_ignore_case:
             clauses.append(f"lower({text_sql}) LIKE ?")
             parameters.append(f"%{query.text.lower()}%")
+        else:
+            clauses.append(f"{text_sql} LIKE ?")
+            parameters.append(f"%{query.text}%")
     where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
     return where, parameters
 
@@ -191,7 +281,7 @@ def query_archive_runs(
 
     connection = duckdb.connect()
     try:
-        _configure_s3(connection, uris)
+        configure_duckdb_s3(connection, uris)
         cursor = connection.execute(sql, parameters)
         columns = [description[0] for description in cursor.description]
         runs: list[Run] = []
@@ -215,7 +305,7 @@ def count_archive_runs(
     where, parameters = _where_clause(query)
     connection = duckdb.connect()
     try:
-        _configure_s3(connection, uris)
+        configure_duckdb_s3(connection, uris)
         row = connection.execute(
             f"SELECT count(*) FROM read_parquet(?, union_by_name=true){where}",
             [uris, *parameters],
@@ -238,7 +328,7 @@ def read_archived_run(
         raise LookupError(f"Archived run not found: {run_id}")
     connection = duckdb.connect()
     try:
-        _configure_s3(connection, uris)
+        configure_duckdb_s3(connection, uris)
         cursor = connection.execute(
             "SELECT * FROM read_parquet(?, union_by_name=true) "
             "WHERE CAST(id AS VARCHAR) = ? LIMIT 1",

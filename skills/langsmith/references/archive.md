@@ -42,6 +42,14 @@ Prefer one CronJob per route so its AWS role can access only that environment's
 bucket. Use `--all-routes` only for a central role intentionally authorized for all
 destinations.
 
+On first deployment, a due D+12 day may not have a D+2 object. The CLI publishes
+that complete reconciliation snapshot alone and seals the day, preserving the oldest
+data still available. Later days follow the normal two-snapshot flow.
+
+Overlapping jobs are safe: immutable data uploads happen before an ETag-conditional
+manifest update. Exactly one writer publishes; stale writers fail and are safe to
+retry. Do not add an external distributed lock around the CronJob.
+
 List manifests:
 
 ```bash
@@ -65,5 +73,13 @@ search, sorting, field projection, counts, and output formats. Raw FQL, trace/tr
 FQL, metadata predicates, and latency flags fail explicitly until translated to the
 typed DuckDB query model.
 
+Name/regex/exclude filters currently run after the DuckDB query. Use `--fetch N` to
+control how many archived rows they evaluate; `--count` evaluates the full matching
+archive before applying those local filters.
+
 See `docs/TRACE_ARCHIVE_DESIGN.md` for storage layout, reconciliation,
 deduplication, crash recovery, IAM boundaries, and efficiency decisions.
+
+Project names are immutable archive identities. If a LangSmith project is renamed or
+moved from one route to another, migrate its catalog/manifests explicitly; the sync
+fails rather than silently splitting history across destinations.

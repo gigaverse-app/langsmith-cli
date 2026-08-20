@@ -140,6 +140,7 @@ def _list_archived_runs(
     grep_ignore_case: bool,
     grep_regex: bool,
     grep_in: str | None,
+    fetch: int | None,
     metadata_filters: tuple[str, ...],
     sort_by: str | None,
     format_type: str,
@@ -205,7 +206,9 @@ def _list_archived_runs(
 
     needs_local_filtering = bool(name_pattern or name_regex or exclude)
     query_limit = 0 if count else limit
-    if needs_local_filtering and limit:
+    if fetch is not None:
+        query_limit = fetch
+    elif needs_local_filtering and limit:
         query_limit = max(limit * 3, 100)
     archive_query = ArchiveRunQuery(
         project=project,
@@ -225,7 +228,9 @@ def _list_archived_runs(
         text=text,
         text_fields=text_fields,
         text_regex=bool(grep and grep_regex),
-        text_ignore_case=bool(grep and grep_ignore_case),
+        # `--query` and model matching follow server-search-style case-insensitive
+        # semantics; literal `--grep` remains case-sensitive unless `-i` is set.
+        text_ignore_case=bool(query or model or (grep and grep_ignore_case)),
     )
     if count and not needs_local_filtering:
         click.echo(str(count_archive_runs(archive_query)))
@@ -512,6 +517,7 @@ def list_runs(
             grep_ignore_case=grep_ignore_case,
             grep_regex=grep_regex,
             grep_in=grep_in,
+            fetch=fetch,
             metadata_filters=metadata_filters,
             sort_by=sort_by,
             format_type=format_type,

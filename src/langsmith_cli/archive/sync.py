@@ -18,22 +18,22 @@ from uuid import UUID
 from langsmith_cli.archive.models import (
     ArchiveManifest,
     ArchivePhase,
+    ArchiveProject,
     PhaseRecord,
     PhaseStatus,
 )
-from langsmith_cli.archive.storage import (
-    ArchiveStore,
+from langsmith_cli.archive.duckdb import configure_duckdb_s3
+from langsmith_cli.archive.repository import (
+    ManifestSnapshot,
+    ensure_project_record,
     manifest_key,
-    read_manifest,
+    read_manifest_snapshot,
     write_manifest,
 )
+from langsmith_cli.archive.storage import ArchiveStore
 
 if TYPE_CHECKING:
     from langsmith.schemas import Run
-
-
-class DuckConnection(Protocol):
-    def execute(self, query: str, parameters: object | None = None) -> Any: ...
 
 
 class RunsExportClient(Protocol):
@@ -103,9 +103,10 @@ def _write_runs_parquet(
     import duckdb
 
     filter_ = f'lt(start_time, "{manifest.window_end.isoformat()}")'
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".jsonl", encoding="utf-8"
-    ) as rows:
+    # Close the JSONL before DuckDB opens it. Windows does not guarantee that a
+    # named temporary file can be reopened while Python still holds its handle.
+    rows_path = target.with_suffix(".jsonl")
+    with rows_path.open(mode="w", encoding="utf-8") as rows:
         run_count = 0
         for run in client.list_runs(
             project_id=manifest.project_id,
@@ -122,37 +123,26 @@ def _write_runs_parquet(
             )
             rows.write("\n")
             run_count += 1
-        rows.flush()
 
-        connection = duckdb.connect()
-        try:
-            if run_count:
-                connection.execute(
-                    "COPY (SELECT * FROM read_json_auto("
-                    f"{_sql_string(rows.name)}, maximum_object_size=104857600)) "
-                    f"TO {_sql_string(str(target))} "
-                    "(FORMAT PARQUET, COMPRESSION ZSTD)"
-                )
-            else:
-                connection.execute(
-                    "COPY (SELECT CAST(NULL AS VARCHAR) AS id WHERE false) "
-                    f"TO {_sql_string(str(target))} "
-                    "(FORMAT PARQUET, COMPRESSION ZSTD)"
-                )
-        finally:
-            connection.close()
+    connection = duckdb.connect()
+    try:
+        if run_count:
+            connection.execute(
+                "COPY (SELECT * FROM read_json_auto("
+                f"{_sql_string(str(rows_path))}, maximum_object_size=104857600)) "
+                f"TO {_sql_string(str(target))} "
+                "(FORMAT PARQUET, COMPRESSION ZSTD)"
+            )
+        else:
+            connection.execute(
+                "COPY (SELECT CAST(NULL AS VARCHAR) AS id WHERE false) "
+                f"TO {_sql_string(str(target))} "
+                "(FORMAT PARQUET, COMPRESSION ZSTD)"
+            )
+    finally:
+        connection.close()
+        rows_path.unlink(missing_ok=True)
     return run_count
-
-
-def _configure_s3(connection: DuckConnection, uris: list[str]) -> None:
-    if not any(uri.startswith("s3://") for uri in uris):
-        return
-    # DuckDB loads httpfs on first S3 access. The credential-chain secret delegates
-    # authentication to the same workload identity used by boto3.
-    connection.execute(
-        "CREATE OR REPLACE SECRET langsmith_archive_s3 "
-        "(TYPE s3, PROVIDER credential_chain)"
-    )
 
 
 def _canonicalize(store: ArchiveStore, manifest: ArchiveManifest, target: Path) -> int:
@@ -168,7 +158,7 @@ def _canonicalize(store: ArchiveStore, manifest: ArchiveManifest, target: Path) 
 
     connection = duckdb.connect()
     try:
-        _configure_s3(connection, [uri for uri, _ in sources])
+        configure_duckdb_s3(connection, [uri for uri, _ in sources])
         selects: list[str] = []
         for index, (uri, rank) in enumerate(sources):
             view = f"archive_snapshot_{index}"
@@ -194,9 +184,17 @@ def _canonicalize(store: ArchiveStore, manifest: ArchiveManifest, target: Path) 
             f"COPY ({query}) TO {_sql_string(str(target))} "
             "(FORMAT PARQUET, COMPRESSION ZSTD)"
         )
-        count_row = connection.execute(f"SELECT count(*) FROM ({query})").fetchone()
+        # Verify the artifact we will upload instead of rerunning the remote union
+        # and window function. This is one local scan and proves canonical IDs are
+        # unique at the actual publication boundary.
+        count_row = connection.execute(
+            "SELECT count(*), count(DISTINCT id) FROM "
+            f"read_parquet({_sql_string(str(target))})"
+        ).fetchone()
         if count_row is None:
             raise ValueError("DuckDB did not return a canonical row count")
+        if count_row[0] != count_row[1]:
+            raise ValueError("Canonical snapshot contains duplicate run IDs")
         return int(count_row[0])
     finally:
         connection.close()
@@ -210,19 +208,45 @@ def sync_project_day(
     project_name: str,
     trace_date: date,
     phase: ArchivePhase,
-    existing_manifest: ArchiveManifest | None = None,
-    manifest_checked: bool = False,
+    existing_snapshot: ManifestSnapshot | None = None,
+    manifest_known_absent: bool = False,
+    existing_project: ArchiveProject | None = None,
+    project_record_checked: bool = False,
 ) -> ArchiveManifest:
-    """Export one phase and publish a deduplicated canonical generation."""
+    """Export one phase and conditionally publish a canonical generation.
+
+    The manifest is the sole mutable publication pointer. Immutable raw/canonical
+    objects are uploaded first; compare-and-swap publication then ensures a stale
+    worker can leave only orphan objects, never clobber a newer verified manifest.
+    """
+    if project_record_checked and existing_project is not None:
+        if (
+            existing_project.project_id != project_id
+            or existing_project.project_name != project_name
+        ):
+            raise ValueError(
+                "Archived project identity changed; migrate it before syncing"
+            )
+    else:
+        ensure_project_record(store, project_id, project_name)
     key = manifest_key(project_id, trace_date.isoformat())
-    manifest = existing_manifest
-    if not manifest_checked:
-        manifest = read_manifest(store, key)
-    manifest = manifest or _new_manifest(project_id, project_name, trace_date)
+    snapshot = existing_snapshot
+    if snapshot is None and not manifest_known_absent:
+        snapshot = read_manifest_snapshot(store, key)
+    manifest = (
+        snapshot.manifest
+        if snapshot is not None
+        else _new_manifest(project_id, project_name, trace_date)
+    )
+    if manifest.project_name != project_name:
+        raise ValueError(
+            "Archived project name changed; migrate its manifest before syncing"
+        )
     existing = manifest.phase(phase)
     if existing is not None and existing.status is PhaseStatus.VERIFIED:
         return manifest
-
+    if manifest.sealed:
+        raise ValueError("A sealed archive day is immutable")
     generation_id = str(uuid4())
     raw_key = (
         f"raw/project_id={project_id}/date={trace_date.isoformat()}/"
@@ -259,5 +283,10 @@ def sync_project_day(
         sealed=phase is ArchivePhase.RECONCILIATION,
         updated_at=now,
     )
-    write_manifest(store, key, published)
+    write_manifest(
+        store,
+        key,
+        published,
+        expected_version=snapshot.version if snapshot is not None else None,
+    )
     return published

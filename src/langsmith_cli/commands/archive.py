@@ -13,8 +13,17 @@ from langsmith_cli.archive.config import (
     UnknownRouteError,
     load_archive_config,
 )
-from langsmith_cli.archive.models import ArchiveManifestDict, ArchivePhase
-from langsmith_cli.archive.storage import create_store, read_manifest
+from langsmith_cli.archive.models import (
+    ArchiveManifestDict,
+    ArchivePhase,
+    ArchiveProject,
+)
+from langsmith_cli.archive.repository import (
+    list_project_records,
+    read_manifest,
+    read_manifest_snapshot,
+)
+from langsmith_cli.archive.storage import ConcurrentArchiveWriteError, create_store
 from langsmith_cli.archive.sync import due_trace_dates, sync_project_day
 from langsmith_cli.output import json_dumps
 from langsmith_cli.utils import get_or_create_client, is_json_context
@@ -118,6 +127,13 @@ def sync_archive(
     manifest_keys = {
         route.name: set(stores[route.name].list_keys("manifests")) for route in routes
     }
+    project_records: dict[str, dict[str, ArchiveProject]] = {
+        route.name: {
+            project.project_id: project
+            for project in list_project_records(stores[route.name])
+        }
+        for route in routes
+    }
     for project in project_models:
         try:
             matched_route = config.route_project(project.name)
@@ -139,23 +155,40 @@ def sync_archive(
             before_key = (
                 f"manifests/project_id={project.id}/date={trace_date.isoformat()}.json"
             )
-            before = (
-                read_manifest(store, before_key, known_exists=True)
+            before_snapshot = (
+                read_manifest_snapshot(store, before_key, known_exists=True)
                 if before_key in manifest_keys[matched_route.name]
                 else None
             )
-            skipped = before is not None and before.phase(phase) is not None
-            manifest = sync_project_day(
-                client,
-                store,
+            skipped = (
+                before_snapshot is not None
+                and before_snapshot.manifest.phase(phase) is not None
+            )
+            try:
+                manifest = sync_project_day(
+                    client,
+                    store,
+                    project_id=str(project.id),
+                    project_name=project.name,
+                    trace_date=trace_date,
+                    phase=phase,
+                    existing_snapshot=before_snapshot,
+                    manifest_known_absent=before_snapshot is None,
+                    existing_project=project_records[matched_route.name].get(
+                        str(project.id)
+                    ),
+                    project_record_checked=True,
+                )
+            except ConcurrentArchiveWriteError as exc:
+                raise click.ClickException(
+                    "Archive manifest changed concurrently; rerun the sync safely"
+                ) from exc
+            manifest_keys[matched_route.name].add(before_key)
+            project_records[matched_route.name][str(project.id)] = ArchiveProject(
+                schema_version=1,
                 project_id=str(project.id),
                 project_name=project.name,
-                trace_date=trace_date,
-                phase=phase,
-                existing_manifest=before,
-                manifest_checked=True,
             )
-            manifest_keys[matched_route.name].add(before_key)
             results.append(
                 {
                     "route": matched_route.name,

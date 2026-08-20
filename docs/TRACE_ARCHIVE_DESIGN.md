@@ -21,6 +21,12 @@ D+14  LangSmith retention expires the source traces
 The second snapshot deliberately overlaps the first. Late children and updated runs
 make a delta-only export unsafe without a reliable modification watermark.
 
+When an organization first enables the archive, the D+12 day may have no historical
+D+2 snapshot. In that bootstrap case, the reconciliation export is still a complete
+snapshot of `[D, D+1)` and is published alone as a sealed canonical generation. This
+captures the oldest still-retained data immediately; steady-state days contain both
+snapshots.
+
 An organization-owned daily job invokes:
 
 ```bash
@@ -62,6 +68,7 @@ and state decisions use Enums.
 
 ```text
 <archive-uri>/
+  projects/project_id=<uuid>.json
   raw/project_id=<uuid>/date=YYYY-MM-DD/phase=primary/generation=<uuid>/runs.parquet
   raw/project_id=<uuid>/date=YYYY-MM-DD/phase=reconciliation/generation=<uuid>/runs.parquet
   canonical/project_id=<uuid>/date=YYYY-MM-DD/generation=<uuid>/runs.parquet
@@ -71,6 +78,16 @@ and state decisions use Enums.
 Raw generations are immutable. A canonical generation is also immutable; the
 manifest is the publication pointer and is written last. Readers never glob all
 canonical generations. They resolve manifests and read only their referenced keys.
+
+Project catalog entries are immutable `(project_id, project_name)` identities within
+one route. They let readers resolve a project once and list only
+`manifests/project_id=<uuid>/...`; exact-project queries do not GET every manifest in
+the bucket. A project rename or move across routes is an explicit migration rather
+than a silent archive split.
+
+Catalog backfill is incremental and backward-compatible. Readers combine cataloged
+project prefixes with any manifest project IDs not yet present in the catalog, so a
+deployment cannot hide older data while an idempotent sync populates catalog entries.
 
 Arbitrary SDK `bytes` values are preserved as tagged base64 objects with
 `__langsmith_archive_encoding__ = "base64"`. Lazy SDK serialization iterators are
@@ -109,15 +126,50 @@ hide during compaction.
 ## Idempotency and crash recovery
 
 The logical operation key is `(archive, project_id, UTC date, phase, schema_version)`.
-A phase transitions through `pending`, `exporting`, `exported`, and `verified`.
-The manifest records provider job/generation identifiers, object keys, counts, and
-errors. A verified phase is never exported again unless an operator explicitly asks
-for repair.
+A phase is published only after its raw object and new canonical object are verified.
+The manifest records generation identifiers, object keys, counts, and timestamps. A
+verified phase is never exported again unless a future explicit repair workflow is
+used.
 
 Cross-service exactly-once behavior is impossible if a process dies after creating a
 remote export but before persisting its ID. The design therefore guarantees
 at-least-once raw attempts and exactly-once canonical rows. Orphan raw attempts can be
 adopted or removed by lifecycle policy.
+
+The mutable manifest pointer is updated with compare-and-swap: `If-None-Match: *` for
+its first S3 publication and `If-Match: <observed-etag>` thereafter. Local archives
+use the same expected-content-version rule under a cross-process file lock. A stale
+worker fails with a typed concurrency error and may leave only immutable orphan
+objects; it cannot overwrite the winning manifest.
+
+```text
+worker A: read v1 ─ export raw A ─ canonical A ─ CAS(v1) ──► v2 published
+worker B: read v1 ─ export raw B ─ canonical B ─ CAS(v1) ──► CONFLICT
+                                                        (v2 remains visible)
+```
+
+## Enforced invariants
+
+| Invariant | Enforcement point | Failure behavior |
+|---|---|---|
+| One project matches exactly one route | Config routing | Unmatched/ambiguous explicit projects fail; catalog scans report unmatched projects |
+| Project identity is immutable inside a route | `projects/project_id=<uuid>.json` create/verify | Rename or route move requires explicit migration |
+| A manifest is exactly one UTC day | Manifest construction and deserialization | Non-UTC or non-24-hour windows fail before query/publication |
+| Object keys are normalized and namespace-bound | Store key validation plus manifest model | Absolute, traversal, wrong project/date/phase, and malformed generation keys fail |
+| Snapshot run IDs are unique | DuckDB validation before canonicalization | No manifest is published; uploaded raw attempt remains an expirable orphan |
+| Canonical run IDs are unique | Validation of the written canonical Parquet | No manifest is published |
+| Canonical count is between the largest input and their sum | Manifest publication/read boundary | Truncated or inflated manifests fail closed |
+| Reconciliation wins duplicate IDs | Canonical `row_number` rank | Updated D+12 rows replace D+2; primary-only and late rows are retained |
+| A sealed day cannot regress | Phase idempotency plus sealed-state validation | Repeated phase calls return the published manifest without exporting |
+| Only one concurrent publisher wins | S3 ETag/local locked CAS | Stale writer receives a concurrency error; winning pointer is preserved |
+| Readers use only published canonical keys | Manifest-directed discovery | Raw/orphan/unreferenced canonical generations are invisible |
+| Empty project-days return zero | Zero-count manifest pruning | DuckDB is not asked to union an empty partial schema |
+| Text-search SQL identifiers are fixed | `ArchiveRunQuery` field allowlist | Unsupported `--grep-in` fields fail before SQL construction |
+
+These invariants are executable contracts, not documentation only. Unit tests cover
+corrupt manifests, duplicate IDs, stale and simultaneous writers, sealed retries,
+empty partitions, unsafe text fields, route pruning, and Windows paths. CLI tests
+cover scheduled D+2/D+12 routing, explicit-project failures, and status output.
 
 ## Query architecture
 
@@ -143,8 +195,12 @@ backend contract. `runs watch`, `runs open`, and mutations remain live-only.
 
 - Work is bounded to a project-day partition and performed twice during retention.
 - DuckDB reads and writes compressed Parquet and applies project/date pruning.
+- Project catalog entries reduce exact-project discovery from every manifest GET to
+  one small catalog scan plus that project's manifest prefix.
 - Canonicalization can operate directly on S3 through DuckDB's credential-chain
   secret; no full historical archive is downloaded.
+- Canonical output is counted and uniqueness-checked from the newly written local
+  Parquet file; the remote reconciliation union/window query runs only once.
 - Large partitions may be sharded by `hash(run.id) % N` without changing manifests.
 - Queries project requested columns and use Parquet predicate pushdown.
 - Raw duplicates are temporary and can be expired after reconciliation is sealed.
