@@ -118,7 +118,10 @@ class LocalArchiveStore:
         if not base.exists():
             return []
         return sorted(
-            str(path.relative_to(self.root))
+            # Object keys are POSIX on every backend. `str(Path)` would leak
+            # backslashes on Windows and then fail the same key invariant readers
+            # correctly enforce for S3/local parity.
+            path.relative_to(self.root).as_posix()
             for path in base.rglob("*")
             if path.is_file()
         )

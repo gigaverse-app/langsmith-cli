@@ -339,6 +339,12 @@ def test_store_rejects_object_key_traversal(tmp_path: Path) -> None:
         store.object_uri("../outside.parquet")
 
 
+def test_local_store_lists_backend_neutral_posix_object_keys(tmp_path: Path) -> None:
+    store = create_store(str(tmp_path / "archive"))
+    store.put_text("projects/project_id=one.json", "{}")
+    assert store.list_keys("projects") == ["projects/project_id=one.json"]
+
+
 def test_windows_drive_paths_are_not_uri_schemes() -> None:
     assert _is_windows_drive_path(r"C:\archive\traces") is True
     assert _is_windows_drive_path("s3://bucket/traces") is False
