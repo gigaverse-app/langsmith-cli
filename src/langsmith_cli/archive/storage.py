@@ -246,7 +246,12 @@ def create_store(uri: str) -> ArchiveStore:
             base_uri=uri.rstrip("/"),
         )
     if parsed.scheme == "file":
-        root = Path(parsed.path).expanduser().resolve()
+        # `urlparse()` leaves Windows file URIs as `/C:/...`; `Path` interprets
+        # that form inconsistently. The stdlib conversion preserves drive roots
+        # on Windows and remains an identity-style conversion on POSIX.
+        from urllib.request import url2pathname
+
+        root = Path(url2pathname(parsed.path)).expanduser().resolve()
     elif parsed.scheme == "":
         root = Path(uri).expanduser().resolve()
     else:
