@@ -37,6 +37,88 @@ LANGSMITH_ARCHIVE_URI=s3://gigaverse-langsmith-traces-prd/langsmith \
 Each invocation calculates both due windows. Completed phases are skipped, known
 in-flight jobs are resumed, and failures are safe to retry.
 
+For high-volume projects, the same command accepts an organization-created managed
+destination through `--bulk-export-destination-id` or
+`LANGSMITH_BULK_EXPORT_DESTINATION_ID`. LangSmith writes `v2_beta` Parquet to an S3
+prefix inside the archive; the CLI adopts matching jobs, validates all partition
+coverage and row identities, and publishes the normal canonical contract.
+
+Historical migration uses one range job per project:
+
+```bash
+langsmith-cli --json archive backfill --route production \
+  --start-date 2025-08-01 --end-date 2026-08-01 \
+  --import-workers 8 \
+  --bulk-export-destination-id <uuid>
+```
+
+All project jobs are submitted before the CLI waits, letting LangSmith control
+workspace concurrency. Completed jobs are harvested without submission-order
+blocking, and bounded workers convert independent projects into sealed daily
+manifests. Re-running adopts the same range jobs and skips days already sealed.
+
+### Historical backfill execution model
+
+Export and publication are deliberately separate concurrency domains:
+
+```text
+selected projects
+      |
+      | submit or adopt every exact project/range request
+      v
+LangSmith managed queue (remote concurrency and hourly Parquet)
+      |
+      | harvest whichever exports complete; submission order is irrelevant
+      v
+bounded project worker pool (local DuckDB + S3 concurrency)
+      |
+      | one worker owns one project and publishes its UTC days serially
+      v
+raw generation -> verified canonical generation -> manifest written last
+```
+
+The CLI never splits one project's days across workers in one invocation. This is
+the local one-writer-per-project invariant; export IDs are also required to map to
+exactly one project before any worker is scheduled. Independent projects may publish
+concurrently. For a one-time migration, operators may run multiple invocations with
+disjoint repeated `--project` selections. Overlapping project selections are safe at
+the manifest CAS boundary but waste export, DuckDB, and S3 work and therefore are not
+a scaling strategy.
+
+`--import-workers` bounds projects being compacted per invocation; it does not alter
+LangSmith's managed export concurrency. Its default is 8 and its maximum is 32.
+Total local concurrency across manual shards is `invocations * import-workers`, so
+operators must measure CPU, memory, S3 request rate, and object sizes rather than
+assuming the maximum is faster. The live 399-day Gigaverse migration measured:
+
+| Layout | Aggregate publication | Relative to serial |
+|---|---:|---:|
+| Three serial environment processes | ~45 project-days/min | 1x |
+| One 8-worker process per environment | ~350 project-days/min | ~8x |
+| Six disjoint shards, 48 aggregate workers, 6-core host | 560-630 project-days/min | ~12-14x |
+
+These measurements describe one workload and host, not a universal default. Daily
+scheduled syncs are much smaller and do not need manual sharding.
+
+Status has a separate fast path because publication scale makes a full metadata
+audit expensive. During the live backfill, downloading every dev manifest was still
+unfinished when interrupted at 168.42 seconds. Key-derived `status --summary`
+counted 23,404 dev manifests in 8.37 seconds and all 56,453 then-published manifests
+across three routes in 19.41 seconds, with zero invalid keys. That is at least 20x
+lower dev completion-check latency in the observed run. The summary labels itself
+`manifest_contents_verified: false`; use the bounded full audit only when manifest
+body validation is required.
+
+The six-shard run also exposed why DuckDB resource ownership is an invariant, not a
+tuning detail. Two large workers peaked near 10 GiB each and used swap; one
+failed after another process truncated the shared default
+`.tmp/duckdb_temp_storage_*.tmp`. Every archive connection now has a 1 GiB memory
+limit and creates a unique spill directory within its already-unique staging root.
+The limit prevents several connections from each claiming most of host memory; the
+directory prevents cleanup in one process from corrupting another. Publication
+completed before the failure remains sealed and the failed disjoint shard is safe to
+replay.
+
 ## Project routing
 
 Archive destinations are selected by ordered, named project routes:
@@ -94,6 +176,12 @@ Arbitrary SDK `bytes` values are preserved as tagged base64 objects with
 materialized at the JSON-to-Parquet boundary. This keeps non-UTF-8 media payloads
 without weakening UTF-8 validation for the surrounding trace document.
 
+Canonical nested fields (`inputs`, `outputs`, `extra`, `events`, `tags`,
+`feedback_stats`, and `parent_run_ids`) are JSON text. Runs API JSONL inference
+produces DuckDB `STRUCT`/`LIST` values while Bulk Export v2 supplies JSON `VARCHAR`;
+canonicalization converts both forms before union. This prevents provider changes or
+different object keys on adjacent days from producing incompatible Parquet schemas.
+
 The bucket owner may expire `raw/` after a repair/audit window. Canonical objects and
 manifests are retained according to the organization's policy.
 
@@ -136,6 +224,13 @@ remote export but before persisting its ID. The design therefore guarantees
 at-least-once raw attempts and exactly-once canonical rows. Orphan raw attempts can be
 adopted or removed by lifecycle policy.
 
+Managed jobs are adopted by their complete immutable request identity: destination,
+project, exact half-open window, `v2_beta`, zstandard compression, full field set,
+and no schedule/filter. The newest non-failed match is used. Reconciliation excludes
+the primary export ID, forcing a new snapshot of the same date. Concurrent creators
+may leave a redundant managed job, but conditional manifest publication still
+allows only one canonical winner.
+
 The mutable manifest pointer is updated with compare-and-swap: `If-None-Match: *` for
 its first S3 publication and `If-Match: <observed-etag>` thereafter. Local archives
 use the same expected-content-version rule under a cross-process file lock. A stale
@@ -150,26 +245,42 @@ worker B: read v1 ─ export raw B ─ canonical B ─ CAS(v1) ──► CONFLIC
 
 ## Enforced invariants
 
-| Invariant | Enforcement point | Failure behavior |
-|---|---|---|
-| One project matches exactly one route | Config routing | Unmatched/ambiguous explicit projects fail; catalog scans report unmatched projects |
-| Project identity is immutable inside a route | `projects/project_id=<uuid>.json` create/verify | Rename or route move requires explicit migration |
-| A manifest is exactly one UTC day | Manifest construction and deserialization | Non-UTC or non-24-hour windows fail before query/publication |
-| Object keys are normalized and namespace-bound | Store key validation plus manifest model | Absolute, traversal, wrong project/date/phase, and malformed generation keys fail |
-| Snapshot run IDs are unique | DuckDB validation before canonicalization | No manifest is published; uploaded raw attempt remains an expirable orphan |
-| Canonical run IDs are unique | Validation of the written canonical Parquet | No manifest is published |
-| Canonical count is between the largest input and their sum | Manifest publication/read boundary | Truncated or inflated manifests fail closed |
-| Reconciliation wins duplicate IDs | Canonical `row_number` rank | Updated D+12 rows replace D+2; primary-only and late rows are retained |
-| A sealed day cannot regress | Phase idempotency plus sealed-state validation | Repeated phase calls return the published manifest without exporting |
-| Only one concurrent publisher wins | S3 ETag/local locked CAS | Stale writer receives a concurrency error; winning pointer is preserved |
-| Readers use only published canonical keys | Manifest-directed discovery | Raw/orphan/unreferenced canonical generations are invisible |
-| Empty project-days return zero | Zero-count manifest pruning | DuckDB is not asked to union an empty partial schema |
-| Text-search SQL identifiers are fixed | `ArchiveRunQuery` field allowlist | Unsupported `--grep-in` fields fail before SQL construction |
+| ID | Invariant | Enforcement point | Regression proof |
+|---|---|---|---|
+| A1 | One project matches exactly one route | `ArchiveConfig.route_project` requires exactly one match | `test_route_config_selects_exactly_one_destination`, `test_overlapping_routes_fail_fast` |
+| A2 | One command processes each project identity at most once | `_routed_projects` rejects duplicate project IDs before export/worker submission | `test_bulk_backfill_rejects_duplicate_project_identity_before_export` |
+| A3 | Project identity is immutable inside a route | `ensure_project_record` create-or-verify boundary | `test_project_catalog_rejects_silent_rename` |
+| A4 | A manifest is exactly one UTC day | `ArchiveManifest` construction/deserialization validation | `test_corrupt_manifest_fails_at_the_storage_boundary` |
+| A5 | Object keys are normalized and namespace-bound | Store key validation plus manifest model | `test_store_rejects_object_key_traversal`, `test_manifest_location_must_match_its_project_and_date` |
+| B1 | Every managed job has canonical IDs, a non-empty UTC window, and the exact requested destination/project/format contract | `BulkExportJob.__post_init__`, `BulkExportSnapshot.__post_init__`, `_matches_window` | `test_bulk_export_job_model_enforces_identity_and_window_invariants`, `test_bulk_export_snapshot_model_enforces_utc_window_invariant`, `test_bulk_export_batch_rejects_polled_request_identity_drift` |
+| B2 | Every exported file remains inside the normalized configured S3 destination | `_get_validated_destination`, `_exported_file_uri`, `_require_normalized_s3_path` | `test_bulk_export_rejects_destination_outside_archive`, `test_bulk_export_rejects_invalid_completed_partitions`, `test_bulk_export_rejects_unsafe_identity_and_storage_configuration` |
+| B3 | Completed partitions exactly cover the requested UTC window | `_validate_partition_coverage` rejects missing, gapped, overlapping, reversed, or extra intervals | `test_bulk_export_rejects_missing_partition_coverage`, `test_bulk_export_partitions_exactly_cover_requested_window` |
+| B4 | Completion order never controls harvest order | `complete_exports` removes and yields every ready job before waiting or reporting a terminal peer | `test_bulk_export_batch_harvests_completed_jobs_without_head_of_line_blocking`, `test_bulk_export_batch_harvests_ready_peer_before_reporting_failure` |
+| A6 | Snapshot and canonical run IDs are unique | DuckDB `count(*) = count(DISTINCT id)` checks before and after canonicalization | `test_snapshot_duplicate_run_ids_fail_before_publication`, `test_reconciliation_deduplicates_and_is_idempotent` |
+| A7 | Canonical count is between the largest input and their sum | Manifest publication/read validation | `test_canonical_count_is_bounded_by_snapshot_counts` |
+| A8 | Reconciliation wins duplicate IDs without losing primary-only or late rows | Canonical `row_number` ordered by snapshot rank | `test_reconciliation_deduplicates_and_is_idempotent`, `test_bulk_reconciliation_unifies_runs_api_and_v2_json_column_types` |
+| A9 | A sealed day cannot regress | Phase idempotency plus sealed-state validation | `test_sealed_day_is_idempotent_and_cannot_be_unsealed`, `test_range_backfill_publishes_daily_partitions_and_resumes` |
+| A10 | Only one concurrent publisher wins | S3 ETag/local locked compare-and-swap | `test_manifest_publication_rejects_a_stale_writer`, `test_two_manifest_publishers_cannot_both_win` |
+| A11 | Readers use only published canonical keys | Manifest-directed discovery | `test_queries_ignore_unpublished_raw_and_canonical_objects` |
+| A12 | Empty project-days return zero without schema-union failures | Zero-count manifest pruning | `test_empty_archive_is_queryable_as_zero_rows` |
+| A13 | Text-search SQL identifiers come only from a fixed allowlist | `ArchiveRunQuery.__post_init__` | `test_archive_text_fields_are_an_explicit_allowlist` |
+| A14 | Full-trace semantic values and topology are provider-independent | `_normalize_run_payload`, `_validated_archive_run`, and derived `child_run_ids` | `test_bulk_json_normalization_matches_live_run_shape`, `test_bulk_reconciliation_unifies_runs_api_and_v2_json_column_types` plus the documented real three-trace comparison |
+| A15 | Archive completion counts do not require one object GET per manifest | `archive status --summary` derives identities from normalized immutable keys and labels the result `manifest_contents_verified: false`; full audits share one bounded metadata reader | `test_status_summary_is_key_derived_and_never_downloads_manifests`, `test_status_reads_independent_manifests_concurrently` |
+| A16 | Concurrent archive connections have bounded memory and never share spill files | every connection has a 1 GiB memory limit and a unique temporary directory inside its project/query staging boundary | `test_duckdb_resources_are_bounded_and_unique_to_each_project_staging_area`; live replay of the shard that exposed shared `.tmp` truncation and severe host-memory pressure |
 
-These invariants are executable contracts, not documentation only. Unit tests cover
-corrupt manifests, duplicate IDs, stale and simultaneous writers, sealed retries,
-empty partitions, unsafe text fields, route pruning, and Windows paths. CLI tests
-cover scheduled D+2/D+12 routing, explicit-project failures, and status output.
+The table deliberately names the enforcing code and executable regression test for
+each contract. Tests without an enforcement point prove an accident; comments without
+a falsifying test are only claims. CLI tests additionally cover scheduled D+2/D+12
+routing, explicit-project failures, progress behavior, and status output.
+
+Bulk Export and the Runs API encode a few equivalent values differently. Bulk may
+pad inferred nested objects with null keys, add one JSON layer to LangChain's reserved
+`inputs.input`, omit the derived `child_run_ids`, and return unzoned UTC event times.
+The archive reader safely normalizes the latter three. It deliberately preserves
+nested nulls because the live CLI promises not to coerce or discard them. Parquet
+schema union cannot always distinguish an absent object member from an explicit null,
+so raw JSON is not universally byte-identical; semantic comparison must treat missing
+and null object members as equivalent.
 
 ## Query architecture
 
@@ -218,6 +329,9 @@ backend contract. `runs watch`, `runs open`, and mutations remain live-only.
 ## Provider boundary
 
 The portable provider pages through `Client.list_runs` for an exact half-open UTC
-window and writes Parquet itself. An optional LangSmith Bulk Export provider may use
-an organization-created destination ID. Scheduling, manifests, verification,
-canonicalization, and querying are provider-independent.
+window and writes Parquet itself. The LangSmith Bulk Export provider uses an
+organization-created destination ID, submits/adopts managed jobs, verifies every
+partition covers the requested window without gaps, verifies Parquet count and run
+ID uniqueness, and compacts the provider output into the same raw/canonical layout.
+Scheduling, manifests, verification, canonicalization, and querying remain
+provider-independent.

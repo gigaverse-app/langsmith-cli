@@ -105,6 +105,27 @@ langsmith-cli runs list --slow --failed --today
 langsmith-cli runs watch
 ```
 
+### 🗄️ **S3 Trace Archive**
+
+Retain traces in private S3, backfill long historical windows through LangSmith
+Bulk Export, and query the canonical Parquet directly with DuckDB:
+
+```bash
+# One-time historical export; dates are a half-open UTC range.
+langsmith-cli --json archive backfill --config archive.yaml --route production \
+  --start-date 2025-08-01 --end-date 2026-08-01 \
+  --bulk-export-destination-id <uuid> --import-workers 8
+
+# Scan the retained archive without paging through the live Runs API.
+langsmith-cli --json runs search "timeout" --archive \
+  --project prd/my-agent --last 365d --fields id,name,status,error
+```
+
+The backfill is resumable: it adopts exact matching remote jobs and skips sealed
+project-days. See the [archive operator reference](skills/langsmith/references/archive.md)
+for setup, safe scaling, progress checks, and recovery, and the
+[archive design](docs/TRACE_ARCHIVE_DESIGN.md) for storage and invariants.
+
 ### 📦 **Complete Coverage**
 Every LangSmith resource at your fingertips:
 - ✅ **Projects** - List, create, inspect

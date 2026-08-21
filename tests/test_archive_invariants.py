@@ -14,6 +14,10 @@ import pytest
 from langsmith.schemas import Run
 
 from conftest import create_run
+from langsmith_cli.archive.duckdb import (
+    DUCKDB_MEMORY_LIMIT,
+    configure_duckdb_resources,
+)
 from langsmith_cli.archive.models import ArchivePhase
 from langsmith_cli.archive.query import (
     ArchiveRunQuery,
@@ -221,6 +225,22 @@ def test_empty_archive_is_queryable_as_zero_rows(
     query = ArchiveRunQuery(project="dev/agent", limit=0)
     assert query_archive_runs(query) == []
     assert count_archive_runs(query) == 0
+
+
+def test_queries_ignore_unpublished_raw_and_canonical_objects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """INVARIANT: manifests are the only publication pointers visible to readers."""
+    archive_uri = str(tmp_path / "archive")
+    monkeypatch.setenv("LANGSMITH_ARCHIVE_URI", archive_uri)
+    store, manifest = _sync_primary(tmp_path, [create_run()])
+    assert manifest.canonical_key is not None
+    store.put_text("raw/orphan/runs.parquet", "not parquet")
+    store.put_text("canonical/orphan/runs.parquet", "not parquet")
+
+    runs = query_archive_runs(ArchiveRunQuery(project="dev/agent", limit=0))
+
+    assert len(runs) == 1
 
 
 def test_project_catalog_prunes_unrelated_manifest_reads(
@@ -657,6 +677,38 @@ def test_store_rejects_invalid_or_unsupported_uris(uri: str) -> None:
 def test_store_factory_supports_s3_and_file_uris(tmp_path: Path) -> None:
     assert isinstance(create_store("s3://archive-bucket/prefix"), S3ArchiveStore)
     assert create_store(tmp_path.as_uri()).base_uri == str(tmp_path.resolve())
+
+
+def test_duckdb_resources_are_bounded_and_unique_to_each_project_staging_area(
+    tmp_path: Path,
+) -> None:
+    """Concurrent workers must neither share spill files nor claim host memory."""
+    import duckdb
+
+    first = duckdb.connect()
+    second = duckdb.connect()
+    try:
+        configure_duckdb_resources(first, tmp_path / "project-a")
+        configure_duckdb_resources(second, tmp_path / "project-b")
+
+        first_path = first.execute(
+            "SELECT current_setting('temp_directory')"
+        ).fetchone()
+        second_path = second.execute(
+            "SELECT current_setting('temp_directory')"
+        ).fetchone()
+        assert first_path == (str(tmp_path / "project-a" / "duckdb-spill"),)
+        assert second_path == (str(tmp_path / "project-b" / "duckdb-spill"),)
+        assert first_path != second_path
+        assert first.execute("SELECT current_setting('memory_limit')").fetchone() == (
+            DUCKDB_MEMORY_LIMIT,
+        )
+        assert second.execute("SELECT current_setting('memory_limit')").fetchone() == (
+            DUCKDB_MEMORY_LIMIT,
+        )
+    finally:
+        first.close()
+        second.close()
 
 
 def test_s3_store_propagates_non_concurrency_service_errors(

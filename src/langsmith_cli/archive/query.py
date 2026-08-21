@@ -10,9 +10,20 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from langsmith_cli.archive.config import load_archive_config
-from langsmith_cli.archive.duckdb import configure_duckdb_s3
-from langsmith_cli.archive.repository import list_project_records, read_manifest
+from langsmith_cli.archive.duckdb import (
+    archive_duckdb_connection,
+    configure_duckdb_s3,
+)
+from langsmith_cli.archive.repository import (
+    list_project_records,
+    manifest_identity_from_key as _manifest_identity_from_key,
+    read_manifests,
+)
 from langsmith_cli.archive.storage import create_store
+from langsmith_cli.archive.sync import (
+    ARCHIVE_JSON_LIST_COLUMNS,
+    ARCHIVE_JSON_OBJECT_COLUMNS,
+)
 from langsmith_cli.time_parsing import ensure_aware_datetime
 
 if TYPE_CHECKING:
@@ -126,15 +137,16 @@ def _canonical_uris(query: ArchiveRunQuery, config_path: str | None) -> list[str
                     )
                 ]
                 manifest_keys.extend(legacy_keys)
-        for key in manifest_keys:
-            identity = _manifest_identity_from_key(key)
-            key_date = identity[1] if identity is not None else None
-            if key_date is not None and not _date_partition_overlaps(
-                key_date, since, before
-            ):
-                continue
-            manifest = read_manifest(store, key, known_exists=True)
-            if manifest is None or manifest.canonical_key is None:
+        manifest_keys = [
+            key
+            for key in manifest_keys
+            if (
+                (identity := _manifest_identity_from_key(key)) is None
+                or _date_partition_overlaps(identity[1], since, before)
+            )
+        ]
+        for manifest in read_manifests(store, manifest_keys):
+            if manifest.canonical_key is None:
                 continue
             configured_route = config.route_project(manifest.project_name)
             if configured_route.name != route.name:
@@ -157,20 +169,6 @@ def _canonical_uris(query: ArchiveRunQuery, config_path: str | None) -> list[str
     return sorted(set(uris))
 
 
-_MANIFEST_KEY_RE = re.compile(
-    r"^manifests/project_id=([^/]+)/date=(\d{4}-\d{2}-\d{2})\.json$"
-)
-
-
-def _manifest_identity_from_key(key: str) -> tuple[str, date] | None:
-    match = _MANIFEST_KEY_RE.fullmatch(key)
-    return (
-        (match.group(1), date.fromisoformat(match.group(2)))
-        if match is not None
-        else None
-    )
-
-
 def _date_partition_overlaps(
     trace_date: date, since: datetime | None, before: datetime | None
 ) -> bool:
@@ -181,8 +179,23 @@ def _date_partition_overlaps(
     )
 
 
+def _normalize_event_time(value: object) -> object:
+    """Return one event time as zoned UTC, preserving unparseable values."""
+    event_time = value
+    if isinstance(event_time, str):
+        try:
+            event_time = datetime.fromisoformat(event_time.replace("Z", "+00:00"))
+        except ValueError:
+            return value
+    if not isinstance(event_time, datetime):
+        return value
+    if event_time.tzinfo is None:
+        event_time = event_time.replace(tzinfo=timezone.utc)
+    return event_time.astimezone(timezone.utc).isoformat()
+
+
 def _normalize_run_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Normalize UUID columns promoted to DuckDB JSON by all-null snapshots."""
+    """Normalize provider-specific Parquet values to the LangSmith Run contract."""
     for field in (
         "id",
         "trace_id",
@@ -198,6 +211,33 @@ def _normalize_run_payload(payload: dict[str, Any]) -> dict[str, Any]:
             if not isinstance(decoded, str):
                 raise ValueError(f"Archived UUID field is not a string: {field}")
             payload[field] = decoded
+    expected_json_types = {
+        **dict.fromkeys(ARCHIVE_JSON_OBJECT_COLUMNS, dict),
+        **dict.fromkeys(ARCHIVE_JSON_LIST_COLUMNS, list),
+    }
+    for field, expected_type in expected_json_types.items():
+        value = payload[field] if field in payload else None
+        if not isinstance(value, str):
+            continue
+        decoded = json.loads(value)
+        if decoded is not None and not isinstance(decoded, expected_type):
+            raise ValueError(f"Archived JSON field has an invalid type: {field}")
+        payload[field] = decoded
+    # Bulk v2 preserves LangChain's reserved ``inputs.input`` value with one
+    # extra JSON layer. Decode that provider representation without stripping
+    # nulls: explicit nested nulls are part of the live CLI output contract.
+    inputs = payload.get("inputs")
+    if isinstance(inputs, dict) and isinstance(inputs.get("input"), str):
+        try:
+            inputs["input"] = json.loads(inputs["input"])
+        except json.JSONDecodeError:
+            pass
+    events = payload.get("events")
+    if isinstance(events, list):
+        for event in events:
+            if not isinstance(event, dict) or "time" not in event:
+                continue
+            event["time"] = _normalize_event_time(event["time"])
     for details_field in (
         "prompt_token_details",
         "completion_token_details",
@@ -212,6 +252,20 @@ def _normalize_run_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 key: value for key, value in details.items() if value is not None
             }
     return payload
+
+
+def _validated_archive_run(payload: dict[str, Any]) -> Run:
+    """Validate an archive row and restore UTC on untyped SDK event datetimes."""
+    from langsmith.schemas import Run
+
+    run = Run.model_validate(_normalize_run_payload(payload))
+    normalized_events: list[dict[str, Any]] = []
+    for event in run.events or []:
+        normalized_event = dict(event)
+        if "time" in normalized_event:
+            normalized_event["time"] = _normalize_event_time(normalized_event["time"])
+        normalized_events.append(normalized_event)
+    return run.model_copy(update={"events": normalized_events or run.events})
 
 
 def _where_clause(query: ArchiveRunQuery) -> tuple[str, list[object]]:
@@ -238,7 +292,10 @@ def _where_clause(query: ArchiveRunQuery) -> tuple[str, list[object]]:
             "parent_run_id IS NULL" if query.is_root else "parent_run_id IS NOT NULL"
         )
     for tag in query.tags:
-        clauses.append("list_contains(tags, ?)")
+        # Runs API snapshots expose a native VARCHAR[] while managed Bulk Export
+        # writes the same field as JSON text. Casting either representation to
+        # JSON keeps mixed-provider archives queryable.
+        clauses.append("json_contains(CAST(tags AS JSON), to_json(?))")
         parameters.append(tag)
     if query.text is not None:
         text_sql = " || ' ' || ".join(
@@ -262,9 +319,6 @@ def query_archive_runs(
     query: ArchiveRunQuery, *, config_path: str | None = None
 ) -> list[Run]:
     """Return LangSmith Run contracts populated from canonical Parquet."""
-    import duckdb
-    from langsmith.schemas import Run
-
     uris = _canonical_uris(query, config_path)
     if not uris:
         return []
@@ -279,32 +333,26 @@ def query_archive_runs(
         f"{where} ORDER BY start_time DESC{limit}"
     )
 
-    connection = duckdb.connect()
-    try:
+    with archive_duckdb_connection() as connection:
         configure_duckdb_s3(connection, uris)
         cursor = connection.execute(sql, parameters)
         columns = [description[0] for description in cursor.description]
         runs: list[Run] = []
         for row in cursor.fetchall():
-            payload = _normalize_run_payload(dict(zip(columns, row, strict=True)))
-            runs.append(Run.model_validate(payload))
+            payload = dict(zip(columns, row, strict=True))
+            runs.append(_validated_archive_run(payload))
         return runs
-    finally:
-        connection.close()
 
 
 def count_archive_runs(
     query: ArchiveRunQuery, *, config_path: str | None = None
 ) -> int:
     """Count matching runs using Parquet metadata/predicate pushdown only."""
-    import duckdb
-
     uris = _canonical_uris(query, config_path)
     if not uris:
         return 0
     where, parameters = _where_clause(query)
-    connection = duckdb.connect()
-    try:
+    with archive_duckdb_connection() as connection:
         configure_duckdb_s3(connection, uris)
         row = connection.execute(
             f"SELECT count(*) FROM read_parquet(?, union_by_name=true){where}",
@@ -313,21 +361,31 @@ def count_archive_runs(
         if row is None:
             raise ValueError("DuckDB did not return an archive count")
         return int(row[0])
-    finally:
-        connection.close()
 
 
 def read_archived_run(
-    run_id: str, *, follow_children: bool, config_path: str | None = None
+    run_id: str,
+    *,
+    follow_children: bool,
+    project: str | None = None,
+    project_id: str | None = None,
+    since: datetime | None = None,
+    before: datetime | None = None,
+    config_path: str | None = None,
 ) -> tuple[Run, list[Run]]:
-    import duckdb
-    from langsmith.schemas import Run
-
-    uris = _canonical_uris(ArchiveRunQuery(limit=0), config_path)
+    uris = _canonical_uris(
+        ArchiveRunQuery(
+            project=project,
+            project_id=project_id,
+            since=since,
+            before=before,
+            limit=0,
+        ),
+        config_path,
+    )
     if not uris:
         raise LookupError(f"Archived run not found: {run_id}")
-    connection = duckdb.connect()
-    try:
+    with archive_duckdb_connection() as connection:
         configure_duckdb_s3(connection, uris)
         cursor = connection.execute(
             "SELECT * FROM read_parquet(?, union_by_name=true) "
@@ -338,9 +396,7 @@ def read_archived_run(
         if row is None:
             raise LookupError(f"Archived run not found: {run_id}")
         columns = [description[0] for description in cursor.description]
-        run = Run.model_validate(
-            _normalize_run_payload(dict(zip(columns, row, strict=True)))
-        )
+        run = _validated_archive_run(dict(zip(columns, row, strict=True)))
         children: list[Run] = []
         if follow_children:
             child_cursor = connection.execute(
@@ -351,11 +407,13 @@ def read_archived_run(
             )
             child_columns = [description[0] for description in child_cursor.description]
             children = [
-                Run.model_validate(
-                    _normalize_run_payload(dict(zip(child_columns, child, strict=True)))
-                )
+                _validated_archive_run(dict(zip(child_columns, child, strict=True)))
                 for child in child_cursor.fetchall()
             ]
+            # Bulk Export does not include the API's derived child_run_ids field.
+            # The trace query above is authoritative, ordered identically to the
+            # live CLI path, and restores full-trace output parity.
+            run = run.model_copy(
+                update={"child_run_ids": [child.id for child in children]}
+            )
         return run, children
-    finally:
-        connection.close()

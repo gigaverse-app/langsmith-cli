@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
+from threading import Barrier, Lock
+import time
 from typing import Any, Iterator
 
 import pytest
 from langsmith.schemas import Run, TracerSessionResult
 
 from conftest import create_project, create_run, parse_json_output
+from langsmith_cli.archive.bulk import BulkExportSnapshot
 from langsmith_cli.main import cli
 
 
@@ -87,6 +91,367 @@ def test_sync_command_routes_projects_and_reports_unmatched(
     }
     assert payload["unmatched_projects"] == ["qa/unrouted"]
     assert all(item["route"] == "dev" for item in payload["processed"])
+
+
+def test_sync_command_threads_managed_bulk_provider_into_each_due_window(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    runner,
+) -> None:
+    from langsmith_cli.commands import archive as archive_commands
+
+    client = FakeArchiveClient([create_project(name="dev/agent")], [])
+    monkeypatch.setattr(archive_commands, "get_or_create_client", lambda ctx: client)
+    windows: list[tuple[datetime, datetime]] = []
+    factory_options: dict[str, object] = {}
+
+    class FakeManagedExporter:
+        def export_window(
+            self,
+            *,
+            project_id: str,
+            start_time: datetime,
+            end_time: datetime,
+            excluded_export_ids: frozenset[str],
+        ) -> BulkExportSnapshot:
+            windows.append((start_time, end_time))
+            export_id = (
+                "62345678-1234-5678-1234-567812345678"
+                if len(windows) == 1
+                else "72345678-1234-5678-1234-567812345678"
+            )
+            return BulkExportSnapshot(
+                export_id=export_id,
+                start_time=start_time,
+                end_time=end_time,
+                run_count=0,
+                file_uris=(),
+            )
+
+    def build_exporter(client: object, **kwargs: object) -> FakeManagedExporter:
+        factory_options.update(kwargs)
+        return FakeManagedExporter()
+
+    monkeypatch.setattr(
+        archive_commands.LangSmithBulkExporter,
+        "from_langsmith_client",
+        staticmethod(build_exporter),
+    )
+    result = runner.invoke(
+        cli,
+        [
+            "--json",
+            "archive",
+            "sync",
+            "--config",
+            str(_write_config(tmp_path)),
+            "--route",
+            "dev",
+            "--today",
+            "2026-08-21",
+            "--bulk-export-destination-id",
+            "42345678-1234-5678-1234-567812345678",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = parse_json_output(result.output)
+    assert len(windows) == 2
+    assert {item["provider"] for item in payload["processed"]} == {"bulk_export"}
+    assert factory_options == {
+        "destination_id": "42345678-1234-5678-1234-567812345678",
+        "archive_uri": str(tmp_path / "dev-archive"),
+    }
+
+
+def test_bulk_backfill_submits_all_projects_before_importing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    runner,
+) -> None:
+    from langsmith_cli.archive.backfill import BackfillImportResult
+    from langsmith_cli.commands import archive as archive_commands
+
+    projects = [
+        create_project(name="dev/agent"),
+        create_project(
+            name="dev/other",
+            project_id="22345678-1234-5678-1234-567812345678",
+        ),
+        create_project(
+            name="stg/not-selected",
+            project_id="32345678-1234-5678-1234-567812345678",
+        ),
+        create_project(
+            name="qa/unrouted",
+            project_id="52345678-1234-5678-1234-567812345678",
+        ),
+    ]
+    client = FakeArchiveClient(projects, [])
+    monkeypatch.setattr(archive_commands, "get_or_create_client", lambda ctx: client)
+    events: list[str] = []
+    event_lock = Lock()
+    import_barrier = Barrier(2, timeout=2)
+
+    class FakeManagedExporter:
+        def begin_window(self, **kwargs: object) -> BulkExportSnapshot:
+            project_id = str(kwargs["project_id"])
+            events.append(f"begin:{project_id}")
+            return BulkExportSnapshot(
+                export_id=project_id,
+                start_time=datetime(2026, 8, 18, tzinfo=timezone.utc),
+                end_time=datetime(2026, 8, 20, tzinfo=timezone.utc),
+                run_count=0,
+                file_uris=(),
+            )
+
+        def complete_exports(
+            self, jobs: list[BulkExportSnapshot]
+        ) -> Iterator[BulkExportSnapshot]:
+            for job in reversed(jobs):
+                events.append(f"complete:{job.export_id}")
+                yield job
+
+    exporter = FakeManagedExporter()
+    factory_options: dict[str, object] = {}
+
+    def build_exporter(client: object, **kwargs: object) -> FakeManagedExporter:
+        factory_options.update(kwargs)
+        return exporter
+
+    monkeypatch.setattr(
+        archive_commands.LangSmithBulkExporter,
+        "from_langsmith_client",
+        staticmethod(build_exporter),
+    )
+
+    def import_snapshot(
+        store: object,
+        *,
+        project_id: str,
+        project_name: str,
+        snapshot: BulkExportSnapshot,
+    ) -> BackfillImportResult:
+        assert snapshot.export_id == project_id
+        with event_lock:
+            events.append(f"import-start:{project_id}")
+        import_barrier.wait()
+        with event_lock:
+            events.append(f"import-end:{project_id}")
+        return BackfillImportResult(
+            export_id=f"export-{project_name}",
+            imported_days=2,
+            skipped_days=0,
+            canonical_run_count=7,
+        )
+
+    monkeypatch.setattr(archive_commands, "import_backfill_snapshot", import_snapshot)
+    result = runner.invoke(
+        cli,
+        [
+            "--json",
+            "archive",
+            "backfill",
+            "--config",
+            str(_write_config(tmp_path)),
+            "--route",
+            "dev",
+            "--start-date",
+            "2026-08-18",
+            "--end-date",
+            "2026-08-20",
+            "--bulk-export-destination-id",
+            "42345678-1234-5678-1234-567812345678",
+            "--import-workers",
+            "2",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert events[:2] == [
+        f"begin:{projects[0].id}",
+        f"begin:{projects[1].id}",
+    ]
+    assert events.index(f"complete:{projects[1].id}") < events.index(
+        f"import-start:{projects[1].id}"
+    )
+    assert events.index(f"complete:{projects[0].id}") < events.index(
+        f"import-start:{projects[0].id}"
+    )
+    start_events = {event for event in events if event.startswith("import-start:")}
+    end_events = {event for event in events if event.startswith("import-end:")}
+    assert start_events == {
+        f"import-start:{projects[0].id}",
+        f"import-start:{projects[1].id}",
+    }
+    assert end_events == {
+        f"import-end:{projects[0].id}",
+        f"import-end:{projects[1].id}",
+    }
+    assert max(events.index(event) for event in start_events) < min(
+        events.index(event) for event in end_events
+    )
+    payload = parse_json_output(result.output)
+    assert [item["project_name"] for item in payload["projects"]] == [
+        "dev/agent",
+        "dev/other",
+    ]
+    assert payload["unmatched_projects"] == ["qa/unrouted"]
+    assert factory_options["timeout_seconds"] == 73 * 60 * 60
+
+
+def test_bulk_backfill_rejects_one_export_selected_for_multiple_projects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    runner,
+) -> None:
+    from langsmith_cli.commands import archive as archive_commands
+
+    client = FakeArchiveClient(
+        [
+            create_project(name="dev/agent"),
+            create_project(
+                name="dev/other",
+                project_id="22345678-1234-5678-1234-567812345678",
+            ),
+        ],
+        [],
+    )
+    monkeypatch.setattr(archive_commands, "get_or_create_client", lambda ctx: client)
+    duplicate = BulkExportSnapshot(
+        export_id="42345678-1234-5678-1234-567812345678",
+        start_time=datetime(2026, 8, 18, tzinfo=timezone.utc),
+        end_time=datetime(2026, 8, 20, tzinfo=timezone.utc),
+        run_count=0,
+        file_uris=(),
+    )
+
+    class DuplicateExporter:
+        def begin_window(self, **kwargs: object) -> BulkExportSnapshot:
+            return duplicate
+
+    monkeypatch.setattr(
+        archive_commands.LangSmithBulkExporter,
+        "from_langsmith_client",
+        staticmethod(lambda client, **kwargs: DuplicateExporter()),
+    )
+    result = runner.invoke(
+        cli,
+        [
+            "archive",
+            "backfill",
+            "--config",
+            str(_write_config(tmp_path)),
+            "--route",
+            "dev",
+            "--start-date",
+            "2026-08-18",
+            "--end-date",
+            "2026-08-20",
+            "--bulk-export-destination-id",
+            "42345678-1234-5678-1234-567812345678",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "was selected for multiple projects" in result.output
+
+
+def test_bulk_backfill_rejects_duplicate_project_identity_before_export(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    runner,
+) -> None:
+    """INVARIANT: one backfill invocation submits at most one job per project ID."""
+    from langsmith_cli.commands import archive as archive_commands
+
+    duplicate_id = "22345678-1234-5678-1234-567812345678"
+    client = FakeArchiveClient(
+        [
+            create_project(name="dev/agent", project_id=duplicate_id),
+            create_project(name="dev/renamed-agent", project_id=duplicate_id),
+        ],
+        [],
+    )
+    monkeypatch.setattr(archive_commands, "get_or_create_client", lambda ctx: client)
+
+    class ExportMustNotStart:
+        def begin_window(self, **kwargs: object) -> None:
+            raise AssertionError("duplicate project identity reached export submission")
+
+    monkeypatch.setattr(
+        archive_commands.LangSmithBulkExporter,
+        "from_langsmith_client",
+        staticmethod(lambda client, **kwargs: ExportMustNotStart()),
+    )
+    result = runner.invoke(
+        cli,
+        [
+            "archive",
+            "backfill",
+            "--config",
+            str(_write_config(tmp_path)),
+            "--route",
+            "dev",
+            "--start-date",
+            "2026-08-18",
+            "--end-date",
+            "2026-08-20",
+            "--bulk-export-destination-id",
+            "42345678-1234-5678-1234-567812345678",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "Duplicate LangSmith project ID" in result.output
+
+
+@pytest.mark.parametrize(
+    ("project_name", "message"),
+    (
+        ("stg/not-selected", "belongs to route staging"),
+        ("qa/unrouted", "No archive route matches project"),
+    ),
+)
+def test_bulk_backfill_rejects_explicit_project_outside_route(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    runner,
+    project_name: str,
+    message: str,
+) -> None:
+    from langsmith_cli.commands import archive as archive_commands
+
+    client = FakeArchiveClient([create_project(name=project_name)], [])
+    monkeypatch.setattr(archive_commands, "get_or_create_client", lambda ctx: client)
+    monkeypatch.setattr(
+        archive_commands.LangSmithBulkExporter,
+        "from_langsmith_client",
+        staticmethod(lambda client, **kwargs: object()),
+    )
+    result = runner.invoke(
+        cli,
+        [
+            "--json",
+            "archive",
+            "backfill",
+            "--config",
+            str(_write_config(tmp_path)),
+            "--route",
+            "dev",
+            "--project",
+            project_name,
+            "--start-date",
+            "2026-08-18",
+            "--end-date",
+            "2026-08-20",
+            "--bulk-export-destination-id",
+            "42345678-1234-5678-1234-567812345678",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert message in parse_json_output(result.output)["message"]
 
 
 def test_sync_command_rejects_project_from_another_selected_route(
@@ -171,6 +536,140 @@ def test_status_command_lists_published_manifests(
     assert manifests[0]["canonical_run_count"] == 1
 
 
+def test_status_reads_independent_manifests_concurrently(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    runner,
+) -> None:
+    """
+    Archive size must not turn status into one network round trip per manifest.
+
+    Falsifies: a status implementation that lists keys quickly but then performs
+    every independent S3 manifest GET serially.
+    """
+    from langsmith_cli.archive.models import ArchivePhase
+    from langsmith_cli.archive.storage import create_store
+    from langsmith_cli.archive.sync import sync_project_day
+    from langsmith_cli.commands import archive as archive_commands
+
+    store = create_store(str(tmp_path / "dev-archive"))
+    for index in range(4):
+        sync_project_day(
+            FakeArchiveClient([], [create_run()]),
+            store,
+            project_id=f"{index + 1}2345678-1234-5678-1234-567812345678",
+            project_name=f"dev/agent-{index}",
+            trace_date=datetime(2026, 8, 19, tzinfo=timezone.utc).date(),
+            phase=ArchivePhase.PRIMARY,
+        )
+
+    class TrackingStore:
+        def __init__(self) -> None:
+            self.active = 0
+            self.max_active = 0
+            self.lock = Lock()
+
+        def list_keys(self, prefix: str) -> list[str]:
+            return store.list_keys(prefix)
+
+        def get_text_with_version(self, key: str):
+            with self.lock:
+                self.active += 1
+                self.max_active = max(self.max_active, self.active)
+            try:
+                time.sleep(0.02)
+                return store.get_text_with_version(key)
+            finally:
+                with self.lock:
+                    self.active -= 1
+
+    tracking_store = TrackingStore()
+    monkeypatch.setattr(archive_commands, "create_store", lambda uri: tracking_store)
+
+    result = runner.invoke(
+        cli,
+        [
+            "--json",
+            "archive",
+            "status",
+            "--config",
+            str(_write_config(tmp_path)),
+            "--route",
+            "dev",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert len(parse_json_output(result.output)) == 4
+    assert tracking_store.max_active >= 2
+
+
+def test_status_summary_is_key_derived_and_never_downloads_manifests(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    runner,
+) -> None:
+    """A completion count stays one S3 LIST operation regardless of matrix size."""
+    from langsmith_cli.commands import archive as archive_commands
+
+    class SummaryOnlyStore:
+        def list_keys(self, prefix: str) -> list[str]:
+            assert prefix == "manifests"
+            return [
+                "manifests/project_id=12345678-1234-5678-1234-567812345678/date=2026-08-18.json",
+                "manifests/project_id=12345678-1234-5678-1234-567812345678/date=2026-08-19.json",
+                "manifests/project_id=22345678-1234-5678-1234-567812345678/date=2026-08-19.json",
+                "manifests/not-a-partition.json",
+            ]
+
+        def get_text_with_version(self, key: str) -> None:
+            raise AssertionError(f"summary downloaded manifest {key}")
+
+    monkeypatch.setattr(
+        archive_commands, "create_store", lambda uri: SummaryOnlyStore()
+    )
+    result = runner.invoke(
+        cli,
+        [
+            "--json",
+            "archive",
+            "status",
+            "--summary",
+            "--config",
+            str(_write_config(tmp_path)),
+            "--route",
+            "dev",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = parse_json_output(result.output)
+    assert payload["manifest_contents_verified"] is False
+    assert payload["routes"] == [
+        {
+            "route": "dev",
+            "archive_uri": str(tmp_path / "dev-archive"),
+            "manifest_count": 3,
+            "project_count": 2,
+            "first_date": "2026-08-18",
+            "last_date": "2026-08-19",
+            "invalid_manifest_keys": ["manifests/not-a-partition.json"],
+        }
+    ]
+
+
+def test_status_summary_cannot_claim_manifest_body_verification() -> None:
+    """Key-derived evidence must never be mislabeled as a full body audit."""
+    from pydantic import ValidationError
+
+    from langsmith_cli.commands.archive import ArchiveStatusSummary
+
+    with pytest.raises(ValidationError):
+        ArchiveStatusSummary.model_validate(
+            {"manifest_contents_verified": True, "routes": []}
+        )
+
+
 def test_sync_command_surfaces_safe_retry_on_concurrent_publication(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -245,7 +744,9 @@ def test_archive_get_reports_missing_run(
 ) -> None:
     from langsmith_cli.archive import query as archive_query
 
-    def missing_run(run_id: str, *, follow_children: bool) -> tuple[Run, list[Run]]:
+    def missing_run(
+        run_id: str, *, follow_children: bool, **kwargs: object
+    ) -> tuple[Run, list[Run]]:
         raise LookupError(f"Archived run not found: {run_id}")
 
     monkeypatch.setattr(archive_query, "read_archived_run", missing_run)
@@ -256,6 +757,61 @@ def test_archive_get_reports_missing_run(
 
     assert result.exit_code != 0
     assert "Archived run not found" in parse_json_output(result.output)["message"]
+
+
+def test_archive_get_forwards_partition_pruning_hints(
+    monkeypatch: pytest.MonkeyPatch,
+    runner,
+) -> None:
+    from langsmith_cli.archive import query as archive_query
+
+    observed: dict[str, object] = {}
+
+    def read_run(
+        run_id: str,
+        *,
+        follow_children: bool,
+        project: str | None,
+        project_id: str | None,
+        since: object,
+        before: object,
+    ) -> tuple[Run, list[Run]]:
+        observed.update(
+            run_id=run_id,
+            follow_children=follow_children,
+            project=project,
+            project_id=project_id,
+            since=since,
+            before=before,
+        )
+        return create_run(id_str=run_id), []
+
+    monkeypatch.setattr(archive_query, "read_archived_run", read_run)
+    run_id = "12345678-1234-5678-1234-567812345678"
+    result = runner.invoke(
+        cli,
+        [
+            "--json",
+            "runs",
+            "get",
+            run_id,
+            "--archive",
+            "--project",
+            "dev/agent",
+            "--project-id",
+            "22345678-1234-5678-1234-567812345678",
+            "--since",
+            "2026-08-18",
+            "--before",
+            "2026-08-20",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert observed["project"] == "dev/agent"
+    assert observed["project_id"] == "22345678-1234-5678-1234-567812345678"
+    assert str(observed["since"]) == "2026-08-18 00:00:00"
+    assert str(observed["before"]) == "2026-08-20 00:00:00"
 
 
 def test_archive_get_latest_maps_filters_and_fields(

@@ -64,4 +64,3 @@ Examples:
 # Examples with metadata
 --filter 'and(eq(metadata_key, "difficulty"), eq(metadata_value, "hard"))'
 ```
-

@@ -37,6 +37,26 @@ if TYPE_CHECKING:
     is_flag=True,
     help="Read canonical Parquet from the configured archive.",
 )
+@click.option(
+    "--project",
+    help="Exact project name used to prune archive partitions.",
+)
+@click.option(
+    "--project-id",
+    help="Project UUID used to prune archive partitions.",
+)
+@click.option(
+    "--since",
+    help="Archive partition lower bound (ISO or shorthand: '7d', '24h').",
+)
+@click.option(
+    "--before",
+    help="Archive partition upper bound (ISO or shorthand: '7d', '24h').",
+)
+@click.option(
+    "--last",
+    help="Archive partition duration (e.g. '24h', '7d').",
+)
 @fields_option(
     "Comma-separated field names to include (e.g., 'id,name,inputs,error'). Reduces context usage."
 )
@@ -51,7 +71,19 @@ if TYPE_CHECKING:
     ),
 )
 @click.pass_context
-def get_run(ctx, run_id, archive, fields, output, follow_children):
+def get_run(
+    ctx,
+    run_id,
+    archive,
+    project,
+    project_id,
+    since,
+    before,
+    last,
+    fields,
+    output,
+    follow_children,
+):
     """Fetch details of a single run.
 
     Use --follow-children when the run is a parent chain (e.g. RunnableSequence)
@@ -64,9 +96,18 @@ def get_run(ctx, run_id, archive, fields, output, follow_children):
     """
     if archive:
         from langsmith_cli.archive.query import read_archived_run
+        from langsmith_cli.time_parsing import parse_time_range
 
+        since_dt, before_dt = parse_time_range(since=since, before=before, last=last)
         try:
-            run, children = read_archived_run(run_id, follow_children=follow_children)
+            run, children = read_archived_run(
+                run_id,
+                follow_children=follow_children,
+                project=project,
+                project_id=project_id,
+                since=since_dt,
+                before=before_dt,
+            )
         except LookupError as exc:
             raise click.ClickException(str(exc)) from exc
         data = filter_fields(run, fields)
@@ -76,6 +117,12 @@ def get_run(ctx, run_id, archive, fields, output, follow_children):
             ctx, data, console, output=output, render_fn=render_run_details
         )
         return
+
+    if project or project_id or since or before or last:
+        raise click.ClickException(
+            "--project, --project-id, --since, --before, and --last are archive "
+            "partition hints and require --archive"
+        )
 
     client = get_or_create_client(ctx)
     run = client.read_run(run_id)

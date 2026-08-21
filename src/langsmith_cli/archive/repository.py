@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 import json
-from typing import cast
+import re
+from typing import Callable, TypeVar, cast
 
 from langsmith_cli.archive.models import (
     ArchiveManifest,
@@ -24,8 +26,25 @@ class ManifestSnapshot:
     version: str
 
 
+MetadataRecord = TypeVar("MetadataRecord")
+MAX_METADATA_READ_WORKERS = 16
+_MANIFEST_KEY_RE = re.compile(
+    r"^manifests/project_id=([^/]+)/date=(\d{4}-\d{2}-\d{2})\.json$"
+)
+
+
 def manifest_key(project_id: str, trace_date: str) -> str:
     return f"manifests/project_id={project_id}/date={trace_date}.json"
+
+
+def manifest_identity_from_key(key: str) -> tuple[str, date] | None:
+    """Parse the immutable project/date identity encoded in a manifest key."""
+    match = _MANIFEST_KEY_RE.fullmatch(key)
+    return (
+        (match.group(1), date.fromisoformat(match.group(2)))
+        if match is not None
+        else None
+    )
 
 
 def project_key(project_id: str) -> str:
@@ -63,15 +82,21 @@ def ensure_project_record(
 
 def list_project_records(store: ArchiveStore) -> tuple[ArchiveProject, ...]:
     keys = store.list_keys("projects")
-    if len(keys) < 2:
-        return tuple(_read_project_record(store, key) for key in keys)
+    return _read_independent_metadata(
+        keys, lambda key: _read_project_record(store, key)
+    )
 
-    # Catalog records are independent, tiny objects. Parallel GETs keep CLI query
-    # and idempotent sync latency bounded as organizations add projects.
-    from concurrent.futures import ThreadPoolExecutor
 
-    with ThreadPoolExecutor(max_workers=min(16, len(keys))) as executor:
-        return tuple(executor.map(lambda key: _read_project_record(store, key), keys))
+def read_manifests(store: ArchiveStore, keys: list[str]) -> tuple[ArchiveManifest, ...]:
+    """Read independent manifests with bounded remote I/O concurrency."""
+
+    def read_known_manifest(key: str) -> ArchiveManifest:
+        manifest = read_manifest(store, key, known_exists=True)
+        if manifest is None:
+            raise RuntimeError(f"Listed archive manifest disappeared: {key}")
+        return manifest
+
+    return _read_independent_metadata(keys, read_known_manifest)
 
 
 def read_manifest(
@@ -134,6 +159,23 @@ def _read_project_record(store: ArchiveStore, key: str) -> ArchiveProject:
     if key != project_key(project.project_id):
         raise ValueError("Archive project object key does not match its project_id")
     return project
+
+
+def _read_independent_metadata(
+    keys: list[str], reader: Callable[[str], MetadataRecord]
+) -> tuple[MetadataRecord, ...]:
+    if len(keys) < 2:
+        return tuple(reader(key) for key in keys)
+
+    # Metadata objects are immutable, tiny, and independent. One bounded reader
+    # serves project catalogs, status, and archived queries so those paths cannot
+    # drift back to one S3 round trip at a time as the archive grows.
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(
+        max_workers=min(MAX_METADATA_READ_WORKERS, len(keys))
+    ) as executor:
+        return tuple(executor.map(reader, keys))
 
 
 def _validate_manifest_payload(raw: object, key: str) -> ArchiveManifestDict:

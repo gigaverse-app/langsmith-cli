@@ -100,8 +100,11 @@ langsmith-cli --json runs get <id> --fields inputs,outputs,error
 | Scoped content search | `langsmith-cli --json runs search "pattern" --in outputs --fields id,name,outputs --limit 20` |
 | Search cached runs | `langsmith-cli --json runs cache grep "pattern" -E --grep-in outputs --project <name> --fields id,name,outputs` |
 | Search S3 archive | `langsmith-cli --json runs search "pattern" --archive --project <name> --fields id,name,status` |
+| Get archived run efficiently | `langsmith-cli --json runs get <id> --archive --project <name> --last 1d --fields inputs,outputs` |
 | Sync trace archive | `langsmith-cli --json archive sync --route <name>` |
-| Check archive status | `langsmith-cli --json archive status --all-routes` |
+| Sync via Bulk Export | `langsmith-cli --json archive sync --route <name> --bulk-export-destination-id <uuid>` |
+| Backfill archive | `langsmith-cli --json archive backfill --route <name> --start-date <inclusive> --end-date <exclusive> --import-workers 8 --bulk-export-destination-id <uuid>` |
+| Check archive status | `langsmith-cli --json archive status --summary --all-routes` |
 | Download cache | `langsmith-cli --json runs cache download --project <name> --last 7d` |
 | List cache | `langsmith-cli --json runs cache list --fields project_name,run_count,path` |
 | Discover cache schema | `langsmith-cli --json runs cache schema --project <name> --include outputs` |
@@ -134,6 +137,7 @@ When your task matches one of the sections below, **you MUST load that reference
 ### → Read [references/archive.md](references/archive.md) when:
 - You need to configure project-to-S3 routing such as `dev/**` and `stg/**`
 - You need to operate D+2 primary and D+12 reconciliation exports
+- You need a managed Bulk Export backfill for a large historical date range
 - You need to query retained Parquet with `--archive` and DuckDB
 
 ### → Read [references/search.md](references/search.md) when:
