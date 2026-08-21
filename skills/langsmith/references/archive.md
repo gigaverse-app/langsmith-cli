@@ -4,6 +4,38 @@ The archive is organization-operated. `langsmith-cli` does not own a LangSmith k
 AWS credentials, scheduler, or bucket. Supply credentials through the runtime
 environment and AWS default credential chain.
 
+## Why archive instead of extending every trace?
+
+LangSmith's [usage and billing documentation](https://docs.langchain.com/langsmith/usage-and-billing#data-retention)
+currently describes two trace tiers:
+
+| Tier | Retention | Published trace price |
+|---|---:|---:|
+| Base | 14 days | 0.05¢ |
+| Extended | 400 days | 0.50¢ total |
+
+The 0.45¢ extended-retention upgrade makes an extended trace 10x the base trace
+price. At one million traces, that is $500 for base charges versus $5,000 if every
+trace is extended—an additional $4,500 before any plan allowances or negotiated
+pricing. Verify the official documentation before using these figures for a budget.
+
+Online evaluators and automation rules can extend retention when that setting is
+enabled. API/SDK feedback can do the same when it explicitly requests retention
+extension. A matching run upgrades the whole trace; thread-level rules can upgrade
+every trace in the thread. Retention extension is enabled by default for new online
+evaluators and automation rules according to the current documentation.
+
+The archive keeps LangSmith useful for live debugging while moving long-term history
+to inexpensive, organization-owned storage:
+
+```text
+live LangSmith API ──daily export──▶ private S3 Parquet ──DuckDB──▶ --archive
+     14 days               D+2 + D+12              long-term searchable history
+```
+
+This changes retention economics only. It does not avoid LangSmith's base trace
+charge, and the organization still pays its own object-storage and request costs.
+
 ## Route configuration
 
 ```yaml

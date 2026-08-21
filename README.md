@@ -62,8 +62,79 @@ Traditional tools are slow, verbose, and waste tokens. **LangSmith CLI** is diff
 | **Tag Discovery** | `runs tags` auto-discover patterns | ❌ |
 | **File Operations** | View/analyze offline with globs | ❌ |
 | **Export Formats** | JSON, CSV, YAML | JSON only |
+| **Long-term Trace Archive** | Private S3 + DuckDB search | ❌ |
 
 **100% Feature Parity** + **10x Better QoL** 🚀
+
+---
+
+## 💸 Keep Trace History Without the 10x Retention Bill
+
+LangSmith's published billing model currently retains base traces for **14 days**.
+Extended retention keeps them for 400 days, but an extended trace costs **10x** as
+much: a 0.05¢ base charge plus a 0.45¢ retention upgrade, or 0.50¢ total per trace.
+Online evaluators and automation rules can automatically upgrade an entire trace—or
+every trace in a matched thread—when retention extension is enabled. API/SDK feedback
+can also upgrade a trace when it explicitly requests retention extension.
+
+Source: [LangSmith usage and billing](https://docs.langchain.com/langsmith/usage-and-billing#data-retention).
+Check the official page for current pricing before making budget decisions.
+
+| Monthly traces | Base, 14 days | Extended, 400 days | Added retention cost |
+|---:|---:|---:|---:|
+| 100,000 | $50 | $500 | **$450** |
+| 1,000,000 | $500 | $5,000 | **$4,500** |
+| 10,000,000 | $5,000 | $50,000 | **$45,000** |
+
+These are illustrations using the published per-trace rates, before free allowances,
+plan-specific terms, negotiated pricing, or taxes.
+
+`langsmith-cli` provides an integrated alternative: keep LangSmith's short-retention
+tier for live debugging, archive verified traces to organization-owned private S3,
+then query the retained Parquet directly with DuckDB.
+
+```text
+LangSmith live traces (14 days)
+          │
+          ├── D+2 primary export ───────┐
+          └── D+12 reconciliation ──────┤ dedupe by run ID
+                                        ▼
+                              private S3 / Parquet
+                                        │
+                         runs ... --archive (DuckDB)
+```
+
+```yaml
+# archive.yaml
+routes:
+  - name: dev
+    project_pattern: "dev/**"
+    archive_uri: s3://my-langsmith-traces-dev/langsmith
+  - name: production
+    project_pattern: "prd/**"
+    archive_uri: s3://my-langsmith-traces-prd/langsmith
+```
+
+```bash
+export LANGSMITH_ARCHIVE_CONFIG=/etc/langsmith-cli/archive.yaml
+
+# Run daily from cron, Kubernetes CronJob, or another organization-owned scheduler.
+langsmith-cli --json archive sync --all-routes --retention-days 14
+
+# Historical reads use S3 and do not require a LangSmith API key.
+langsmith-cli --json runs list --archive --project prd/my-agent --last 90d
+langsmith-cli --json runs search "timeout" --archive --project prd/my-agent
+langsmith-cli --json runs get <run-id> --archive --follow-children
+```
+
+The CLI owns the mechanism, not your infrastructure: your organization supplies the
+scheduler, LangSmith API key for exports, AWS workload identity, private buckets,
+encryption, lifecycle policy, and reader IAM. Archiving avoids extended-retention
+upgrade charges; it does **not** remove LangSmith's base ingestion charge or your own
+S3 storage and request costs.
+
+See [S3 Trace Archive](skills/langsmith/references/archive.md) for routing, scheduling,
+IAM boundaries, retry safety, and supported archive queries.
 
 ---
 
@@ -392,6 +463,8 @@ runs pricing           # Model pricing coverage check
 runs cache download    # Download runs to local JSONL cache
 runs cache list        # List cached projects
 runs cache clear       # Clear cached data
+archive sync           # Export and reconcile traces to private S3
+archive status         # Inspect published archive manifests
 datasets list          # List datasets
 datasets create        # Create new dataset
 datasets push          # Bulk upload from JSONL

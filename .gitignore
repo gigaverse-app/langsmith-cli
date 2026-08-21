@@ -221,4 +221,5 @@ __marimo__/
 
 # kaizen plugin runtime artifacts (local-only)
 .claude/kaizen/
+.firecrawl/
 data/
