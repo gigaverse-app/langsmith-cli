@@ -157,7 +157,10 @@ queued LangSmith export complete sooner; they only accelerate publication after 
 export is ready. On an 11 GiB host, 48 aggregate workers briefly drove two large
 DuckDB processes near 10 GiB each and into swap; scale down aggregate workers for the
 long tail instead of assuming the broad-middle throughput will hold for the largest
-projects.
+projects. Each archive DuckDB connection is limited to 1 GiB and owns a unique spill
+directory. That bounds connection memory and prevents concurrent processes from
+truncating each other's spill files; aggregate process overhead still makes worker
+count an operator-controlled capacity decision.
 
 ### Proving completion
 
