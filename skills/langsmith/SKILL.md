@@ -103,7 +103,7 @@ langsmith-cli --json runs get <id> --fields inputs,outputs,error
 | Get archived run efficiently | `langsmith-cli --json runs get <id> --archive --project <name> --last 1d --fields inputs,outputs` |
 | Sync trace archive | `langsmith-cli --json archive sync --route <name>` |
 | Sync via Bulk Export | `langsmith-cli --json archive sync --route <name> --bulk-export-destination-id <uuid>` |
-| Backfill archive | `langsmith-cli --json archive backfill --route <name> --start-date <inclusive> --end-date <exclusive> --bulk-export-destination-id <uuid>` |
+| Backfill archive | `langsmith-cli --json archive backfill --route <name> --start-date <inclusive> --end-date <exclusive> --import-workers 8 --bulk-export-destination-id <uuid>` |
 | Check archive status | `langsmith-cli --json archive status --all-routes` |
 | Download cache | `langsmith-cli --json runs cache download --project <name> --last 7d` |
 | List cache | `langsmith-cli --json runs cache list --fields project_name,run_count,path` |

@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
+from threading import Barrier, Lock
 from typing import Any, Iterator
 
 import pytest
 from langsmith.schemas import Run, TracerSessionResult
 
 from conftest import create_project, create_run, parse_json_output
+from langsmith_cli.archive.bulk import BulkExportSnapshot
 from langsmith_cli.main import cli
 
 
@@ -89,6 +92,77 @@ def test_sync_command_routes_projects_and_reports_unmatched(
     assert all(item["route"] == "dev" for item in payload["processed"])
 
 
+def test_sync_command_threads_managed_bulk_provider_into_each_due_window(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    runner,
+) -> None:
+    from langsmith_cli.commands import archive as archive_commands
+
+    client = FakeArchiveClient([create_project(name="dev/agent")], [])
+    monkeypatch.setattr(archive_commands, "get_or_create_client", lambda ctx: client)
+    windows: list[tuple[datetime, datetime]] = []
+    factory_options: dict[str, object] = {}
+
+    class FakeManagedExporter:
+        def export_window(
+            self,
+            *,
+            project_id: str,
+            start_time: datetime,
+            end_time: datetime,
+            excluded_export_ids: frozenset[str],
+        ) -> BulkExportSnapshot:
+            windows.append((start_time, end_time))
+            export_id = (
+                "62345678-1234-5678-1234-567812345678"
+                if len(windows) == 1
+                else "72345678-1234-5678-1234-567812345678"
+            )
+            return BulkExportSnapshot(
+                export_id=export_id,
+                start_time=start_time,
+                end_time=end_time,
+                run_count=0,
+                file_uris=(),
+            )
+
+    def build_exporter(client: object, **kwargs: object) -> FakeManagedExporter:
+        factory_options.update(kwargs)
+        return FakeManagedExporter()
+
+    monkeypatch.setattr(
+        archive_commands.LangSmithBulkExporter,
+        "from_langsmith_client",
+        staticmethod(build_exporter),
+    )
+    result = runner.invoke(
+        cli,
+        [
+            "--json",
+            "archive",
+            "sync",
+            "--config",
+            str(_write_config(tmp_path)),
+            "--route",
+            "dev",
+            "--today",
+            "2026-08-21",
+            "--bulk-export-destination-id",
+            "42345678-1234-5678-1234-567812345678",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = parse_json_output(result.output)
+    assert len(windows) == 2
+    assert {item["provider"] for item in payload["processed"]} == {"bulk_export"}
+    assert factory_options == {
+        "destination_id": "42345678-1234-5678-1234-567812345678",
+        "archive_uri": str(tmp_path / "dev-archive"),
+    }
+
+
 def test_bulk_backfill_submits_all_projects_before_importing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -115,16 +189,27 @@ def test_bulk_backfill_submits_all_projects_before_importing(
     client = FakeArchiveClient(projects, [])
     monkeypatch.setattr(archive_commands, "get_or_create_client", lambda ctx: client)
     events: list[str] = []
+    event_lock = Lock()
+    import_barrier = Barrier(2, timeout=2)
 
     class FakeManagedExporter:
-        def begin_window(self, **kwargs: object) -> str:
+        def begin_window(self, **kwargs: object) -> BulkExportSnapshot:
             project_id = str(kwargs["project_id"])
             events.append(f"begin:{project_id}")
-            return project_id
+            return BulkExportSnapshot(
+                export_id=project_id,
+                start_time=datetime(2026, 8, 18, tzinfo=timezone.utc),
+                end_time=datetime(2026, 8, 20, tzinfo=timezone.utc),
+                run_count=0,
+                file_uris=(),
+            )
 
-        def complete_export(self, job: str) -> str:
-            events.append(f"complete:{job}")
-            return job
+        def complete_exports(
+            self, jobs: list[BulkExportSnapshot]
+        ) -> Iterator[BulkExportSnapshot]:
+            for job in reversed(jobs):
+                events.append(f"complete:{job.export_id}")
+                yield job
 
     exporter = FakeManagedExporter()
     factory_options: dict[str, object] = {}
@@ -144,10 +229,14 @@ def test_bulk_backfill_submits_all_projects_before_importing(
         *,
         project_id: str,
         project_name: str,
-        snapshot: str,
+        snapshot: BulkExportSnapshot,
     ) -> BackfillImportResult:
-        assert snapshot == project_id
-        events.append(f"import:{project_id}")
+        assert snapshot.export_id == project_id
+        with event_lock:
+            events.append(f"import-start:{project_id}")
+        import_barrier.wait()
+        with event_lock:
+            events.append(f"import-end:{project_id}")
         return BackfillImportResult(
             export_id=f"export-{project_name}",
             imported_days=2,
@@ -172,18 +261,35 @@ def test_bulk_backfill_submits_all_projects_before_importing(
             "2026-08-20",
             "--bulk-export-destination-id",
             "42345678-1234-5678-1234-567812345678",
+            "--import-workers",
+            "2",
         ],
     )
 
     assert result.exit_code == 0, result.output
-    assert events == [
+    assert events[:2] == [
         f"begin:{projects[0].id}",
         f"begin:{projects[1].id}",
-        f"complete:{projects[0].id}",
-        f"import:{projects[0].id}",
-        f"complete:{projects[1].id}",
-        f"import:{projects[1].id}",
     ]
+    assert events.index(f"complete:{projects[1].id}") < events.index(
+        f"import-start:{projects[1].id}"
+    )
+    assert events.index(f"complete:{projects[0].id}") < events.index(
+        f"import-start:{projects[0].id}"
+    )
+    start_events = {event for event in events if event.startswith("import-start:")}
+    end_events = {event for event in events if event.startswith("import-end:")}
+    assert start_events == {
+        f"import-start:{projects[0].id}",
+        f"import-start:{projects[1].id}",
+    }
+    assert end_events == {
+        f"import-end:{projects[0].id}",
+        f"import-end:{projects[1].id}",
+    }
+    assert max(events.index(event) for event in start_events) < min(
+        events.index(event) for event in end_events
+    )
     payload = parse_json_output(result.output)
     assert [item["project_name"] for item in payload["projects"]] == [
         "dev/agent",

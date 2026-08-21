@@ -48,11 +48,13 @@ Historical migration uses one range job per project:
 ```bash
 langsmith-cli --json archive backfill --route production \
   --start-date 2025-08-01 --end-date 2026-08-01 \
+  --import-workers 8 \
   --bulk-export-destination-id <uuid>
 ```
 
 All project jobs are submitted before the CLI waits, letting LangSmith control
-workspace concurrency. Each completed range is converted into sealed daily
+workspace concurrency. Completed jobs are harvested without submission-order
+blocking, and bounded workers convert independent projects into sealed daily
 manifests. Re-running adopts the same range jobs and skips days already sealed.
 
 ## Project routing

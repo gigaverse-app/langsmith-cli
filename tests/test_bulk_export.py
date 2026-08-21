@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, datetime, timezone
 import json
 from pathlib import Path
@@ -181,6 +182,100 @@ def test_bulk_export_wait_is_bounded() -> None:
     exporter = _exporter(timeout_seconds=1, monotonic=lambda: next(clock))
     with pytest.raises(BulkExportTimeoutError, match="did not finish in time"):
         exporter.complete_export(_job(BulkExportStatus.CREATED))
+
+
+def test_bulk_export_batch_harvests_completed_jobs_without_head_of_line_blocking() -> (
+    None
+):
+    queued_export_id = "82345678-1234-5678-1234-567812345678"
+    ready_export_id = "92345678-1234-5678-1234-567812345678"
+    queued_polls = 0
+
+    def request(
+        method: str,
+        path: str,
+        params: dict[str, object] | None,
+        payload: dict[str, object] | None,
+    ) -> object:
+        nonlocal queued_polls
+        if path.startswith("/api/v1/bulk-exports/destinations/"):
+            return _destination_request(method, path, params, payload)
+        if path == f"/api/v1/bulk-exports/{queued_export_id}":
+            queued_polls += 1
+            status = "Created" if queued_polls == 1 else "Completed"
+            return _job_payload(queued_export_id, status, TRACE_START.isoformat())
+        if path == f"/api/v1/bulk-exports/{ready_export_id}/runs":
+            return [_partition_payload(rows_written=0, exported_files=[])]
+        if path == f"/api/v1/bulk-exports/{queued_export_id}/runs":
+            return [_partition_payload(rows_written=0, exported_files=[])]
+        raise AssertionError((method, path))
+
+    queued = replace(_job(BulkExportStatus.CREATED), export_id=queued_export_id)
+    ready = replace(_job(BulkExportStatus.COMPLETED), export_id=ready_export_id)
+
+    completed = list(_exporter(request_json=request).complete_exports((queued, ready)))
+
+    assert [snapshot.export_id for snapshot in completed] == [
+        ready_export_id,
+        queued_export_id,
+    ]
+
+
+def test_bulk_export_batch_harvests_ready_peer_before_reporting_failure() -> None:
+    failed = replace(
+        _job(BulkExportStatus.FAILED),
+        export_id="a2345678-1234-5678-1234-567812345678",
+    )
+    ready = replace(
+        _job(BulkExportStatus.COMPLETED),
+        export_id="b2345678-1234-5678-1234-567812345678",
+    )
+
+    def request(
+        method: str,
+        path: str,
+        params: dict[str, object] | None,
+        payload: dict[str, object] | None,
+    ) -> object:
+        if path.startswith("/api/v1/bulk-exports/destinations/"):
+            return _destination_request(method, path, params, payload)
+        if path == f"/api/v1/bulk-exports/{ready.export_id}/runs":
+            return [_partition_payload(rows_written=0, exported_files=[])]
+        raise AssertionError((method, path))
+
+    snapshots = _exporter(request_json=request).complete_exports((failed, ready))
+
+    assert next(snapshots).export_id == ready.export_id
+    with pytest.raises(
+        BulkExportFailedError, match=f"{failed.export_id} ended as Failed"
+    ):
+        next(snapshots)
+
+
+def test_bulk_export_batch_rejects_duplicate_export_ids() -> None:
+    duplicate = _job(BulkExportStatus.COMPLETED)
+
+    with pytest.raises(ValueError, match="Duplicate bulk export ID"):
+        list(_exporter().complete_exports((duplicate, duplicate)))
+
+
+def test_bulk_export_batch_rejects_polled_request_identity_drift() -> None:
+    queued = _job(BulkExportStatus.CREATED)
+
+    def request(
+        method: str,
+        path: str,
+        params: dict[str, object] | None,
+        payload: dict[str, object] | None,
+    ) -> object:
+        if path.startswith("/api/v1/bulk-exports/destinations/"):
+            return _destination_request(method, path, params, payload)
+        changed = _job_payload(queued.export_id, "Running", TRACE_START.isoformat())
+        changed["session_id"] = "c2345678-1234-5678-1234-567812345678"
+        return changed
+
+    with pytest.raises(ValueError, match="changed request identity"):
+        list(_exporter(request_json=request).complete_exports((queued,)))
 
 
 def test_bulk_export_rejects_destination_outside_archive() -> None:
@@ -380,6 +475,12 @@ def test_bulk_export_builds_from_langsmith_client() -> None:
             "s3://traces-dev",
             "requires a bucket prefix",
         ),
+        (
+            "https://api.smith.langchain.com",
+            DESTINATION_ID,
+            "s3://traces-dev/langsmith/../private",
+            "prefix must be normalized",
+        ),
     ),
 )
 def test_bulk_export_rejects_unsafe_identity_and_storage_configuration(
@@ -487,6 +588,13 @@ def test_bulk_export_polls_then_accepts_complete_empty_partition() -> None:
                 exported_files=["traces-prd/langsmith/bulk/out.parquet"],
             ),
             "outside the configured destination",
+        ),
+        (
+            _partition_payload(
+                rows_written=1,
+                exported_files=["traces-dev/langsmith/bulk/./out.parquet"],
+            ),
+            "path must be normalized",
         ),
         (
             _partition_payload(rows_written=0, exported_files=[], status="Failed"),

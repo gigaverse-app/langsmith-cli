@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from datetime import date, datetime, time as datetime_time, timedelta, timezone
 from enum import Enum
@@ -277,9 +277,71 @@ class LangSmithBulkExporter:
         return self._create_export(project_id, start_time, end_time)
 
     def complete_export(self, job: BulkExportJob) -> BulkExportSnapshot:
+        return next(self.complete_exports((job,)))
+
+    def complete_exports(
+        self, jobs: Iterable[BulkExportJob]
+    ) -> Iterator[BulkExportSnapshot]:
+        """Yield snapshots as jobs complete, independent of submission order."""
+        job_list = tuple(jobs)
+        pending = {job.export_id: job for job in job_list}
+        if len(pending) != len(job_list):
+            raise ValueError("Duplicate bulk export ID in completion batch")
         destination = self._get_validated_destination()
-        completed = self._wait_until_completed(job)
-        return self._read_snapshot(completed, destination)
+        if len(pending) == 0:
+            return
+        deadline = self._monotonic() + self._timeout_seconds
+        while pending:
+            made_progress = False
+            terminal_failure: BulkExportJob | None = None
+            for export_id, current in tuple(pending.items()):
+                if current.status in {
+                    BulkExportStatus.CANCELLED,
+                    BulkExportStatus.FAILED,
+                    BulkExportStatus.TIMED_OUT,
+                }:
+                    if terminal_failure is None:
+                        terminal_failure = current
+                    continue
+                if current.status is not BulkExportStatus.COMPLETED:
+                    continue
+
+                # INVARIANT: completion order never controls harvest order. A
+                # ready job is removed and yielded immediately, even when an
+                # earlier submission remains queued.
+                del pending[export_id]
+                made_progress = True
+                yield self._read_snapshot(current, destination)
+
+            # Ready peers have already been yielded to the caller for durable
+            # import; only then does a terminal peer fail the batch.
+            if terminal_failure is not None:
+                raise BulkExportFailedError(
+                    f"LangSmith bulk export {terminal_failure.export_id} ended as "
+                    f"{terminal_failure.status.value}"
+                )
+            if not pending:
+                return
+            if made_progress:
+                deadline = self._monotonic() + self._timeout_seconds
+            if self._monotonic() >= deadline:
+                raise BulkExportTimeoutError(
+                    f"{len(pending)} LangSmith bulk export(s) did not finish in time"
+                )
+            self._sleep(self._poll_interval_seconds)
+            for export_id, previous in tuple(pending.items()):
+                raw = self._request(
+                    "GET", f"/api/v1/bulk-exports/{export_id}", None, None
+                )
+                current = _parse_job(raw)
+                if current.export_id != export_id or not self._matches_window(
+                    current,
+                    previous.project_id,
+                    previous.start_time,
+                    previous.end_time,
+                ):
+                    raise ValueError("Polled bulk export changed request identity")
+                pending[export_id] = current
 
     def _get_validated_destination(self) -> _S3Destination:
         if self._validated_destination is not None:
@@ -297,6 +359,9 @@ class LangSmithBulkExporter:
         destination = _S3Destination(
             bucket=_require_string(config, "bucket_name"),
             prefix=_require_string(config, "prefix").strip("/"),
+        )
+        _require_normalized_s3_path(
+            destination.prefix, "Bulk export destination prefix"
         )
         archive = self._archive_destination
         if destination.bucket != archive.bucket:
@@ -349,30 +414,6 @@ class LangSmithBulkExporter:
         if self._known_jobs is not None:
             self._known_jobs.append(job)
         return job
-
-    def _wait_until_completed(self, job: BulkExportJob) -> BulkExportJob:
-        deadline = self._monotonic() + self._timeout_seconds
-        current = job
-        while current.status is not BulkExportStatus.COMPLETED:
-            if current.status in {
-                BulkExportStatus.CANCELLED,
-                BulkExportStatus.FAILED,
-                BulkExportStatus.TIMED_OUT,
-            }:
-                raise BulkExportFailedError(
-                    f"LangSmith bulk export {current.export_id} ended as "
-                    f"{current.status.value}"
-                )
-            if self._monotonic() >= deadline:
-                raise BulkExportTimeoutError(
-                    f"LangSmith bulk export {current.export_id} did not finish in time"
-                )
-            self._sleep(self._poll_interval_seconds)
-            raw = self._request(
-                "GET", f"/api/v1/bulk-exports/{current.export_id}", None, None
-            )
-            current = _parse_job(raw)
-        return current
 
     def _read_snapshot(
         self, job: BulkExportJob, destination: _S3Destination
@@ -549,8 +590,7 @@ def _exported_file_uri(path: str, destination: _S3Destination) -> str:
     expected_prefix = f"{destination.bucket}/{destination.prefix.rstrip('/')}/"
     if not path.startswith(expected_prefix) or not path.endswith(".parquet"):
         raise ValueError("Bulk export file is outside the configured destination")
-    if "/../" in path or "\\" in path:
-        raise ValueError("Bulk export file path is not normalized")
+    _require_normalized_s3_path(path, "Bulk export file path")
     return "s3://" + path
 
 
@@ -570,7 +610,20 @@ def _parse_s3_uri(uri: str) -> _S3Destination:
     prefix = parsed.path.strip("/")
     if not prefix:
         raise ValueError("Bulk Export archive URI requires a bucket prefix")
+    _require_normalized_s3_path(prefix, "Bulk Export archive prefix")
     return _S3Destination(bucket=parsed.netloc, prefix=prefix)
+
+
+def _require_normalized_s3_path(value: str, context: str) -> None:
+    # These strings become DuckDB S3 URIs. Reject both traversal segments and
+    # URI metacharacters instead of relying on every HTTP layer to preserve a
+    # literal S3 key in exactly the same way.
+    if (
+        "\\" in value
+        or any(character in value for character in ("%", "?", "#"))
+        or any(part in ("", ".", "..") for part in value.split("/"))
+    ):
+        raise ValueError(f"{context} must be normalized")
 
 
 def _parse_datetime(value: str) -> datetime:

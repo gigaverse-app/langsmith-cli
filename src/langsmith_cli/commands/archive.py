@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timezone
 from typing import TypedDict
 
@@ -13,7 +14,11 @@ from langsmith_cli.archive.config import (
     UnknownRouteError,
     load_archive_config,
 )
-from langsmith_cli.archive.backfill import backfill_window, import_backfill_snapshot
+from langsmith_cli.archive.backfill import (
+    BackfillImportResult,
+    backfill_window,
+    import_backfill_snapshot,
+)
 from langsmith_cli.archive.bulk import BulkExportJob, LangSmithBulkExporter
 from langsmith_cli.archive.models import (
     ArchiveManifestDict,
@@ -273,7 +278,14 @@ def sync_archive(
     default=73.0,
     show_default=True,
     type=click.FloatRange(min=0, min_open=True),
-    help="Maximum wait per historical project export.",
+    help="Maximum time without any historical export completing.",
+)
+@click.option(
+    "--import-workers",
+    default=8,
+    show_default=True,
+    type=click.IntRange(min=1, max=32),
+    help="Projects compacted concurrently after their exports complete.",
 )
 @click.pass_context
 def backfill_archive(
@@ -285,6 +297,7 @@ def backfill_archive(
     end_date: str,
     bulk_export_destination_id: str,
     bulk_export_timeout_hours: float,
+    import_workers: int,
 ) -> None:
     """Export a historical range once and publish sealed daily partitions."""
     routes = _selected_routes(config_path, route_name, False)
@@ -325,7 +338,9 @@ def backfill_archive(
             raise click.ClickException("LangSmith project is missing its name")
         selected_projects.append((str(project.id), project.name))
 
-    pending: list[tuple[str, str, BulkExportJob]] = []
+    jobs: list[BulkExportJob] = []
+    project_by_export_id: dict[str, tuple[str, str]] = {}
+    logger = ctx.obj["logger"]
     for project_id, project_name in selected_projects:
         job = exporter.begin_window(
             project_id=project_id,
@@ -333,18 +348,24 @@ def backfill_archive(
             end_time=window_end,
             excluded_export_ids=frozenset(),
         )
-        pending.append((project_id, project_name, job))
+        if job.export_id in project_by_export_id:
+            raise click.ClickException(
+                f"Bulk export {job.export_id} was selected for multiple projects"
+            )
+        jobs.append(job)
+        project_by_export_id[job.export_id] = (project_id, project_name)
+    logger.info(
+        f"Submitted or adopted {len(jobs)} project export(s); "
+        f"compacting with {import_workers} worker(s) as they complete"
+    )
 
-    store = create_store(route.archive_uri)
     results: list[BackfillProjectResultDict] = []
-    for project_id, project_name, job in pending:
-        snapshot = exporter.complete_export(job)
-        imported = import_backfill_snapshot(
-            store,
-            project_id=project_id,
-            project_name=project_name,
-            snapshot=snapshot,
-        )
+    futures: dict[Future[BackfillImportResult], tuple[str, str]] = {}
+
+    def record_result(
+        future: Future[BackfillImportResult], project_id: str, project_name: str
+    ) -> None:
+        imported = future.result()
         results.append(
             {
                 "project_name": project_name,
@@ -355,6 +376,36 @@ def backfill_archive(
                 "canonical_run_count": imported.canonical_run_count,
             }
         )
+        logger.info(
+            f"Imported {project_name}: {imported.imported_days} new day(s), "
+            f"{imported.skipped_days} already sealed"
+        )
+
+    with ThreadPoolExecutor(max_workers=import_workers) as executor:
+        for snapshot in exporter.complete_exports(jobs):
+            project_id, project_name = project_by_export_id[snapshot.export_id]
+            # INVARIANT: export IDs are unique above, so at most one worker can
+            # publish a given project's daily manifests in this invocation.
+            future = executor.submit(
+                import_backfill_snapshot,
+                create_store(route.archive_uri),
+                project_id=project_id,
+                project_name=project_name,
+                snapshot=snapshot,
+            )
+            futures[future] = (project_id, project_name)
+            logger.info(f"Export ready; importing {project_name}")
+            for completed in tuple(futures):
+                if not completed.done():
+                    continue
+                completed_project_id, completed_project_name = futures.pop(completed)
+                record_result(completed, completed_project_id, completed_project_name)
+
+        for completed in as_completed(tuple(futures)):
+            project_id, project_name = futures[completed]
+            record_result(completed, project_id, project_name)
+
+    results.sort(key=lambda result: result["project_name"])
 
     payload = {
         "route": route.name,

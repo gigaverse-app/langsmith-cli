@@ -83,18 +83,22 @@ langsmith-cli --json archive backfill \
   --start-date 2025-08-01 \
   --end-date 2026-08-01 \
   --bulk-export-timeout-hours 73 \
+  --import-workers 8 \
   --bulk-export-destination-id <uuid>
 ```
 
 The command submits/adopts every selected project export before waiting, allowing
-LangSmith to apply its workspace concurrency. Completed output is split into sealed
-UTC-day manifests for DuckDB. Re-running the same command adopts the existing range
-export and skips already sealed days.
+LangSmith to apply its workspace concurrency. It harvests projects in completion
+order and compacts independent projects concurrently. Completed output is split into
+sealed UTC-day manifests for DuckDB. Re-running the same command adopts the existing
+range export and skips already sealed days.
 
 Historical exports can remain queued behind other workspace jobs. Backfill waits up
-to 73 hours per project by default, slightly beyond the managed workflow's 72-hour
-terminal timeout. Override `--bulk-export-timeout-hours` for a shorter operator
-window; rerunning adopts the same exact-window jobs.
+to 73 hours without any project completing by default, slightly beyond the managed
+workflow's 72-hour terminal timeout. Each completion resets that idle deadline.
+Override `--bulk-export-timeout-hours` for a shorter operator window and
+`--import-workers` to bound local DuckDB/S3 concurrency; rerunning adopts the same
+exact-window jobs.
 
 Use repeated `--project` options to limit a repair or trial. Keep ranges small enough
 to finish within LangSmith's managed export workflow timeout. Bulk Export cannot
