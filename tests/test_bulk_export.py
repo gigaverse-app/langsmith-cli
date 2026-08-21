@@ -259,6 +259,18 @@ def test_bulk_export_batch_rejects_duplicate_export_ids() -> None:
         list(_exporter().complete_exports((duplicate, duplicate)))
 
 
+def test_bulk_export_empty_batch_performs_no_destination_request() -> None:
+    def unexpected_request(
+        method: str,
+        path: str,
+        params: dict[str, object] | None,
+        payload: dict[str, object] | None,
+    ) -> object:
+        raise AssertionError((method, path))
+
+    assert list(_exporter(request_json=unexpected_request).complete_exports(())) == []
+
+
 def test_bulk_export_batch_rejects_polled_request_identity_drift() -> None:
     queued = _job(BulkExportStatus.CREATED)
 

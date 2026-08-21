@@ -287,9 +287,9 @@ class LangSmithBulkExporter:
         pending = {job.export_id: job for job in job_list}
         if len(pending) != len(job_list):
             raise ValueError("Duplicate bulk export ID in completion batch")
-        destination = self._get_validated_destination()
         if len(pending) == 0:
             return
+        destination = self._get_validated_destination()
         deadline = self._monotonic() + self._timeout_seconds
         while pending:
             made_progress = False

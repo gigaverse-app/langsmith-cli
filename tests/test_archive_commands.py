@@ -299,6 +299,63 @@ def test_bulk_backfill_submits_all_projects_before_importing(
     assert factory_options["timeout_seconds"] == 73 * 60 * 60
 
 
+def test_bulk_backfill_rejects_one_export_selected_for_multiple_projects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    runner,
+) -> None:
+    from langsmith_cli.commands import archive as archive_commands
+
+    client = FakeArchiveClient(
+        [
+            create_project(name="dev/agent"),
+            create_project(
+                name="dev/other",
+                project_id="22345678-1234-5678-1234-567812345678",
+            ),
+        ],
+        [],
+    )
+    monkeypatch.setattr(archive_commands, "get_or_create_client", lambda ctx: client)
+    duplicate = BulkExportSnapshot(
+        export_id="42345678-1234-5678-1234-567812345678",
+        start_time=datetime(2026, 8, 18, tzinfo=timezone.utc),
+        end_time=datetime(2026, 8, 20, tzinfo=timezone.utc),
+        run_count=0,
+        file_uris=(),
+    )
+
+    class DuplicateExporter:
+        def begin_window(self, **kwargs: object) -> BulkExportSnapshot:
+            return duplicate
+
+    monkeypatch.setattr(
+        archive_commands.LangSmithBulkExporter,
+        "from_langsmith_client",
+        staticmethod(lambda client, **kwargs: DuplicateExporter()),
+    )
+    result = runner.invoke(
+        cli,
+        [
+            "archive",
+            "backfill",
+            "--config",
+            str(_write_config(tmp_path)),
+            "--route",
+            "dev",
+            "--start-date",
+            "2026-08-18",
+            "--end-date",
+            "2026-08-20",
+            "--bulk-export-destination-id",
+            "42345678-1234-5678-1234-567812345678",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "was selected for multiple projects" in result.output
+
+
 @pytest.mark.parametrize(
     ("project_name", "message"),
     (
