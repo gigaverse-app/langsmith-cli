@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from io import BytesIO
 import json
 from pathlib import Path
@@ -17,6 +17,9 @@ from conftest import create_run
 from langsmith_cli.archive.models import ArchivePhase
 from langsmith_cli.archive.query import (
     ArchiveRunQuery,
+    _date_partition_overlaps,
+    _manifest_identity_from_key,
+    _project_matches,
     count_archive_runs,
     query_archive_runs,
 )
@@ -447,3 +450,244 @@ def test_s3_reads_versions_and_lists_only_the_manifest_namespace(
         "manifests/project=b/date=2.json",
     ]
     assert client.paginator.prefix == "langsmith/manifests/"
+
+
+def test_s3_store_supports_complete_object_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from botocore.exceptions import ClientError
+    import boto3
+
+    class ObjectClient:
+        def __init__(self) -> None:
+            self.objects: dict[str, bytes] = {}
+            self.upload: tuple[str, str, str] | None = None
+
+        def upload_file(self, source: str, bucket: str, key: str) -> None:
+            self.upload = (source, bucket, key)
+
+        def put_object(self, **kwargs: object) -> None:
+            body = kwargs["Body"]
+            assert isinstance(body, bytes)
+            self.objects[str(kwargs["Key"])] = body
+
+        def get_object(self, *, Bucket: str, Key: str) -> dict[str, object]:
+            return {"Body": BytesIO(self.objects[Key])}
+
+        def head_object(self, *, Bucket: str, Key: str) -> None:
+            if Key not in self.objects:
+                raise ClientError(
+                    {
+                        "Error": {"Code": "NotFound", "Message": "missing"},
+                        "ResponseMetadata": {"HTTPStatusCode": 404},
+                    },
+                    "HeadObject",
+                )
+
+    client = ObjectClient()
+    monkeypatch.setattr(boto3, "client", lambda service: client)
+    store = S3ArchiveStore(
+        bucket="archive-bucket", prefix="langsmith", base_uri="s3://archive-bucket"
+    )
+    source = tmp_path / "run.parquet"
+    source.write_bytes(b"PAR1")
+
+    store.put_file("raw/run.parquet", source)
+    store.put_text("projects/project.json", "{}")
+
+    assert client.upload == (
+        str(source),
+        "archive-bucket",
+        "langsmith/raw/run.parquet",
+    )
+    assert store.get_text("projects/project.json") == "{}"
+    assert store.exists("projects/project.json") is True
+    assert store.exists("projects/missing.json") is False
+    assert store.object_uri("raw/run.parquet") == (
+        "s3://archive-bucket/langsmith/raw/run.parquet"
+    )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        [],
+        {"schema_version": 1},
+        {"schema_version": "1", "project_id": PROJECT_ID, "project_name": "dev/agent"},
+        {"schema_version": 1, "project_id": 7, "project_name": "dev/agent"},
+    ],
+)
+def test_project_catalog_rejects_malformed_records(
+    tmp_path: Path, payload: object
+) -> None:
+    store = create_store(str(tmp_path / "archive"))
+    key = project_key(PROJECT_ID)
+    store.put_text(key, json.dumps(payload))
+    with pytest.raises(ValueError):
+        ensure_project_record(store, PROJECT_ID, "dev/agent")
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ({"project_name": 7}, "must be a string"),
+        ({"schema_version": "1"}, "must be an integer"),
+        ({"canonical_run_count": "1"}, "must be an integer"),
+        ({"sealed": "true"}, "must be a boolean"),
+        ({"canonical_key": 7}, "string or null"),
+        ({"primary": "verified"}, "phase must be an object"),
+        ({"primary": {"status": "verified"}}, "invalid schema"),
+        (
+            {
+                "primary": {
+                    "status": 7,
+                    "generation_id": "generation",
+                    "raw_key": "raw/key.parquet",
+                    "run_count": 1,
+                    "verified_at": "2024-07-03T00:00:00+00:00",
+                }
+            },
+            "primary.status must be a string",
+        ),
+        (
+            {
+                "primary": {
+                    "status": "verified",
+                    "generation_id": "generation",
+                    "raw_key": "raw/key.parquet",
+                    "run_count": "1",
+                    "verified_at": "2024-07-03T00:00:00+00:00",
+                }
+            },
+            "primary.run_count must be an integer",
+        ),
+        (
+            {
+                "primary": {
+                    "status": "failed",
+                    "generation_id": "generation",
+                    "raw_key": "raw/key.parquet",
+                    "run_count": 1,
+                    "verified_at": "2024-07-03T00:00:00+00:00",
+                    "error": 7,
+                }
+            },
+            "primary.error must be a string",
+        ),
+    ],
+)
+def test_manifest_reader_rejects_malformed_metadata_at_storage_boundary(
+    tmp_path: Path,
+    mutation: dict[str, object],
+    message: str,
+) -> None:
+    store, manifest = _sync_primary(tmp_path, [create_run()])
+    key = manifest_key(PROJECT_ID, TRACE_DATE.isoformat())
+    payload = manifest.to_dict()
+    payload.update(mutation)  # type: ignore[typeddict-item]
+    store.put_text(key, json.dumps(payload))
+
+    with pytest.raises(ValueError, match=message):
+        read_manifest(store, key)
+
+
+def test_manifest_partition_parsing_and_date_pruning_are_exact() -> None:
+    identity = _manifest_identity_from_key(
+        f"manifests/project_id={PROJECT_ID}/date=2024-07-03.json"
+    )
+    assert identity == (PROJECT_ID, TRACE_DATE)
+    assert _manifest_identity_from_key("manifests/not-a-partition.json") is None
+
+    window_start = date(2024, 7, 4)
+    assert (
+        _date_partition_overlaps(
+            TRACE_DATE,
+            # A lower bound at the next midnight prunes the prior partition exactly.
+            datetime.combine(window_start, time.min, tzinfo=timezone.utc),
+            None,
+        )
+        is False
+    )
+    assert (
+        _date_partition_overlaps(
+            TRACE_DATE,
+            None,
+            datetime.combine(TRACE_DATE, time.min, tzinfo=timezone.utc),
+        )
+        is False
+    )
+
+
+@pytest.mark.parametrize(
+    ("query", "project_id", "project_name", "matches"),
+    [
+        (ArchiveRunQuery(project_id="other"), PROJECT_ID, "dev/agent", False),
+        (ArchiveRunQuery(project="dev/other"), PROJECT_ID, "dev/agent", False),
+        (
+            ArchiveRunQuery(project_name_pattern="stg/**"),
+            PROJECT_ID,
+            "dev/agent",
+            False,
+        ),
+        (ArchiveRunQuery(project_name_regex=r"^stg/"), PROJECT_ID, "dev/agent", False),
+        (ArchiveRunQuery(project_name_pattern="dev/**"), PROJECT_ID, "dev/agent", True),
+    ],
+)
+def test_project_predicates_apply_every_configured_selector(
+    query: ArchiveRunQuery,
+    project_id: str,
+    project_name: str,
+    matches: bool,
+) -> None:
+    assert _project_matches(query, project_id, project_name) is matches
+
+
+def test_archive_query_rejects_negative_limits() -> None:
+    with pytest.raises(ValueError, match="non-negative"):
+        ArchiveRunQuery(limit=-1)
+
+
+@pytest.mark.parametrize("uri", ["s3:///missing-bucket", "https://archive.invalid"])
+def test_store_rejects_invalid_or_unsupported_uris(uri: str) -> None:
+    with pytest.raises(ValueError):
+        create_store(uri)
+
+
+def test_store_factory_supports_s3_and_file_uris(tmp_path: Path) -> None:
+    assert isinstance(create_store("s3://archive-bucket/prefix"), S3ArchiveStore)
+    assert create_store(tmp_path.as_uri()).base_uri == str(tmp_path.resolve())
+
+
+def test_s3_store_propagates_non_concurrency_service_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from botocore.exceptions import ClientError
+    import boto3
+
+    class FailingClient:
+        def put_object(self, **kwargs: object) -> None:
+            raise self._error("PutObject")
+
+        def head_object(self, **kwargs: object) -> None:
+            raise self._error("HeadObject")
+
+        @staticmethod
+        def _error(operation: str) -> ClientError:
+            return ClientError(
+                {
+                    "Error": {"Code": "InternalError", "Message": "retry upstream"},
+                    "ResponseMetadata": {"HTTPStatusCode": 500},
+                },
+                operation,
+            )
+
+    monkeypatch.setattr(boto3, "client", lambda service: FailingClient())
+    store = S3ArchiveStore(
+        bucket="archive-bucket", prefix="langsmith", base_uri="s3://archive-bucket"
+    )
+
+    with pytest.raises(ClientError):
+        store.put_text_if_version("manifests/day.json", "{}", None)
+    with pytest.raises(ClientError):
+        store.exists("manifests/day.json")

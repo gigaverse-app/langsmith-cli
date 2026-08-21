@@ -66,6 +66,56 @@ def test_overlapping_routes_fail_fast(tmp_path: Path) -> None:
         config.route_project("dev/agent")
 
 
+@pytest.mark.parametrize(
+    "content",
+    [
+        "[]",
+        "routes: invalid",
+        "routes:\n  - invalid",
+        "routes:\n  - name: dev\n    project_pattern: 'dev/**'",
+        "routes:\n  - name: 7\n    project_pattern: 'dev/**'\n    archive_uri: /tmp/dev",
+        "routes: []",
+        """routes:
+  - name: dev
+    project_pattern: dev/**
+    archive_uri: /tmp/dev
+  - name: dev
+    project_pattern: staging/**
+    archive_uri: /tmp/staging
+""",
+    ],
+)
+def test_route_config_rejects_malformed_or_ambiguous_contracts(
+    tmp_path: Path, content: str
+) -> None:
+    config_path = tmp_path / "invalid.yaml"
+    config_path.write_text(content, encoding="utf-8")
+    with pytest.raises(ValueError):
+        load_archive_config(str(config_path))
+
+
+def test_route_config_requires_a_source(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("LANGSMITH_ARCHIVE_CONFIG", raising=False)
+    monkeypatch.delenv("LANGSMITH_ARCHIVE_URI", raising=False)
+    with pytest.raises(ValueError, match="LANGSMITH_ARCHIVE_URI"):
+        load_archive_config()
+
+
+def test_route_config_requires_exact_selected_route(tmp_path: Path) -> None:
+    config = load_archive_config(str(_write_single_route_config(tmp_path)))
+    with pytest.raises(ValueError, match="exist exactly once"):
+        config.route_named("missing")
+
+
+def _write_single_route_config(tmp_path: Path) -> Path:
+    config_path = tmp_path / "single-route.yaml"
+    config_path.write_text(
+        "routes:\n  - name: dev\n    project_pattern: 'dev/**'\n    archive_uri: /tmp/dev\n",
+        encoding="utf-8",
+    )
+    return config_path
+
+
 def test_due_dates_leave_two_day_repair_buffer() -> None:
     assert due_trace_dates(date(2026, 8, 21), 14) == (
         (date(2026, 8, 19), ArchivePhase.PRIMARY),
