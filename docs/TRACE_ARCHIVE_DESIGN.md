@@ -100,6 +100,15 @@ assuming the maximum is faster. The live 399-day Gigaverse migration measured:
 These measurements describe one workload and host, not a universal default. Daily
 scheduled syncs are much smaller and do not need manual sharding.
 
+Status has a separate fast path because publication scale makes a full metadata
+audit expensive. During the live backfill, downloading every dev manifest was still
+unfinished when interrupted at 168.42 seconds. Key-derived `status --summary`
+counted 23,404 dev manifests in 8.37 seconds and all 56,453 then-published manifests
+across three routes in 19.41 seconds, with zero invalid keys. That is at least 20x
+lower dev completion-check latency in the observed run. The summary labels itself
+`manifest_contents_verified: false`; use the bounded full audit only when manifest
+body validation is required.
+
 ## Project routing
 
 Archive destinations are selected by ordered, named project routes:
@@ -246,6 +255,7 @@ worker B: read v1 ─ export raw B ─ canonical B ─ CAS(v1) ──► CONFLIC
 | A12 | Empty project-days return zero without schema-union failures | Zero-count manifest pruning | `test_empty_archive_is_queryable_as_zero_rows` |
 | A13 | Text-search SQL identifiers come only from a fixed allowlist | `ArchiveRunQuery.__post_init__` | `test_archive_text_fields_are_an_explicit_allowlist` |
 | A14 | Full-trace semantic values and topology are provider-independent | `_normalize_run_payload`, `_validated_archive_run`, and derived `child_run_ids` | `test_bulk_json_normalization_matches_live_run_shape`, `test_bulk_reconciliation_unifies_runs_api_and_v2_json_column_types` plus the documented real three-trace comparison |
+| A15 | Archive completion counts do not require one object GET per manifest | `archive status --summary` derives identities from normalized immutable keys and labels the result `manifest_contents_verified: false`; full audits share one bounded metadata reader | `test_status_summary_is_key_derived_and_never_downloads_manifests`, `test_status_reads_independent_manifests_concurrently` |
 
 The table deliberately names the enforcing code and executable regression test for
 each contract. Tests without an enforcement point prove an accident; comments without

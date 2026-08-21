@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Barrier, Lock
+import time
 from typing import Any, Iterator
 
 import pytest
@@ -533,6 +534,128 @@ def test_status_command_lists_published_manifests(
     assert len(manifests) == 1
     assert manifests[0]["project_name"] == "dev/agent"
     assert manifests[0]["canonical_run_count"] == 1
+
+
+def test_status_reads_independent_manifests_concurrently(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    runner,
+) -> None:
+    """
+    Archive size must not turn status into one network round trip per manifest.
+
+    Falsifies: a status implementation that lists keys quickly but then performs
+    every independent S3 manifest GET serially.
+    """
+    from langsmith_cli.archive.models import ArchivePhase
+    from langsmith_cli.archive.storage import create_store
+    from langsmith_cli.archive.sync import sync_project_day
+    from langsmith_cli.commands import archive as archive_commands
+
+    store = create_store(str(tmp_path / "dev-archive"))
+    for index in range(4):
+        sync_project_day(
+            FakeArchiveClient([], [create_run()]),
+            store,
+            project_id=f"{index + 1}2345678-1234-5678-1234-567812345678",
+            project_name=f"dev/agent-{index}",
+            trace_date=datetime(2026, 8, 19, tzinfo=timezone.utc).date(),
+            phase=ArchivePhase.PRIMARY,
+        )
+
+    class TrackingStore:
+        def __init__(self) -> None:
+            self.active = 0
+            self.max_active = 0
+            self.lock = Lock()
+
+        def list_keys(self, prefix: str) -> list[str]:
+            return store.list_keys(prefix)
+
+        def get_text_with_version(self, key: str):
+            with self.lock:
+                self.active += 1
+                self.max_active = max(self.max_active, self.active)
+            try:
+                time.sleep(0.02)
+                return store.get_text_with_version(key)
+            finally:
+                with self.lock:
+                    self.active -= 1
+
+    tracking_store = TrackingStore()
+    monkeypatch.setattr(archive_commands, "create_store", lambda uri: tracking_store)
+
+    result = runner.invoke(
+        cli,
+        [
+            "--json",
+            "archive",
+            "status",
+            "--config",
+            str(_write_config(tmp_path)),
+            "--route",
+            "dev",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert len(parse_json_output(result.output)) == 4
+    assert tracking_store.max_active >= 2
+
+
+def test_status_summary_is_key_derived_and_never_downloads_manifests(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    runner,
+) -> None:
+    """A completion count stays one S3 LIST operation regardless of matrix size."""
+    from langsmith_cli.commands import archive as archive_commands
+
+    class SummaryOnlyStore:
+        def list_keys(self, prefix: str) -> list[str]:
+            assert prefix == "manifests"
+            return [
+                "manifests/project_id=12345678-1234-5678-1234-567812345678/date=2026-08-18.json",
+                "manifests/project_id=12345678-1234-5678-1234-567812345678/date=2026-08-19.json",
+                "manifests/project_id=22345678-1234-5678-1234-567812345678/date=2026-08-19.json",
+                "manifests/not-a-partition.json",
+            ]
+
+        def get_text_with_version(self, key: str) -> None:
+            raise AssertionError(f"summary downloaded manifest {key}")
+
+    monkeypatch.setattr(
+        archive_commands, "create_store", lambda uri: SummaryOnlyStore()
+    )
+    result = runner.invoke(
+        cli,
+        [
+            "--json",
+            "archive",
+            "status",
+            "--summary",
+            "--config",
+            str(_write_config(tmp_path)),
+            "--route",
+            "dev",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = parse_json_output(result.output)
+    assert payload["manifest_contents_verified"] is False
+    assert payload["routes"] == [
+        {
+            "route": "dev",
+            "archive_uri": str(tmp_path / "dev-archive"),
+            "manifest_count": 3,
+            "project_count": 2,
+            "first_date": "2026-08-18",
+            "last_date": "2026-08-19",
+            "invalid_manifest_keys": ["manifests/not-a-partition.json"],
+        }
+    ]
 
 
 def test_sync_command_surfaces_safe_retry_on_concurrent_publication(

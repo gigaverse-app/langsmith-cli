@@ -11,7 +11,11 @@ from typing import TYPE_CHECKING, Any
 
 from langsmith_cli.archive.config import load_archive_config
 from langsmith_cli.archive.duckdb import configure_duckdb_s3
-from langsmith_cli.archive.repository import list_project_records, read_manifest
+from langsmith_cli.archive.repository import (
+    list_project_records,
+    manifest_identity_from_key as _manifest_identity_from_key,
+    read_manifests,
+)
 from langsmith_cli.archive.storage import create_store
 from langsmith_cli.archive.sync import (
     ARCHIVE_JSON_LIST_COLUMNS,
@@ -130,15 +134,16 @@ def _canonical_uris(query: ArchiveRunQuery, config_path: str | None) -> list[str
                     )
                 ]
                 manifest_keys.extend(legacy_keys)
-        for key in manifest_keys:
-            identity = _manifest_identity_from_key(key)
-            key_date = identity[1] if identity is not None else None
-            if key_date is not None and not _date_partition_overlaps(
-                key_date, since, before
-            ):
-                continue
-            manifest = read_manifest(store, key, known_exists=True)
-            if manifest is None or manifest.canonical_key is None:
+        manifest_keys = [
+            key
+            for key in manifest_keys
+            if (
+                (identity := _manifest_identity_from_key(key)) is None
+                or _date_partition_overlaps(identity[1], since, before)
+            )
+        ]
+        for manifest in read_manifests(store, manifest_keys):
+            if manifest.canonical_key is None:
                 continue
             configured_route = config.route_project(manifest.project_name)
             if configured_route.name != route.name:
@@ -159,20 +164,6 @@ def _canonical_uris(query: ArchiveRunQuery, config_path: str | None) -> list[str
                 continue
             uris.append(store.object_uri(manifest.canonical_key))
     return sorted(set(uris))
-
-
-_MANIFEST_KEY_RE = re.compile(
-    r"^manifests/project_id=([^/]+)/date=(\d{4}-\d{2}-\d{2})\.json$"
-)
-
-
-def _manifest_identity_from_key(key: str) -> tuple[str, date] | None:
-    match = _MANIFEST_KEY_RE.fullmatch(key)
-    return (
-        (match.group(1), date.fromisoformat(match.group(2)))
-        if match is not None
-        else None
-    )
 
 
 def _date_partition_overlaps(

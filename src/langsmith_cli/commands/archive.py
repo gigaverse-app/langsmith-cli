@@ -9,6 +9,7 @@ from typing import TypedDict
 
 import click
 from langsmith import Client
+from pydantic import BaseModel, ConfigDict
 
 from langsmith_cli.archive.config import (
     ArchiveConfig,
@@ -30,7 +31,8 @@ from langsmith_cli.archive.models import (
 )
 from langsmith_cli.archive.repository import (
     list_project_records,
-    read_manifest,
+    manifest_identity_from_key,
+    read_manifests,
     read_manifest_snapshot,
 )
 from langsmith_cli.archive.storage import ConcurrentArchiveWriteError, create_store
@@ -59,6 +61,29 @@ class BackfillProjectResultDict(TypedDict):
     imported_days: int
     skipped_days: int
     canonical_run_count: int
+
+
+class ArchiveStatusRoute(BaseModel):
+    """Fast key-derived status for one configured archive route."""
+
+    model_config = ConfigDict(frozen=True)
+
+    route: str
+    archive_uri: str
+    manifest_count: int
+    project_count: int
+    first_date: date | None
+    last_date: date | None
+    invalid_manifest_keys: tuple[str, ...]
+
+
+class ArchiveStatusSummary(BaseModel):
+    """Status summary that deliberately avoids per-manifest object reads."""
+
+    model_config = ConfigDict(frozen=True)
+
+    manifest_contents_verified: bool = False
+    routes: tuple[ArchiveStatusRoute, ...]
 
 
 @dataclass(frozen=True)
@@ -455,25 +480,65 @@ def backfill_archive(
 @click.option("--config", "config_path", type=click.Path(exists=True, dir_okay=False))
 @click.option("--route", "route_name")
 @click.option("--all-routes", is_flag=True)
+@click.option(
+    "--summary",
+    is_flag=True,
+    help="List key-derived counts without downloading every manifest.",
+)
 @click.pass_context
 def archive_status(
     ctx: click.Context,
     config_path: str | None,
     route_name: str | None,
     all_routes: bool,
+    summary: bool,
 ) -> None:
     """List published archive manifests."""
     config = load_archive_config(config_path)
     routes = _selected_routes(config, route_name, all_routes)
-    manifests: list[ArchiveManifestDict] = []
+    route_keys = []
     for route in routes:
         store = create_store(route.archive_uri)
-        for key in store.list_keys("manifests"):
-            manifest = read_manifest(store, key, known_exists=True)
-            if manifest is not None:
-                manifests.append(manifest.to_dict())
-    if is_json_context(ctx):
-        click.echo(json_dumps(manifests))
+        route_keys.append((route, store, store.list_keys("manifests")))
+
+    if summary or not is_json_context(ctx):
+        status = ArchiveStatusSummary(
+            routes=tuple(
+                _archive_status_route(route, keys) for route, _, keys in route_keys
+            )
+        )
+        if is_json_context(ctx):
+            click.echo(json_dumps(status.model_dump(mode="json")))
+            return
+        logger = ctx.obj["logger"]
+        for route_status in status.routes:
+            logger.info(
+                f"{route_status.route}: {route_status.manifest_count} manifest(s), "
+                f"{route_status.project_count} project(s)"
+            )
         return
-    logger = ctx.obj["logger"]
-    logger.info(f"Found {len(manifests)} archive manifest(s)")
+
+    manifests: list[ArchiveManifestDict] = []
+    for _, store, keys in route_keys:
+        manifests.extend(manifest.to_dict() for manifest in read_manifests(store, keys))
+    click.echo(json_dumps(manifests))
+
+
+def _archive_status_route(route: ArchiveRoute, keys: list[str]) -> ArchiveStatusRoute:
+    identities = [
+        identity
+        for key in keys
+        if (identity := manifest_identity_from_key(key)) is not None
+    ]
+    dates = [trace_date for _, trace_date in identities]
+    return ArchiveStatusRoute(
+        route=route.name,
+        archive_uri=route.archive_uri,
+        manifest_count=len(identities),
+        project_count=len({project_id for project_id, _ in identities}),
+        first_date=min(dates, default=None),
+        last_date=max(dates, default=None),
+        invalid_manifest_keys=tuple(
+            key for key in keys if manifest_identity_from_key(key) is None
+        ),
+    )

@@ -65,12 +65,17 @@ Overlapping jobs are safe: immutable data uploads happen before an ETag-conditio
 manifest update. Exactly one writer publishes; stale writers fail and are safe to
 retry. Do not add an external distributed lock around the CronJob.
 
-List manifests:
+Check archive size without downloading every manifest:
 
 ```bash
-langsmith-cli --json archive status --route dev
-langsmith-cli --json archive status --all-routes
+langsmith-cli --json archive status --summary --route dev
+langsmith-cli --json archive status --summary --all-routes
 ```
+
+Omit `--summary` only when you need every validated manifest body. A full status
+audit performs one object read per manifest; the summary derives project/date counts
+from immutable manifest keys using S3 LIST and reports
+`manifest_contents_verified: false` explicitly.
 
 ## Historical backfill
 
@@ -158,22 +163,24 @@ expected day count is `end_date - start_date`. A complete rectangular backfill h
 `selected_projects * expected_days` sealed manifests:
 
 ```bash
-langsmith-cli --json archive status --config archive.yaml --route production \
-  | jq '[.[] | select(
-      .trace_date >= "2025-08-01" and .trace_date < "2026-08-01"
-    )] | {
-      manifests: length,
-      sealed: map(select(.sealed)) | length,
-      projects: map(.project_id) | unique | length
+langsmith-cli --json archive status --summary \
+  --config archive.yaml --route production \
+  | jq '.routes[0] | {
+      manifests: .manifest_count,
+      projects: .project_count,
+      first_date,
+      last_date,
+      invalid_manifest_keys
     }'
 ```
 
 Completion requires all of the following:
 
 1. Every shard exits 0 and emits its final JSON result.
-2. `manifests == sealed == selected_projects * expected_days` for the requested
-   matrix. Use the original selected-project count; deriving it only from manifests
-   could hide a project with zero published days.
+2. Every shard result reports `imported_days + skipped_days == expected_days` for
+   each selected project, and summary `manifests == selected_projects *
+   expected_days` with no invalid keys. Use the original selected-project count;
+   deriving it only from manifests could hide a project with zero published days.
 3. No shard reports a terminal export, validation, DuckDB, S3, or CAS error.
 4. Representative DuckDB archive queries return the expected runs before temporary
    Bulk Export credentials or raw source objects are retired.
