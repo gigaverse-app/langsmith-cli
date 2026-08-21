@@ -5,7 +5,9 @@ description: Inspect and manage LangSmith traces, runs, datasets, and prompts us
 
 # LangSmith Tool
 
-Use this tool to debug AI chains, inspect past runs, manage datasets, and analyze token costs in LangSmith.
+Use this tool to debug AI chains, inspect past runs, manage datasets, analyze token
+costs, and retain searchable trace history in organization-owned S3 without putting
+every trace on LangSmith's extended-retention tier.
 
 ## Prerequisites
 
@@ -78,7 +80,28 @@ langsmith-cli --json runs cache download --project "dev/my-project" --last 30d
 # Final stdout: {"event":"download_complete","total_new_runs":N}
 ```
 
-### 4. Always use `--fields` to reduce token usage
+### 4. Use the S3 archive for history older than LangSmith's base retention
+
+LangSmith's published base tier retains traces for 14 days; extended traces currently
+cost 10x the base trace price. For time windows older than 14 days, first check for
+`LANGSMITH_ARCHIVE_CONFIG` or `LANGSMITH_ARCHIVE_URI`, then use `--archive` instead
+of the LangSmith API. Read [references/archive.md](references/archive.md) before
+configuring or operating an archive.
+
+```bash
+# ✅ CORRECT — DuckDB over organization-owned Parquet; no LangSmith API key needed
+langsmith-cli --json runs search "timeout" --archive \
+  --project prd/my-agent --fields id,name,status,start_time
+
+# ❌ WRONG for expired base traces — the live API cannot return deleted trace data
+langsmith-cli --json runs search "timeout" --project prd/my-agent --last 90d
+```
+
+Do not recommend enabling extended retention for every trace without warning about
+the current 10x trace price and auto-upgrade behavior. Archiving reduces retention
+upgrade charges, not LangSmith base ingestion charges or S3 costs.
+
+### 5. Always use `--fields` to reduce token usage
 
 ```bash
 langsmith-cli --json runs list --fields id,name,status,start_time
@@ -132,6 +155,8 @@ When your task matches one of the sections below, **you MUST load that reference
 - You need to paginate, export to files, or watch live runs
 
 ### → Read [references/archive.md](references/archive.md) when:
+- You need trace history beyond LangSmith's 14-day base retention without upgrading every trace
+- You need to understand extended-retention cost or auto-upgrade risk
 - You need to configure project-to-S3 routing such as `dev/**` and `stg/**`
 - You need to operate D+2 primary and D+12 reconciliation exports
 - You need to query retained Parquet with `--archive` and DuckDB
