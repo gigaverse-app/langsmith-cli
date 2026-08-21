@@ -241,11 +241,21 @@ worker B: read v1 ─ export raw B ─ canonical B ─ CAS(v1) ──► CONFLIC
 | Readers use only published canonical keys | Manifest-directed discovery | Raw/orphan/unreferenced canonical generations are invisible |
 | Empty project-days return zero | Zero-count manifest pruning | DuckDB is not asked to union an empty partial schema |
 | Text-search SQL identifiers are fixed | `ArchiveRunQuery` field allowlist | Unsupported `--grep-in` fields fail before SQL construction |
+| Full-trace semantic values are provider-independent | Archive read normalization restores Bulk nested values, UTC event offsets, and derived child IDs | Real API/archive traces match after treating missing and null object members as equivalent |
 
 These invariants are executable contracts, not documentation only. Unit tests cover
 corrupt manifests, duplicate IDs, stale and simultaneous writers, sealed retries,
 empty partitions, unsafe text fields, route pruning, and Windows paths. CLI tests
 cover scheduled D+2/D+12 routing, explicit-project failures, and status output.
+
+Bulk Export and the Runs API encode a few equivalent values differently. Bulk may
+pad inferred nested objects with null keys, add one JSON layer to LangChain's reserved
+`inputs.input`, omit the derived `child_run_ids`, and return unzoned UTC event times.
+The archive reader safely normalizes the latter three. It deliberately preserves
+nested nulls because the live CLI promises not to coerce or discard them. Parquet
+schema union cannot always distinguish an absent object member from an explicit null,
+so raw JSON is not universally byte-identical; semantic comparison must treat missing
+and null object members as equivalent.
 
 ## Query architecture
 

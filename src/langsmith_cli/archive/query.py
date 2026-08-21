@@ -214,6 +214,29 @@ def _normalize_run_payload(payload: dict[str, Any]) -> dict[str, Any]:
         if decoded is not None and not isinstance(decoded, expected_type):
             raise ValueError(f"Archived JSON field has an invalid type: {field}")
         payload[field] = decoded
+    # Bulk v2 preserves LangChain's reserved ``inputs.input`` value with one
+    # extra JSON layer. Decode that provider representation without stripping
+    # nulls: explicit nested nulls are part of the live CLI output contract.
+    inputs = payload.get("inputs")
+    if isinstance(inputs, dict) and isinstance(inputs.get("input"), str):
+        try:
+            inputs["input"] = json.loads(inputs["input"])
+        except json.JSONDecodeError:
+            pass
+    events = payload.get("events")
+    if isinstance(events, list):
+        for event in events:
+            if not isinstance(event, dict) or not isinstance(event.get("time"), str):
+                continue
+            try:
+                event_time = datetime.fromisoformat(
+                    event["time"].replace("Z", "+00:00")
+                )
+            except ValueError:
+                continue
+            if event_time.tzinfo is None:
+                event_time = event_time.replace(tzinfo=timezone.utc)
+            event["time"] = event_time.astimezone(timezone.utc).isoformat()
     for details_field in (
         "prompt_token_details",
         "completion_token_details",
@@ -228,6 +251,28 @@ def _normalize_run_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 key: value for key, value in details.items() if value is not None
             }
     return payload
+
+
+def _validated_archive_run(payload: dict[str, Any]) -> Run:
+    """Validate an archive row and restore UTC on untyped SDK event datetimes."""
+    from langsmith.schemas import Run
+
+    run = Run.model_validate(_normalize_run_payload(payload))
+    normalized_events: list[dict[str, Any]] = []
+    for event in run.events or []:
+        normalized_event = dict(event)
+        event_time = normalized_event.get("time")
+        if isinstance(event_time, str):
+            try:
+                event_time = datetime.fromisoformat(event_time.replace("Z", "+00:00"))
+            except ValueError:
+                event_time = None
+        if isinstance(event_time, datetime):
+            if event_time.tzinfo is None:
+                event_time = event_time.replace(tzinfo=timezone.utc)
+            normalized_event["time"] = event_time.astimezone(timezone.utc).isoformat()
+        normalized_events.append(normalized_event)
+    return run.model_copy(update={"events": normalized_events or run.events})
 
 
 def _where_clause(query: ArchiveRunQuery) -> tuple[str, list[object]]:
@@ -282,7 +327,6 @@ def query_archive_runs(
 ) -> list[Run]:
     """Return LangSmith Run contracts populated from canonical Parquet."""
     import duckdb
-    from langsmith.schemas import Run
 
     uris = _canonical_uris(query, config_path)
     if not uris:
@@ -305,8 +349,8 @@ def query_archive_runs(
         columns = [description[0] for description in cursor.description]
         runs: list[Run] = []
         for row in cursor.fetchall():
-            payload = _normalize_run_payload(dict(zip(columns, row, strict=True)))
-            runs.append(Run.model_validate(payload))
+            payload = dict(zip(columns, row, strict=True))
+            runs.append(_validated_archive_run(payload))
         return runs
     finally:
         connection.close()
@@ -347,7 +391,6 @@ def read_archived_run(
     config_path: str | None = None,
 ) -> tuple[Run, list[Run]]:
     import duckdb
-    from langsmith.schemas import Run
 
     uris = _canonical_uris(
         ArchiveRunQuery(
@@ -373,9 +416,7 @@ def read_archived_run(
         if row is None:
             raise LookupError(f"Archived run not found: {run_id}")
         columns = [description[0] for description in cursor.description]
-        run = Run.model_validate(
-            _normalize_run_payload(dict(zip(columns, row, strict=True)))
-        )
+        run = _validated_archive_run(dict(zip(columns, row, strict=True)))
         children: list[Run] = []
         if follow_children:
             child_cursor = connection.execute(
@@ -386,11 +427,15 @@ def read_archived_run(
             )
             child_columns = [description[0] for description in child_cursor.description]
             children = [
-                Run.model_validate(
-                    _normalize_run_payload(dict(zip(child_columns, child, strict=True)))
-                )
+                _validated_archive_run(dict(zip(child_columns, child, strict=True)))
                 for child in child_cursor.fetchall()
             ]
+            # Bulk Export does not include the API's derived child_run_ids field.
+            # The trace query above is authoritative, ordered identically to the
+            # live CLI path, and restores full-trace output parity.
+            run = run.model_copy(
+                update={"child_run_ids": [child.id for child in children]}
+            )
         return run, children
     finally:
         connection.close()

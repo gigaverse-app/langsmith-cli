@@ -220,6 +220,12 @@ has no project/date information, so a year-scale archive otherwise requires mani
 discovery across every project and day. Pass the narrowest known `--project` or
 `--project-id` plus `--since`/`--before` or `--last` window.
 
+`runs get --follow-children --json` restores Bulk's nested `inputs.input`, UTC event
+timestamps, and API-derived `child_run_ids`. Bulk Parquet may pad an inferred object
+schema with null members, while the Runs API may omit those members. Because the CLI
+preserves explicit nested nulls, raw JSON is not universally byte-identical; compare
+missing and null object members as equivalent when validating provider parity.
+
 See `docs/TRACE_ARCHIVE_DESIGN.md` for storage layout, reconciliation,
 deduplication, crash recovery, IAM boundaries, and efficiency decisions.
 

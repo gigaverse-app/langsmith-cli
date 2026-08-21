@@ -10,7 +10,7 @@ import time
 from typing import Any, Callable, Iterator, cast
 
 import pytest
-from conftest import create_run
+from conftest import create_run, parse_json_output
 from langsmith import Client
 from langsmith.schemas import Run
 from langsmith_cli.archive.backfill import import_backfill_snapshot
@@ -26,10 +26,15 @@ from langsmith_cli.archive.bulk import (
     LangSmithBulkExporter,
 )
 from langsmith_cli.archive.models import ArchivePhase
-from langsmith_cli.archive.query import ArchiveRunQuery, query_archive_runs
+from langsmith_cli.archive.query import (
+    ArchiveRunQuery,
+    query_archive_runs,
+    read_archived_run,
+)
 from langsmith_cli.archive.query import _normalize_run_payload
 from langsmith_cli.archive.storage import create_store
 from langsmith_cli.archive.sync import sync_project_day
+from langsmith_cli.main import cli
 
 
 PROJECT_ID = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
@@ -57,6 +62,44 @@ def test_bulk_json_strings_normalize_to_run_contracts() -> None:
     assert payload["events"] == [{"name": "start"}]
     assert payload["tags"] == ["production"]
     assert payload["error"] == "plain error string"
+
+
+def test_bulk_json_normalization_matches_live_run_shape() -> None:
+    """INVARIANT: provider representation does not change CLI run JSON."""
+    payload = _normalize_run_payload(
+        {
+            "inputs": json.dumps(
+                {
+                    "input": json.dumps({"question": "hello"}),
+                    "schema_padding": None,
+                }
+            ),
+            "outputs": json.dumps({"answer": "world", "schema_padding": None}),
+            "extra": json.dumps({"metadata": {"model": "gpt", "schema_padding": None}}),
+            "events": json.dumps(
+                [
+                    {
+                        "name": "start",
+                        "time": "2026-08-19T21:59:53.948395",
+                        "schema_padding": None,
+                    }
+                ]
+            ),
+        }
+    )
+
+    assert payload == {
+        "inputs": {"input": {"question": "hello"}, "schema_padding": None},
+        "outputs": {"answer": "world", "schema_padding": None},
+        "extra": {"metadata": {"model": "gpt", "schema_padding": None}},
+        "events": [
+            {
+                "name": "start",
+                "time": "2026-08-19T21:59:53.948395+00:00",
+                "schema_padding": None,
+            }
+        ],
+    }
 
 
 class FakeBulkExporter:
@@ -847,7 +890,7 @@ def test_bulk_snapshot_integrates_with_canonical_reconciliation(
 
 
 def test_bulk_reconciliation_unifies_runs_api_and_v2_json_column_types(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, runner
 ) -> None:
     """A Bulk v2 reconciliation must replace native Runs API rows by run ID."""
     import duckdb
@@ -861,11 +904,18 @@ def test_bulk_reconciliation_unifies_runs_api_and_v2_json_column_types(
         parent_run_id=str(primary_run.id),
         trace_id=str(primary_run.id),
         outputs={"late": True},
+    ).model_copy(
+        update={
+            "events": [{"name": "start", "time": "2026-08-19T21:59:53.948395+00:00"}]
+        }
     )
     json_rows = tmp_path / "bulk-mixed.json"
     payloads: list[dict[str, object]] = []
     for run in (reconciled_run, late_child):
         payload = run.model_dump(mode="json")
+        if run.id == late_child.id:
+            events = cast(list[dict[str, object]], payload["events"])
+            events[0]["time"] = "2026-08-19T21:59:53.948395"
         for field in (
             "extra",
             "inputs",
@@ -925,6 +975,40 @@ def test_bulk_reconciliation_unifies_runs_api_and_v2_json_column_types(
     root = next(run for run in archived if run.id == primary_run.id)
     assert root.outputs == {"version": "bulk-v2"}
     assert root.tags == ["reconciled"]
+    archived_root, archived_children = read_archived_run(
+        str(primary_run.id),
+        follow_children=True,
+        project="dev/agent",
+    )
+    assert [child.id for child in archived_children] == [late_child.id]
+    assert archived_root.child_run_ids == [late_child.id]
+    assert archived_children[0].model_dump(mode="json")["events"] == [
+        {"name": "start", "time": "2026-08-19T21:59:53.948395+00:00"}
+    ]
+
+    class FullTraceClient:
+        def read_run(self, run_id: str) -> Run:
+            assert run_id == str(primary_run.id)
+            return reconciled_run.model_copy(update={"child_run_ids": [late_child.id]})
+
+        def list_runs(self, **kwargs: object) -> Iterator[Run]:
+            assert kwargs == {"trace_id": str(primary_run.id)}
+            return iter((reconciled_run, late_child))
+
+    from langsmith_cli.commands.runs import get_cmd
+
+    monkeypatch.setattr(get_cmd, "get_or_create_client", lambda ctx: FullTraceClient())
+    command = ["--json", "runs", "get", str(primary_run.id), "--follow-children"]
+    api_result = runner.invoke(cli, command)
+    archive_result = runner.invoke(
+        cli, [*command, "--archive", "--project", "dev/agent"]
+    )
+
+    assert api_result.exit_code == 0, api_result.output
+    assert archive_result.exit_code == 0, archive_result.output
+    assert parse_json_output(api_result.output) == parse_json_output(
+        archive_result.output
+    )
 
 
 def test_range_backfill_publishes_daily_partitions_and_resumes(
