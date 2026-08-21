@@ -290,7 +290,23 @@ def test_bulk_export_batch_rejects_polled_request_identity_drift() -> None:
         list(_exporter(request_json=request).complete_exports((queued,)))
 
 
-def test_bulk_export_rejects_destination_outside_archive() -> None:
+@pytest.mark.parametrize(
+    ("destination_override", "expected_error"),
+    [
+        ({"id": "62345678-1234-5678-1234-567812345678"}, "changed identity"),
+        (
+            {"config": {"bucket_name": "traces-dev", "prefix": "elsewhere/bulk"}},
+            "prefix is outside archive URI",
+        ),
+        (
+            {"config": {"bucket_name": "traces-prd", "prefix": "langsmith/bulk"}},
+            "bucket does not match",
+        ),
+    ],
+)
+def test_bulk_export_rejects_destination_outside_archive(
+    destination_override: dict[str, object], expected_error: str
+) -> None:
     def wrong_destination(
         method: str,
         path: str,
@@ -300,13 +316,10 @@ def test_bulk_export_rejects_destination_outside_archive() -> None:
         response = cast(
             dict[str, object], _destination_request(method, path, params, payload)
         )
-        response["config"] = {
-            "bucket_name": "traces-prd",
-            "prefix": "langsmith/bulk",
-        }
+        response.update(destination_override)
         return response
 
-    with pytest.raises(ValueError, match="bucket does not match"):
+    with pytest.raises(ValueError, match=expected_error):
         _exporter(request_json=wrong_destination).begin_window(
             project_id=PROJECT_ID,
             start_time=TRACE_START,
