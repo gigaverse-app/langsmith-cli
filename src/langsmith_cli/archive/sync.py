@@ -22,7 +22,10 @@ from langsmith_cli.archive.models import (
     PhaseRecord,
     PhaseStatus,
 )
-from langsmith_cli.archive.duckdb import configure_duckdb_s3
+from langsmith_cli.archive.duckdb import (
+    archive_duckdb_connection,
+    configure_duckdb_s3,
+)
 from langsmith_cli.archive.repository import (
     ManifestSnapshot,
     ensure_project_record,
@@ -118,8 +121,6 @@ def _new_manifest(
 def _write_runs_parquet(
     client: RunsExportClient, manifest: ArchiveManifest, target: Path
 ) -> int:
-    import duckdb
-
     filter_ = f'lt(start_time, "{manifest.window_end.isoformat()}")'
     # Close the JSONL before DuckDB opens it. Windows does not guarantee that a
     # named temporary file can be reopened while Python still holds its handle.
@@ -142,25 +143,24 @@ def _write_runs_parquet(
             rows.write("\n")
             run_count += 1
 
-    connection = duckdb.connect()
     try:
-        if run_count:
-            connection.execute(
-                "COPY (SELECT * FROM read_json_auto("
-                f"{_sql_string(str(rows_path))}, maximum_object_size=104857600)) "
-                f"TO {_sql_string(str(target))} "
-                "(FORMAT PARQUET, COMPRESSION ZSTD)"
-            )
-        else:
-            connection.execute(
-                "COPY (SELECT CAST(NULL AS VARCHAR) AS id WHERE false) "
-                f"TO {_sql_string(str(target))} "
-                "(FORMAT PARQUET, COMPRESSION ZSTD)"
-            )
+        with archive_duckdb_connection(target.parent) as connection:
+            if run_count:
+                connection.execute(
+                    "COPY (SELECT * FROM read_json_auto("
+                    f"{_sql_string(str(rows_path))}, maximum_object_size=104857600)) "
+                    f"TO {_sql_string(str(target))} "
+                    "(FORMAT PARQUET, COMPRESSION ZSTD)"
+                )
+            else:
+                connection.execute(
+                    "COPY (SELECT CAST(NULL AS VARCHAR) AS id WHERE false) "
+                    f"TO {_sql_string(str(target))} "
+                    "(FORMAT PARQUET, COMPRESSION ZSTD)"
+                )
+        return run_count
     finally:
-        connection.close()
         rows_path.unlink(missing_ok=True)
-    return run_count
 
 
 def _write_bulk_parquet(
@@ -169,16 +169,13 @@ def _write_bulk_parquet(
     target: Path,
     excluded_export_ids: frozenset[str],
 ) -> tuple[str, int]:
-    import duckdb
-
     snapshot = exporter.export_window(
         project_id=manifest.project_id,
         start_time=manifest.window_start,
         end_time=manifest.window_end,
         excluded_export_ids=excluded_export_ids,
     )
-    connection = duckdb.connect()
-    try:
+    with archive_duckdb_connection(target.parent) as connection:
         if snapshot.run_count:
             if not snapshot.file_uris:
                 raise ValueError("Non-empty bulk export has no Parquet files")
@@ -209,14 +206,10 @@ def _write_bulk_parquet(
                 f"TO {_sql_string(str(target))} "
                 "(FORMAT PARQUET, COMPRESSION ZSTD)"
             )
-    finally:
-        connection.close()
     return snapshot.export_id, snapshot.run_count
 
 
 def _canonicalize(store: ArchiveStore, manifest: ArchiveManifest, target: Path) -> int:
-    import duckdb
-
     sources: list[tuple[str, int]] = []
     if manifest.primary is not None:
         sources.append((store.object_uri(manifest.primary.raw_key), 1))
@@ -225,8 +218,7 @@ def _canonicalize(store: ArchiveStore, manifest: ArchiveManifest, target: Path) 
     if not sources:
         raise ValueError("Cannot canonicalize a manifest without snapshots")
 
-    connection = duckdb.connect()
-    try:
+    with archive_duckdb_connection(target.parent) as connection:
         configure_duckdb_s3(connection, [uri for uri, _ in sources])
         selects: list[str] = []
         for index, (uri, rank) in enumerate(sources):
@@ -284,8 +276,6 @@ def _canonicalize(store: ArchiveStore, manifest: ArchiveManifest, target: Path) 
         if count_row[0] != count_row[1]:
             raise ValueError("Canonical snapshot contains duplicate run IDs")
         return int(count_row[0])
-    finally:
-        connection.close()
 
 
 def sync_project_day(

@@ -154,7 +154,10 @@ last line of defense, not permission to overlap shard membership deliberately.
 Total local concurrency is `number of invocations * import workers`. Watch CPU,
 memory, S3 throttling, and error logs while increasing it. More workers cannot make a
 queued LangSmith export complete sooner; they only accelerate publication after an
-export is ready.
+export is ready. On an 11 GiB host, 48 aggregate workers briefly drove two large
+DuckDB processes near 10 GiB each and into swap; scale down aggregate workers for the
+long tail instead of assuming the broad-middle throughput will hold for the largest
+projects.
 
 ### Proving completion
 

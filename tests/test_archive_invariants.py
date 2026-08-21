@@ -14,6 +14,7 @@ import pytest
 from langsmith.schemas import Run
 
 from conftest import create_run
+from langsmith_cli.archive.duckdb import configure_duckdb_temp_directory
 from langsmith_cli.archive.models import ArchivePhase
 from langsmith_cli.archive.query import (
     ArchiveRunQuery,
@@ -673,6 +674,32 @@ def test_store_rejects_invalid_or_unsupported_uris(uri: str) -> None:
 def test_store_factory_supports_s3_and_file_uris(tmp_path: Path) -> None:
     assert isinstance(create_store("s3://archive-bucket/prefix"), S3ArchiveStore)
     assert create_store(tmp_path.as_uri()).base_uri == str(tmp_path.resolve())
+
+
+def test_duckdb_spill_directory_is_unique_to_each_project_staging_area(
+    tmp_path: Path,
+) -> None:
+    """Concurrent processes must never share DuckDB's default relative `.tmp`."""
+    import duckdb
+
+    first = duckdb.connect()
+    second = duckdb.connect()
+    try:
+        configure_duckdb_temp_directory(first, tmp_path / "project-a")
+        configure_duckdb_temp_directory(second, tmp_path / "project-b")
+
+        first_path = first.execute(
+            "SELECT current_setting('temp_directory')"
+        ).fetchone()
+        second_path = second.execute(
+            "SELECT current_setting('temp_directory')"
+        ).fetchone()
+        assert first_path == (str(tmp_path / "project-a" / "duckdb-spill"),)
+        assert second_path == (str(tmp_path / "project-b" / "duckdb-spill"),)
+        assert first_path != second_path
+    finally:
+        first.close()
+        second.close()
 
 
 def test_s3_store_propagates_non_concurrency_service_errors(

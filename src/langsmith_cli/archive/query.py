@@ -10,7 +10,10 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from langsmith_cli.archive.config import load_archive_config
-from langsmith_cli.archive.duckdb import configure_duckdb_s3
+from langsmith_cli.archive.duckdb import (
+    archive_duckdb_connection,
+    configure_duckdb_s3,
+)
 from langsmith_cli.archive.repository import (
     list_project_records,
     manifest_identity_from_key as _manifest_identity_from_key,
@@ -316,8 +319,6 @@ def query_archive_runs(
     query: ArchiveRunQuery, *, config_path: str | None = None
 ) -> list[Run]:
     """Return LangSmith Run contracts populated from canonical Parquet."""
-    import duckdb
-
     uris = _canonical_uris(query, config_path)
     if not uris:
         return []
@@ -332,8 +333,7 @@ def query_archive_runs(
         f"{where} ORDER BY start_time DESC{limit}"
     )
 
-    connection = duckdb.connect()
-    try:
+    with archive_duckdb_connection() as connection:
         configure_duckdb_s3(connection, uris)
         cursor = connection.execute(sql, parameters)
         columns = [description[0] for description in cursor.description]
@@ -342,22 +342,17 @@ def query_archive_runs(
             payload = dict(zip(columns, row, strict=True))
             runs.append(_validated_archive_run(payload))
         return runs
-    finally:
-        connection.close()
 
 
 def count_archive_runs(
     query: ArchiveRunQuery, *, config_path: str | None = None
 ) -> int:
     """Count matching runs using Parquet metadata/predicate pushdown only."""
-    import duckdb
-
     uris = _canonical_uris(query, config_path)
     if not uris:
         return 0
     where, parameters = _where_clause(query)
-    connection = duckdb.connect()
-    try:
+    with archive_duckdb_connection() as connection:
         configure_duckdb_s3(connection, uris)
         row = connection.execute(
             f"SELECT count(*) FROM read_parquet(?, union_by_name=true){where}",
@@ -366,8 +361,6 @@ def count_archive_runs(
         if row is None:
             raise ValueError("DuckDB did not return an archive count")
         return int(row[0])
-    finally:
-        connection.close()
 
 
 def read_archived_run(
@@ -380,8 +373,6 @@ def read_archived_run(
     before: datetime | None = None,
     config_path: str | None = None,
 ) -> tuple[Run, list[Run]]:
-    import duckdb
-
     uris = _canonical_uris(
         ArchiveRunQuery(
             project=project,
@@ -394,8 +385,7 @@ def read_archived_run(
     )
     if not uris:
         raise LookupError(f"Archived run not found: {run_id}")
-    connection = duckdb.connect()
-    try:
+    with archive_duckdb_connection() as connection:
         configure_duckdb_s3(connection, uris)
         cursor = connection.execute(
             "SELECT * FROM read_parquet(?, union_by_name=true) "
@@ -427,5 +417,3 @@ def read_archived_run(
                 update={"child_run_ids": [child.id for child in children]}
             )
         return run, children
-    finally:
-        connection.close()

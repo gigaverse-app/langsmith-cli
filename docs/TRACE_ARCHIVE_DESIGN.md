@@ -109,6 +109,14 @@ lower dev completion-check latency in the observed run. The summary labels itsel
 `manifest_contents_verified: false`; use the bounded full audit only when manifest
 body validation is required.
 
+The six-shard run also exposed why process-local spill ownership is an invariant,
+not a tuning detail. Two large workers peaked near 10 GiB each and used swap; one
+failed after another process truncated the shared default
+`.tmp/duckdb_temp_storage_*.tmp`. Archive connections now create unique spill
+directories within their already-unique staging roots, so cleanup in one process
+cannot corrupt another. Publication completed before the failure remains sealed and
+the failed disjoint shard is safe to replay.
+
 ## Project routing
 
 Archive destinations are selected by ordered, named project routes:
@@ -256,6 +264,7 @@ worker B: read v1 ─ export raw B ─ canonical B ─ CAS(v1) ──► CONFLIC
 | A13 | Text-search SQL identifiers come only from a fixed allowlist | `ArchiveRunQuery.__post_init__` | `test_archive_text_fields_are_an_explicit_allowlist` |
 | A14 | Full-trace semantic values and topology are provider-independent | `_normalize_run_payload`, `_validated_archive_run`, and derived `child_run_ids` | `test_bulk_json_normalization_matches_live_run_shape`, `test_bulk_reconciliation_unifies_runs_api_and_v2_json_column_types` plus the documented real three-trace comparison |
 | A15 | Archive completion counts do not require one object GET per manifest | `archive status --summary` derives identities from normalized immutable keys and labels the result `manifest_contents_verified: false`; full audits share one bounded metadata reader | `test_status_summary_is_key_derived_and_never_downloads_manifests`, `test_status_reads_independent_manifests_concurrently` |
+| A16 | Concurrent processes never share DuckDB spill files | every archive DuckDB connection gets a unique temporary directory inside its project/query staging boundary | `test_duckdb_spill_directory_is_unique_to_each_project_staging_area`; live replay of the shard that exposed shared `.tmp` truncation |
 
 The table deliberately names the enforcing code and executable regression test for
 each contract. Tests without an enforcement point prove an accident; comments without
