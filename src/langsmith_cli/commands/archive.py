@@ -268,6 +268,13 @@ def sync_archive(
     required=True,
     help="LangSmith-managed Bulk Export destination UUID.",
 )
+@click.option(
+    "--bulk-export-timeout-hours",
+    default=73.0,
+    show_default=True,
+    type=click.FloatRange(min=0, min_open=True),
+    help="Maximum wait per historical project export.",
+)
 @click.pass_context
 def backfill_archive(
     ctx: click.Context,
@@ -277,6 +284,7 @@ def backfill_archive(
     start_date: str,
     end_date: str,
     bulk_export_destination_id: str,
+    bulk_export_timeout_hours: float,
 ) -> None:
     """Export a historical range once and publish sealed daily partitions."""
     routes = _selected_routes(config_path, route_name, False)
@@ -289,6 +297,7 @@ def backfill_archive(
         client,
         destination_id=bulk_export_destination_id,
         archive_uri=route.archive_uri,
+        timeout_seconds=bulk_export_timeout_hours * 60 * 60,
     )
     if projects:
         project_models = [client.read_project(project_name=name) for name in projects]

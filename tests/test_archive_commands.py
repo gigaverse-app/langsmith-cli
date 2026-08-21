@@ -127,10 +127,16 @@ def test_bulk_backfill_submits_all_projects_before_importing(
             return job
 
     exporter = FakeManagedExporter()
+    factory_options: dict[str, object] = {}
+
+    def build_exporter(client: object, **kwargs: object) -> FakeManagedExporter:
+        factory_options.update(kwargs)
+        return exporter
+
     monkeypatch.setattr(
         archive_commands.LangSmithBulkExporter,
         "from_langsmith_client",
-        staticmethod(lambda client, **kwargs: exporter),
+        staticmethod(build_exporter),
     )
 
     def import_snapshot(
@@ -184,6 +190,7 @@ def test_bulk_backfill_submits_all_projects_before_importing(
         "dev/other",
     ]
     assert payload["unmatched_projects"] == ["qa/unrouted"]
+    assert factory_options["timeout_seconds"] == 73 * 60 * 60
 
 
 @pytest.mark.parametrize(

@@ -206,6 +206,7 @@ class LangSmithBulkExporter:
         *,
         destination_id: str,
         archive_uri: str,
+        timeout_seconds: float = 5 * 60 * 60,
     ) -> LangSmithBulkExporter:
         # These are public LangSmith Client properties. Direct access is
         # deliberate so SDK contract changes fail instead of silently degrading.
@@ -223,6 +224,7 @@ class LangSmithBulkExporter:
             or os.environ.get("LANGSMITH_WORKSPACE_ID"),
             destination_id=destination_id,
             archive_uri=archive_uri,
+            timeout_seconds=timeout_seconds,
         )
 
     def export_window(
