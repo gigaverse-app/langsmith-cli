@@ -5,7 +5,7 @@ from __future__ import annotations
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
-from typing import TypedDict
+from typing import Literal, TypedDict
 
 import click
 from langsmith import Client
@@ -82,7 +82,7 @@ class ArchiveStatusSummary(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    manifest_contents_verified: bool = False
+    manifest_contents_verified: Literal[False] = False
     routes: tuple[ArchiveStatusRoute, ...]
 
 

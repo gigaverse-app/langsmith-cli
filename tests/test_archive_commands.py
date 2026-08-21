@@ -658,6 +658,18 @@ def test_status_summary_is_key_derived_and_never_downloads_manifests(
     ]
 
 
+def test_status_summary_cannot_claim_manifest_body_verification() -> None:
+    """Key-derived evidence must never be mislabeled as a full body audit."""
+    from pydantic import ValidationError
+
+    from langsmith_cli.commands.archive import ArchiveStatusSummary
+
+    with pytest.raises(ValidationError):
+        ArchiveStatusSummary.model_validate(
+            {"manifest_contents_verified": True, "routes": []}
+        )
+
+
 def test_sync_command_surfaces_safe_retry_on_concurrent_publication(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
