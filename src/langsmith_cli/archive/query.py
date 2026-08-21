@@ -182,7 +182,7 @@ def _date_partition_overlaps(
 
 
 def _normalize_run_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Normalize UUID columns promoted to DuckDB JSON by all-null snapshots."""
+    """Normalize provider-specific Parquet values to the LangSmith Run contract."""
     for field in (
         "id",
         "trace_id",
@@ -198,6 +198,22 @@ def _normalize_run_payload(payload: dict[str, Any]) -> dict[str, Any]:
             if not isinstance(decoded, str):
                 raise ValueError(f"Archived UUID field is not a string: {field}")
             payload[field] = decoded
+    for field, expected_type in (
+        ("extra", dict),
+        ("inputs", dict),
+        ("outputs", dict),
+        ("feedback_stats", dict),
+        ("events", list),
+        ("tags", list),
+        ("parent_run_ids", list),
+    ):
+        value = payload[field] if field in payload else None
+        if not isinstance(value, str):
+            continue
+        decoded = json.loads(value)
+        if decoded is not None and not isinstance(decoded, expected_type):
+            raise ValueError(f"Archived JSON field has an invalid type: {field}")
+        payload[field] = decoded
     for details_field in (
         "prompt_token_details",
         "completion_token_details",
@@ -238,7 +254,10 @@ def _where_clause(query: ArchiveRunQuery) -> tuple[str, list[object]]:
             "parent_run_id IS NULL" if query.is_root else "parent_run_id IS NOT NULL"
         )
     for tag in query.tags:
-        clauses.append("list_contains(tags, ?)")
+        # Runs API snapshots expose a native VARCHAR[] while managed Bulk Export
+        # writes the same field as JSON text. Casting either representation to
+        # JSON keeps mixed-provider archives queryable.
+        clauses.append("json_contains(CAST(tags AS JSON), to_json(?))")
         parameters.append(tag)
     if query.text is not None:
         text_sql = " || ' ' || ".join(
@@ -318,12 +337,28 @@ def count_archive_runs(
 
 
 def read_archived_run(
-    run_id: str, *, follow_children: bool, config_path: str | None = None
+    run_id: str,
+    *,
+    follow_children: bool,
+    project: str | None = None,
+    project_id: str | None = None,
+    since: datetime | None = None,
+    before: datetime | None = None,
+    config_path: str | None = None,
 ) -> tuple[Run, list[Run]]:
     import duckdb
     from langsmith.schemas import Run
 
-    uris = _canonical_uris(ArchiveRunQuery(limit=0), config_path)
+    uris = _canonical_uris(
+        ArchiveRunQuery(
+            project=project,
+            project_id=project_id,
+            since=since,
+            before=before,
+            limit=0,
+        ),
+        config_path,
+    )
     if not uris:
         raise LookupError(f"Archived run not found: {run_id}")
     connection = duckdb.connect()

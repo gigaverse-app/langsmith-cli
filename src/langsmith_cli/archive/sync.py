@@ -34,6 +34,21 @@ from langsmith_cli.archive.storage import ArchiveStore
 
 if TYPE_CHECKING:
     from langsmith.schemas import Run
+    from langsmith_cli.archive.bulk import BulkWindowExporter
+
+
+# Canonical Parquet stores nested provider fields as JSON text. Runs API JSONL is
+# inferred as STRUCT/LIST while Bulk Export v2 emits VARCHAR for the same fields;
+# normalizing here keeps reconciliation and cross-day union schema-stable.
+ARCHIVE_JSON_COLUMNS = (
+    "extra",
+    "inputs",
+    "outputs",
+    "feedback_stats",
+    "events",
+    "tags",
+    "parent_run_ids",
+)
 
 
 class RunsExportClient(Protocol):
@@ -145,6 +160,57 @@ def _write_runs_parquet(
     return run_count
 
 
+def _write_bulk_parquet(
+    exporter: BulkWindowExporter,
+    manifest: ArchiveManifest,
+    target: Path,
+    excluded_export_ids: frozenset[str],
+) -> tuple[str, int]:
+    import duckdb
+
+    snapshot = exporter.export_window(
+        project_id=manifest.project_id,
+        start_time=manifest.window_start,
+        end_time=manifest.window_end,
+        excluded_export_ids=excluded_export_ids,
+    )
+    connection = duckdb.connect()
+    try:
+        if snapshot.run_count:
+            if not snapshot.file_uris:
+                raise ValueError("Non-empty bulk export has no Parquet files")
+            configure_duckdb_s3(connection, list(snapshot.file_uris))
+            source_list = (
+                "[" + ", ".join(_sql_string(uri) for uri in snapshot.file_uris) + "]"
+            )
+            source = (
+                f"read_parquet({source_list}, union_by_name=true, "
+                "hive_partitioning=false)"
+            )
+            counts = connection.execute(
+                f"SELECT count(*), count(DISTINCT id) FROM {source}"
+            ).fetchone()
+            if counts is None or counts[0] != snapshot.run_count:
+                raise ValueError("Bulk export row count does not match Parquet")
+            if counts[0] != counts[1]:
+                raise ValueError("Bulk export contains duplicate run IDs")
+            connection.execute(
+                f"COPY (SELECT * FROM {source}) TO {_sql_string(str(target))} "
+                "(FORMAT PARQUET, COMPRESSION ZSTD)"
+            )
+        else:
+            if snapshot.file_uris:
+                raise ValueError("Empty bulk export unexpectedly published files")
+            connection.execute(
+                "COPY (SELECT CAST(NULL AS VARCHAR) AS id WHERE false) "
+                f"TO {_sql_string(str(target))} "
+                "(FORMAT PARQUET, COMPRESSION ZSTD)"
+            )
+    finally:
+        connection.close()
+    return snapshot.export_id, snapshot.run_count
+
+
 def _canonicalize(store: ArchiveStore, manifest: ArchiveManifest, target: Path) -> int:
     import duckdb
 
@@ -171,7 +237,26 @@ def _canonicalize(store: ArchiveStore, manifest: ArchiveManifest, target: Path) 
             ).fetchone()
             if counts is None or counts[0] != counts[1]:
                 raise ValueError(f"Snapshot contains duplicate run IDs: {uri}")
-            selects.append(f"SELECT * FROM {view}")
+            columns = {
+                str(row[1])
+                for row in connection.execute(f"PRAGMA table_info('{view}')").fetchall()
+            }
+            json_columns = tuple(
+                column for column in ARCHIVE_JSON_COLUMNS if column in columns
+            )
+            if json_columns:
+                excluded = ", ".join(json_columns)
+                normalized = ", ".join(
+                    f"CASE WHEN typeof({column}) = 'VARCHAR' "
+                    f"THEN CAST({column} AS VARCHAR) "
+                    f"ELSE CAST(to_json({column}) AS VARCHAR) END AS {column}"
+                    for column in json_columns
+                )
+                selects.append(
+                    f"SELECT * EXCLUDE ({excluded}), {normalized} FROM {view}"
+                )
+            else:
+                selects.append(f"SELECT * FROM {view}")
 
         union_sql = " UNION ALL BY NAME ".join(selects)
         query = (
@@ -201,7 +286,7 @@ def _canonicalize(store: ArchiveStore, manifest: ArchiveManifest, target: Path) 
 
 
 def sync_project_day(
-    client: RunsExportClient,
+    client: RunsExportClient | None,
     store: ArchiveStore,
     *,
     project_id: str,
@@ -212,6 +297,7 @@ def sync_project_day(
     manifest_known_absent: bool = False,
     existing_project: ArchiveProject | None = None,
     project_record_checked: bool = False,
+    bulk_exporter: BulkWindowExporter | None = None,
 ) -> ArchiveManifest:
     """Export one phase and conditionally publish a canonical generation.
 
@@ -247,6 +333,11 @@ def sync_project_day(
         return manifest
     if manifest.sealed:
         raise ValueError("A sealed archive day is immutable")
+    excluded_export_ids = frozenset(
+        record.generation_id
+        for record in (manifest.primary, manifest.reconciliation)
+        if record is not None
+    )
     generation_id = str(uuid4())
     raw_key = (
         f"raw/project_id={project_id}/date={trace_date.isoformat()}/"
@@ -256,7 +347,21 @@ def sync_project_day(
     with tempfile.TemporaryDirectory(prefix="langsmith-archive-") as directory:
         staging = Path(directory)
         raw_file = staging / "raw.parquet"
-        run_count = _write_runs_parquet(client, manifest, raw_file)
+        if bulk_exporter is not None:
+            generation_id, run_count = _write_bulk_parquet(
+                bulk_exporter,
+                manifest,
+                raw_file,
+                excluded_export_ids,
+            )
+            raw_key = (
+                f"raw/project_id={project_id}/date={trace_date.isoformat()}/"
+                f"phase={phase.value}/generation={generation_id}/runs.parquet"
+            )
+        else:
+            if client is None:
+                raise ValueError("Runs API archive sync requires a LangSmith client")
+            run_count = _write_runs_parquet(client, manifest, raw_file)
         store.put_file(raw_key, raw_file)
 
         record = PhaseRecord(

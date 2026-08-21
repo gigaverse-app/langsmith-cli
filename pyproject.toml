@@ -1,7 +1,7 @@
 [project]
 name = "langsmith-cli"
 # IMPORTANT: When bumping this version, also update .claude-plugin/plugin.json
-version = "0.10.3"
+version = "0.11.0"
 description = "Context-efficient CLI for LangSmith. Built for humans and agents."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -37,6 +37,7 @@ dependencies = [
     "platformdirs>=4.0",
     "pydantic>=2.11.0",
     "python-dotenv>=1.2.1",
+    "pytz>=2025.2",
     "pyyaml>=6.0.3",
     "rich>=14.2.0",
 ]

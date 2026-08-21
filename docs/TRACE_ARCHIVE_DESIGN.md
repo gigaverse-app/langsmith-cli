@@ -37,6 +37,24 @@ LANGSMITH_ARCHIVE_URI=s3://gigaverse-langsmith-traces-prd/langsmith \
 Each invocation calculates both due windows. Completed phases are skipped, known
 in-flight jobs are resumed, and failures are safe to retry.
 
+For high-volume projects, the same command accepts an organization-created managed
+destination through `--bulk-export-destination-id` or
+`LANGSMITH_BULK_EXPORT_DESTINATION_ID`. LangSmith writes `v2_beta` Parquet to an S3
+prefix inside the archive; the CLI adopts matching jobs, validates all partition
+coverage and row identities, and publishes the normal canonical contract.
+
+Historical migration uses one range job per project:
+
+```bash
+langsmith-cli --json archive backfill --route production \
+  --start-date 2025-08-01 --end-date 2026-08-01 \
+  --bulk-export-destination-id <uuid>
+```
+
+All project jobs are submitted before the CLI waits, letting LangSmith control
+workspace concurrency. Each completed range is converted into sealed daily
+manifests. Re-running adopts the same range jobs and skips days already sealed.
+
 ## Project routing
 
 Archive destinations are selected by ordered, named project routes:
@@ -94,6 +112,12 @@ Arbitrary SDK `bytes` values are preserved as tagged base64 objects with
 materialized at the JSON-to-Parquet boundary. This keeps non-UTF-8 media payloads
 without weakening UTF-8 validation for the surrounding trace document.
 
+Canonical nested fields (`inputs`, `outputs`, `extra`, `events`, `tags`,
+`feedback_stats`, and `parent_run_ids`) are JSON text. Runs API JSONL inference
+produces DuckDB `STRUCT`/`LIST` values while Bulk Export v2 supplies JSON `VARCHAR`;
+canonicalization converts both forms before union. This prevents provider changes or
+different object keys on adjacent days from producing incompatible Parquet schemas.
+
 The bucket owner may expire `raw/` after a repair/audit window. Canonical objects and
 manifests are retained according to the organization's policy.
 
@@ -135,6 +159,13 @@ Cross-service exactly-once behavior is impossible if a process dies after creati
 remote export but before persisting its ID. The design therefore guarantees
 at-least-once raw attempts and exactly-once canonical rows. Orphan raw attempts can be
 adopted or removed by lifecycle policy.
+
+Managed jobs are adopted by their complete immutable request identity: destination,
+project, exact half-open window, `v2_beta`, zstandard compression, full field set,
+and no schedule/filter. The newest non-failed match is used. Reconciliation excludes
+the primary export ID, forcing a new snapshot of the same date. Concurrent creators
+may leave a redundant managed job, but conditional manifest publication still
+allows only one canonical winner.
 
 The mutable manifest pointer is updated with compare-and-swap: `If-None-Match: *` for
 its first S3 publication and `If-Match: <observed-etag>` thereafter. Local archives
@@ -218,6 +249,9 @@ backend contract. `runs watch`, `runs open`, and mutations remain live-only.
 ## Provider boundary
 
 The portable provider pages through `Client.list_runs` for an exact half-open UTC
-window and writes Parquet itself. An optional LangSmith Bulk Export provider may use
-an organization-created destination ID. Scheduling, manifests, verification,
-canonicalization, and querying are provider-independent.
+window and writes Parquet itself. The LangSmith Bulk Export provider uses an
+organization-created destination ID, submits/adopts managed jobs, verifies every
+partition covers the requested window without gaps, verifies Parquet count and run
+ID uniqueness, and compacts the provider output into the same raw/canonical layout.
+Scheduling, manifests, verification, canonicalization, and querying remain
+provider-independent.

@@ -107,6 +107,11 @@ langsmith-cli --json runs get <run-id> [OPTIONS]
 
 **Options:**
 - `--archive` - Read the run and optional children from canonical Parquet
+- `--project TEXT` - Exact project name hint; avoids scanning unrelated archive partitions
+- `--project-id TEXT` - Project UUID hint; avoids scanning unrelated archive partitions
+- `--since TEXT` - Archive partition lower bound (ISO or shorthand)
+- `--before TEXT` - Archive partition upper bound (ISO or shorthand)
+- `--last TEXT` - Archive partition duration ending now or relative to `--since`/`--before`
 - `--fields TEXT` - Comma-separated list of fields to return (critical for context efficiency)
 
 **Available Fields:**
@@ -149,7 +154,14 @@ langsmith-cli --json runs get <id> --fields name,status,start_time,end_time
 
 # Full object (use sparingly, ~20KB)
 langsmith-cli --json runs get <id>
+
+# Fast archived point read when project/day are known
+langsmith-cli --json runs get <id> --archive --project dev/agent \
+  --since 2026-08-18 --before 2026-08-19 --fields name,inputs,outputs
 ```
+
+Archive point reads without project/date hints must discover all sealed manifests.
+For a long-retention archive, pass the narrowest known project and time window.
 
 ### `runs stats`
 

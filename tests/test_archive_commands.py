@@ -245,7 +245,9 @@ def test_archive_get_reports_missing_run(
 ) -> None:
     from langsmith_cli.archive import query as archive_query
 
-    def missing_run(run_id: str, *, follow_children: bool) -> tuple[Run, list[Run]]:
+    def missing_run(
+        run_id: str, *, follow_children: bool, **kwargs: object
+    ) -> tuple[Run, list[Run]]:
         raise LookupError(f"Archived run not found: {run_id}")
 
     monkeypatch.setattr(archive_query, "read_archived_run", missing_run)
@@ -256,6 +258,61 @@ def test_archive_get_reports_missing_run(
 
     assert result.exit_code != 0
     assert "Archived run not found" in parse_json_output(result.output)["message"]
+
+
+def test_archive_get_forwards_partition_pruning_hints(
+    monkeypatch: pytest.MonkeyPatch,
+    runner,
+) -> None:
+    from langsmith_cli.archive import query as archive_query
+
+    observed: dict[str, object] = {}
+
+    def read_run(
+        run_id: str,
+        *,
+        follow_children: bool,
+        project: str | None,
+        project_id: str | None,
+        since: object,
+        before: object,
+    ) -> tuple[Run, list[Run]]:
+        observed.update(
+            run_id=run_id,
+            follow_children=follow_children,
+            project=project,
+            project_id=project_id,
+            since=since,
+            before=before,
+        )
+        return create_run(id_str=run_id), []
+
+    monkeypatch.setattr(archive_query, "read_archived_run", read_run)
+    run_id = "12345678-1234-5678-1234-567812345678"
+    result = runner.invoke(
+        cli,
+        [
+            "--json",
+            "runs",
+            "get",
+            run_id,
+            "--archive",
+            "--project",
+            "dev/agent",
+            "--project-id",
+            "22345678-1234-5678-1234-567812345678",
+            "--since",
+            "2026-08-18",
+            "--before",
+            "2026-08-20",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert observed["project"] == "dev/agent"
+    assert observed["project_id"] == "22345678-1234-5678-1234-567812345678"
+    assert str(observed["since"]) == "2026-08-18 00:00:00"
+    assert str(observed["before"]) == "2026-08-20 00:00:00"
 
 
 def test_archive_get_latest_maps_filters_and_fields(

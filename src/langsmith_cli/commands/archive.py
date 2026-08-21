@@ -13,6 +13,8 @@ from langsmith_cli.archive.config import (
     UnknownRouteError,
     load_archive_config,
 )
+from langsmith_cli.archive.backfill import backfill_window, import_backfill_snapshot
+from langsmith_cli.archive.bulk import BulkExportJob, LangSmithBulkExporter
 from langsmith_cli.archive.models import (
     ArchiveManifestDict,
     ArchivePhase,
@@ -36,9 +38,19 @@ class SyncResultDict(TypedDict):
     project_id: str
     trace_date: str
     phase: str
+    provider: str
     skipped: bool
     canonical_run_count: int
     sealed: bool
+
+
+class BackfillProjectResultDict(TypedDict):
+    project_name: str
+    project_id: str
+    export_id: str
+    imported_days: int
+    skipped_days: int
+    canonical_run_count: int
 
 
 @click.group()
@@ -71,6 +83,11 @@ def _selected_routes(
 @click.option("--project", "projects", multiple=True, help="Exact project to sync.")
 @click.option("--retention-days", default=14, show_default=True, type=int)
 @click.option(
+    "--bulk-export-destination-id",
+    envvar="LANGSMITH_BULK_EXPORT_DESTINATION_ID",
+    help="Use a LangSmith-managed Bulk Export destination UUID.",
+)
+@click.option(
     "--date",
     "trace_date_text",
     help="Export one exact UTC trace date (YYYY-MM-DD); requires --phase.",
@@ -94,6 +111,7 @@ def sync_archive(
     all_routes: bool,
     projects: tuple[str, ...],
     retention_days: int,
+    bulk_export_destination_id: str | None,
     trace_date_text: str | None,
     phase_text: str | None,
     today_text: str | None,
@@ -113,6 +131,19 @@ def sync_archive(
         else due_trace_dates(today, retention_days)
     )
     client = get_or_create_client(ctx)
+    if bulk_export_destination_id is not None and len(routes) != 1:
+        raise click.ClickException(
+            "Bulk Export requires exactly one selected archive route"
+        )
+    bulk_exporter = (
+        LangSmithBulkExporter.from_langsmith_client(
+            client,
+            destination_id=bulk_export_destination_id,
+            archive_uri=routes[0].archive_uri,
+        )
+        if bulk_export_destination_id is not None
+        else None
+    )
 
     if projects:
         project_models = [client.read_project(project_name=name) for name in projects]
@@ -178,6 +209,7 @@ def sync_archive(
                         str(project.id)
                     ),
                     project_record_checked=True,
+                    bulk_exporter=bulk_exporter,
                 )
             except ConcurrentArchiveWriteError as exc:
                 raise click.ClickException(
@@ -197,6 +229,9 @@ def sync_archive(
                     "project_id": str(project.id),
                     "trace_date": trace_date.isoformat(),
                     "phase": phase.value,
+                    "provider": (
+                        "bulk_export" if bulk_exporter is not None else "runs_api"
+                    ),
                     "skipped": skipped,
                     "canonical_run_count": manifest.canonical_run_count,
                     "sealed": manifest.sealed,
@@ -219,6 +254,114 @@ def sync_archive(
         logger.warning(
             f"Skipped {len(unmatched_projects)} project(s) without an archive route"
         )
+
+
+@archive.command("backfill")
+@click.option("--config", "config_path", type=click.Path(exists=True, dir_okay=False))
+@click.option("--route", "route_name", required=True, help="Backfill one route.")
+@click.option("--project", "projects", multiple=True, help="Exact project to backfill.")
+@click.option("--start-date", required=True, help="Inclusive UTC date (YYYY-MM-DD).")
+@click.option("--end-date", required=True, help="Exclusive UTC date (YYYY-MM-DD).")
+@click.option(
+    "--bulk-export-destination-id",
+    envvar="LANGSMITH_BULK_EXPORT_DESTINATION_ID",
+    required=True,
+    help="LangSmith-managed Bulk Export destination UUID.",
+)
+@click.pass_context
+def backfill_archive(
+    ctx: click.Context,
+    config_path: str | None,
+    route_name: str,
+    projects: tuple[str, ...],
+    start_date: str,
+    end_date: str,
+    bulk_export_destination_id: str,
+) -> None:
+    """Export a historical range once and publish sealed daily partitions."""
+    routes = _selected_routes(config_path, route_name, False)
+    route = routes[0]
+    window_start, window_end = backfill_window(
+        date.fromisoformat(start_date), date.fromisoformat(end_date)
+    )
+    client = get_or_create_client(ctx)
+    exporter = LangSmithBulkExporter.from_langsmith_client(
+        client,
+        destination_id=bulk_export_destination_id,
+        archive_uri=route.archive_uri,
+    )
+    if projects:
+        project_models = [client.read_project(project_name=name) for name in projects]
+    else:
+        project_models = list(client.list_projects(limit=None))
+    config = load_archive_config(config_path)
+    selected_projects: list[tuple[str, str]] = []
+    unmatched_projects: list[str] = []
+    for project in project_models:
+        try:
+            matched_route = config.route_project(project.name)
+        except UnmatchedProjectError as exc:
+            if projects:
+                raise click.ClickException(str(exc)) from exc
+            unmatched_projects.append(project.name)
+            continue
+        if matched_route.name != route.name:
+            if projects:
+                raise click.ClickException(
+                    f"Project {project.name} belongs to route {matched_route.name}, "
+                    f"not the selected route"
+                )
+            continue
+        if project.name is None:
+            raise click.ClickException("LangSmith project is missing its name")
+        selected_projects.append((str(project.id), project.name))
+
+    pending: list[tuple[str, str, BulkExportJob]] = []
+    for project_id, project_name in selected_projects:
+        job = exporter.begin_window(
+            project_id=project_id,
+            start_time=window_start,
+            end_time=window_end,
+            excluded_export_ids=frozenset(),
+        )
+        pending.append((project_id, project_name, job))
+
+    store = create_store(route.archive_uri)
+    results: list[BackfillProjectResultDict] = []
+    for project_id, project_name, job in pending:
+        snapshot = exporter.complete_export(job)
+        imported = import_backfill_snapshot(
+            store,
+            project_id=project_id,
+            project_name=project_name,
+            snapshot=snapshot,
+        )
+        results.append(
+            {
+                "project_name": project_name,
+                "project_id": project_id,
+                "export_id": imported.export_id,
+                "imported_days": imported.imported_days,
+                "skipped_days": imported.skipped_days,
+                "canonical_run_count": imported.canonical_run_count,
+            }
+        )
+
+    payload = {
+        "route": route.name,
+        "archive_uri": route.archive_uri,
+        "start_date": start_date,
+        "end_date": end_date,
+        "projects": results,
+        "unmatched_projects": sorted(unmatched_projects),
+    }
+    if is_json_context(ctx):
+        click.echo(json_dumps(payload))
+        return
+    logger = ctx.obj["logger"]
+    logger.success(
+        f"Backfilled {len(results)} project(s) from {start_date} to {end_date}"
+    )
 
 
 @archive.command("status")

@@ -38,6 +38,21 @@ langsmith-cli --json archive sync --route dev \
   --date 2026-08-19 --phase primary
 ```
 
+For high-volume projects, configure a LangSmith Bulk Export destination whose S3
+bucket and prefix are inside the selected archive URI. Supply its UUID through the
+environment or the command line:
+
+```bash
+LANGSMITH_BULK_EXPORT_DESTINATION_ID=<uuid> \
+  langsmith-cli --json archive sync --route dev --retention-days 14
+```
+
+The CLI creates or adopts an exact project/window `v2_beta` export, waits for all
+LangSmith partitions, verifies row counts and distinct run IDs from the published
+Parquet, then publishes the same canonical manifest contract as the Runs API
+provider. Primary export IDs are excluded when selecting reconciliation jobs, so
+D+12 always captures a fresh snapshot.
+
 Prefer one CronJob per route so its AWS role can access only that environment's
 bucket. Use `--all-routes` only for a central role intentionally authorized for all
 destinations.
@@ -57,12 +72,34 @@ langsmith-cli --json archive status --route dev
 langsmith-cli --json archive status --all-routes
 ```
 
+## Historical backfill
+
+Use one managed range export per project rather than creating one API job per day.
+`--start-date` is inclusive and `--end-date` is exclusive:
+
+```bash
+langsmith-cli --json archive backfill \
+  --route dev \
+  --start-date 2025-08-01 \
+  --end-date 2026-08-01 \
+  --bulk-export-destination-id <uuid>
+```
+
+The command submits/adopts every selected project export before waiting, allowing
+LangSmith to apply its workspace concurrency. Completed output is split into sealed
+UTC-day manifests for DuckDB. Re-running the same command adopts the existing range
+export and skips already sealed days.
+
+Use repeated `--project` options to limit a repair or trial. Keep ranges small enough
+to finish within LangSmith's managed export workflow timeout. Bulk Export cannot
+recover traces that LangSmith has already deleted under its retention policy.
+
 ## Archive queries
 
 ```bash
 langsmith-cli --json runs list --archive --project dev/my-agent --last 90d
 langsmith-cli --json runs search "timeout" --archive --project dev/my-agent
-langsmith-cli --json runs get <id> --archive --follow-children
+langsmith-cli --json runs get <id> --archive --project dev/my-agent --last 1d --follow-children
 langsmith-cli --json runs get-latest --archive --project dev/my-agent --failed
 ```
 
@@ -76,6 +113,11 @@ typed DuckDB query model.
 Name/regex/exclude filters currently run after the DuckDB query. Use `--fetch N` to
 control how many archived rows they evaluate; `--count` evaluates the full matching
 archive before applying those local filters.
+
+For `runs get`, project and time options are partition-pruning hints. A bare run ID
+has no project/date information, so a year-scale archive otherwise requires manifest
+discovery across every project and day. Pass the narrowest known `--project` or
+`--project-id` plus `--since`/`--before` or `--last` window.
 
 See `docs/TRACE_ARCHIVE_DESIGN.md` for storage layout, reconciliation,
 deduplication, crash recovery, IAM boundaries, and efficiency decisions.
