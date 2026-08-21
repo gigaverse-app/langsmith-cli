@@ -28,6 +28,7 @@ from langsmith_cli.archive.bulk import (
 from langsmith_cli.archive.models import ArchivePhase
 from langsmith_cli.archive.query import (
     ArchiveRunQuery,
+    _validated_archive_run,
     query_archive_runs,
     read_archived_run,
 )
@@ -100,6 +101,32 @@ def test_bulk_json_normalization_matches_live_run_shape() -> None:
             }
         ],
     }
+
+
+def test_bulk_json_normalization_preserves_non_json_values_and_normalizes_datetimes() -> (
+    None
+):
+    payload = _normalize_run_payload(
+        {
+            "inputs": json.dumps({"input": "plain text"}),
+            "events": json.dumps([{"name": "custom", "time": "not-an-iso-time"}]),
+        }
+    )
+    assert payload == {
+        "inputs": {"input": "plain text"},
+        "events": [{"name": "custom", "time": "not-an-iso-time"}],
+    }
+
+    run_payload = create_run().model_dump(mode="python")
+    run_payload["events"] = [
+        {"name": "start", "time": datetime(2026, 8, 19, 21, 59, 53, 948395)},
+        {"name": "custom", "time": "not-an-iso-time"},
+    ]
+    run = _validated_archive_run(run_payload)
+    assert run.model_dump(mode="json")["events"] == [
+        {"name": "start", "time": "2026-08-19T21:59:53.948395+00:00"},
+        {"name": "custom", "time": "not-an-iso-time"},
+    ]
 
 
 class FakeBulkExporter:
