@@ -57,6 +57,49 @@ workspace concurrency. Completed jobs are harvested without submission-order
 blocking, and bounded workers convert independent projects into sealed daily
 manifests. Re-running adopts the same range jobs and skips days already sealed.
 
+### Historical backfill execution model
+
+Export and publication are deliberately separate concurrency domains:
+
+```text
+selected projects
+      |
+      | submit or adopt every exact project/range request
+      v
+LangSmith managed queue (remote concurrency and hourly Parquet)
+      |
+      | harvest whichever exports complete; submission order is irrelevant
+      v
+bounded project worker pool (local DuckDB + S3 concurrency)
+      |
+      | one worker owns one project and publishes its UTC days serially
+      v
+raw generation -> verified canonical generation -> manifest written last
+```
+
+The CLI never splits one project's days across workers in one invocation. This is
+the local one-writer-per-project invariant; export IDs are also required to map to
+exactly one project before any worker is scheduled. Independent projects may publish
+concurrently. For a one-time migration, operators may run multiple invocations with
+disjoint repeated `--project` selections. Overlapping project selections are safe at
+the manifest CAS boundary but waste export, DuckDB, and S3 work and therefore are not
+a scaling strategy.
+
+`--import-workers` bounds projects being compacted per invocation; it does not alter
+LangSmith's managed export concurrency. Its default is 8 and its maximum is 32.
+Total local concurrency across manual shards is `invocations * import-workers`, so
+operators must measure CPU, memory, S3 request rate, and object sizes rather than
+assuming the maximum is faster. The live 399-day Gigaverse migration measured:
+
+| Layout | Aggregate publication | Relative to serial |
+|---|---:|---:|
+| Three serial environment processes | ~45 project-days/min | 1x |
+| One 8-worker process per environment | ~350 project-days/min | ~8x |
+| Six disjoint shards, 48 aggregate workers, 6-core host | 560-630 project-days/min | ~12-14x |
+
+These measurements describe one workload and host, not a universal default. Daily
+scheduled syncs are much smaller and do not need manual sharding.
+
 ## Project routing
 
 Archive destinations are selected by ordered, named project routes:

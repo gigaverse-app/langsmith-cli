@@ -93,6 +93,20 @@ order and compacts independent projects concurrently. Completed output is split 
 sealed UTC-day manifests for DuckDB. Re-running the same command adopts the existing
 range export and skips already sealed days.
 
+Progress messages go to stderr even with `--json`, leaving stdout as one final
+machine-readable result. The important transitions are:
+
+```text
+Submitted or adopted N project export(s)  remote work is known and resumable
+Export ready; importing <project>         local DuckDB/S3 publication started
+Imported <project>: X new, Y sealed       that project's range finished locally
+final JSON on stdout + exit 0              every selected project finished
+```
+
+The first line does **not** mean the backfill is complete. LangSmith can have accepted
+every job while local canonical publication still has thousands of project-days to
+write.
+
 Historical exports can remain queued behind other workspace jobs. Backfill waits up
 to 73 hours without any project completing by default, slightly beyond the managed
 workflow's 72-hour terminal timeout. Each completion resets that idle deadline.
@@ -103,6 +117,83 @@ exact-window jobs.
 Use repeated `--project` options to limit a repair or trial. Keep ranges small enough
 to finish within LangSmith's managed export workflow timeout. Bulk Export cannot
 recover traces that LangSmith has already deleted under its retention policy.
+
+### Scaling a one-time backfill
+
+`--import-workers` is the number of independent projects compacted by one invocation,
+not the number of days or LangSmith export jobs. Start with the default 8 and measure
+the host and S3 before increasing it. The maximum is 32.
+
+If one process cannot use the available host capacity, split projects into disjoint
+invocations using repeated `--project` options:
+
+```bash
+# Shard A
+langsmith-cli --json archive backfill --route production \
+  --project prd/agent-a --project prd/agent-c \
+  --start-date 2025-08-01 --end-date 2026-08-01 \
+  --import-workers 8 --bulk-export-destination-id <uuid>
+
+# Shard B: no project may also appear in shard A.
+langsmith-cli --json archive backfill --route production \
+  --project prd/agent-b --project prd/agent-d \
+  --start-date 2025-08-01 --end-date 2026-08-01 \
+  --import-workers 8 --bulk-export-destination-id <uuid>
+```
+
+Keep the route, destination, and half-open date window identical across shards. The
+CLI rejects one export ID being assigned to multiple projects, and each invocation
+schedules at most one publisher per selected project. Manifest compare-and-swap is a
+last line of defense, not permission to overlap shard membership deliberately.
+
+Total local concurrency is `number of invocations * import workers`. Watch CPU,
+memory, S3 throttling, and error logs while increasing it. More workers cannot make a
+queued LangSmith export complete sooner; they only accelerate publication after an
+export is ready.
+
+### Proving completion
+
+Use the process result and the archive matrix together. For a half-open range, the
+expected day count is `end_date - start_date`. A complete rectangular backfill has
+`selected_projects * expected_days` sealed manifests:
+
+```bash
+langsmith-cli --json archive status --config archive.yaml --route production \
+  | jq '[.[] | select(
+      .trace_date >= "2025-08-01" and .trace_date < "2026-08-01"
+    )] | {
+      manifests: length,
+      sealed: map(select(.sealed)) | length,
+      projects: map(.project_id) | unique | length
+    }'
+```
+
+Completion requires all of the following:
+
+1. Every shard exits 0 and emits its final JSON result.
+2. `manifests == sealed == selected_projects * expected_days` for the requested
+   matrix. Use the original selected-project count; deriving it only from manifests
+   could hide a project with zero published days.
+3. No shard reports a terminal export, validation, DuckDB, S3, or CAS error.
+4. Representative DuckDB archive queries return the expected runs before temporary
+   Bulk Export credentials or raw source objects are retired.
+
+### Restart and cleanup
+
+Restart with the exact same destination, route, projects, and half-open window. The
+CLI adopts the newest non-failed job whose complete immutable request identity
+matches and skips each already sealed day. Changing the destination, project, range,
+format, or field contract is a different request and may create a new managed job.
+
+If a process stops after uploading immutable data but before publishing the manifest,
+the object is an invisible orphan; readers only follow manifest pointers. A later
+retry safely republishes, and the bucket's explicit raw-object lifecycle may remove
+orphans after the audit window.
+
+Keep the LangSmith destination credentials valid until both remote export and local
+publication are complete. Remove temporary credentials only after the completion
+checks above. Do not silently expire or delete Bulk Export source objects until the
+organization has chosen and documented its repair/audit retention window.
 
 ## Archive queries
 
