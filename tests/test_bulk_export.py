@@ -10,6 +10,7 @@ from typing import Any, Callable, Iterator, cast
 
 import pytest
 from conftest import create_run
+from langsmith import Client
 from langsmith.schemas import Run
 from langsmith_cli.archive.backfill import import_backfill_snapshot
 from langsmith_cli.archive.bulk import (
@@ -204,6 +205,365 @@ def test_bulk_export_rejects_destination_outside_archive() -> None:
             start_time=TRACE_START,
             end_time=TRACE_END,
             excluded_export_ids=frozenset(),
+        )
+
+
+def test_bulk_export_creates_exact_v2_job_when_none_can_be_adopted() -> None:
+    created_payload: dict[str, object] = {}
+
+    def request(
+        method: str,
+        path: str,
+        params: dict[str, object] | None,
+        payload: dict[str, object] | None,
+    ) -> object:
+        if path.startswith("/api/v1/bulk-exports/destinations/"):
+            return _destination_request(method, path, params, payload)
+        if method == "GET" and path == "/api/v1/bulk-exports":
+            assert params == {"limit": 1000, "offset": 0}
+            return []
+        if method == "POST" and path == "/api/v1/bulk-exports":
+            assert payload is not None
+            created_payload.update(payload)
+            return _job_payload(NEW_EXPORT_ID, "Created", TRACE_START.isoformat())
+        raise AssertionError((method, path))
+
+    job = _exporter(request_json=request).begin_window(
+        project_id=PROJECT_ID,
+        start_time=TRACE_START,
+        end_time=TRACE_END,
+        excluded_export_ids=frozenset(),
+    )
+
+    assert job.export_id == NEW_EXPORT_ID
+    assert created_payload == {
+        "bulk_export_destination_id": DESTINATION_ID,
+        "session_id": PROJECT_ID,
+        "start_time": TRACE_START.isoformat(),
+        "end_time": TRACE_END.isoformat(),
+        "format_version": "v2_beta",
+        "compression": "zstandard",
+        "export_fields": list(BULK_EXPORT_FIELDS),
+    }
+
+
+def test_bulk_export_http_adapter_sends_workspace_headers_and_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    class FakeResponse:
+        def __init__(self, payload: object) -> None:
+            self.payload = payload
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> object:
+            return self.payload
+
+    def request(method: str, url: str, **kwargs: object) -> FakeResponse:
+        calls.append({"method": method, "url": url, **kwargs})
+        if url.endswith(f"/destinations/{DESTINATION_ID}"):
+            return FakeResponse(
+                {
+                    "id": DESTINATION_ID,
+                    "config": {
+                        "bucket_name": "traces-dev",
+                        "prefix": "langsmith/bulk",
+                    },
+                }
+            )
+        if method == "GET":
+            return FakeResponse([])
+        return FakeResponse(
+            _job_payload(NEW_EXPORT_ID, "Created", TRACE_START.isoformat())
+        )
+
+    monkeypatch.setattr("httpx.request", request)
+    exporter = LangSmithBulkExporter(
+        api_url="https://self-hosted.example/api",
+        api_key="test-key",
+        workspace_id="workspace-id",
+        destination_id=DESTINATION_ID,
+        archive_uri="s3://traces-dev/langsmith",
+    )
+    exporter.begin_window(
+        project_id=PROJECT_ID,
+        start_time=TRACE_START,
+        end_time=TRACE_END,
+        excluded_export_ids=frozenset(),
+    )
+
+    assert [call["method"] for call in calls] == ["GET", "GET", "POST"]
+    assert all(
+        call["headers"] == {"X-API-Key": "test-key", "X-Tenant-Id": "workspace-id"}
+        for call in calls
+    )
+    assert calls[1]["params"] == {"limit": "1000", "offset": "0"}
+    assert calls[2]["json"] is not None
+    assert all(
+        str(call["url"]).startswith("https://self-hosted.example/api/v1")
+        for call in calls
+    )
+
+
+@pytest.mark.parametrize(
+    ("api_key", "poll_interval_seconds", "timeout_seconds", "message"),
+    (
+        ("", 10, 5 * 60 * 60, "API key must not be empty"),
+        ("test-key", -1, 5 * 60 * 60, "poll interval must be non-negative"),
+        ("test-key", 10, 0, "timeout must be positive"),
+    ),
+)
+def test_bulk_export_rejects_invalid_operator_configuration(
+    api_key: str,
+    poll_interval_seconds: float,
+    timeout_seconds: float,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        LangSmithBulkExporter(
+            api_url="https://api.smith.langchain.com",
+            api_key=api_key,
+            workspace_id=None,
+            destination_id=DESTINATION_ID,
+            archive_uri="s3://traces-dev/langsmith",
+            poll_interval_seconds=poll_interval_seconds,
+            timeout_seconds=timeout_seconds,
+        )
+
+
+def test_bulk_export_builds_from_langsmith_client() -> None:
+    client = Client(
+        api_url="https://api.smith.langchain.com",
+        api_key="test-key",
+    )
+    exporter = LangSmithBulkExporter.from_langsmith_client(
+        client,
+        destination_id=DESTINATION_ID,
+        archive_uri="s3://traces-dev/langsmith",
+    )
+    assert isinstance(exporter, LangSmithBulkExporter)
+    with pytest.raises(TypeError, match="requires a LangSmith Client"):
+        LangSmithBulkExporter.from_langsmith_client(
+            object(),
+            destination_id=DESTINATION_ID,
+            archive_uri="s3://traces-dev/langsmith",
+        )
+
+
+@pytest.mark.parametrize(
+    ("api_url", "destination_id", "archive_uri", "message"),
+    (
+        (
+            "ftp://api.smith.langchain.com",
+            DESTINATION_ID,
+            "s3://traces-dev/langsmith",
+            "must use HTTP or HTTPS",
+        ),
+        (
+            "https://api.smith.langchain.com",
+            "{" + PROJECT_ID + "}",
+            "s3://traces-dev/langsmith",
+            "canonical UUID format",
+        ),
+        (
+            "https://api.smith.langchain.com",
+            DESTINATION_ID,
+            "https://traces-dev/langsmith",
+            "requires an s3:// archive URI",
+        ),
+        (
+            "https://api.smith.langchain.com",
+            DESTINATION_ID,
+            "s3://traces-dev",
+            "requires a bucket prefix",
+        ),
+    ),
+)
+def test_bulk_export_rejects_unsafe_identity_and_storage_configuration(
+    api_url: str, destination_id: str, archive_uri: str, message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        LangSmithBulkExporter(
+            api_url=api_url,
+            api_key="test-key",
+            workspace_id=None,
+            destination_id=destination_id,
+            archive_uri=archive_uri,
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    (
+        ("end_time", 1, "end_time must be a string"),
+        ("interval_hours", "1", "interval_hours must be an integer or null"),
+        ("filter", 1, "filter must be a string or null"),
+        ("all_experiments", "false", "all_experiments must be a boolean"),
+    ),
+)
+def test_bulk_export_rejects_malformed_adoption_jobs(
+    field: str, value: object, message: str
+) -> None:
+    malformed = _job_payload(NEW_EXPORT_ID, "Created", TRACE_START.isoformat())
+    malformed[field] = value
+
+    def request(
+        method: str,
+        path: str,
+        params: dict[str, object] | None,
+        payload: dict[str, object] | None,
+    ) -> object:
+        if path.startswith("/api/v1/bulk-exports/destinations/"):
+            return _destination_request(method, path, params, payload)
+        return [malformed]
+
+    with pytest.raises(ValueError, match=message):
+        _exporter(request_json=request).begin_window(
+            project_id=PROJECT_ID,
+            start_time=TRACE_START,
+            end_time=TRACE_END,
+            excluded_export_ids=frozenset(),
+        )
+
+
+def _partition_payload(
+    *, rows_written: int, exported_files: list[str], status: str = "Completed"
+) -> dict[str, object]:
+    return {
+        "id": "62345678-1234-5678-1234-567812345678",
+        "status": status,
+        "metadata": {
+            "start_time": TRACE_START.isoformat(),
+            "end_time": TRACE_END.isoformat(),
+            "result": {
+                "rows_written": rows_written,
+                "exported_files": exported_files,
+            },
+        },
+    }
+
+
+def test_bulk_export_polls_then_accepts_complete_empty_partition() -> None:
+    polled: list[str] = []
+
+    def request(
+        method: str,
+        path: str,
+        params: dict[str, object] | None,
+        payload: dict[str, object] | None,
+    ) -> object:
+        if path.startswith("/api/v1/bulk-exports/destinations/"):
+            return _destination_request(method, path, params, payload)
+        if path == f"/api/v1/bulk-exports/{NEW_EXPORT_ID}":
+            polled.append(path)
+            return _job_payload(NEW_EXPORT_ID, "Completed", TRACE_START.isoformat())
+        if path == f"/api/v1/bulk-exports/{NEW_EXPORT_ID}/runs":
+            return [_partition_payload(rows_written=0, exported_files=[])]
+        raise AssertionError((method, path))
+
+    snapshot = _exporter(request_json=request).complete_export(
+        _job(BulkExportStatus.CREATED)
+    )
+
+    assert polled == [f"/api/v1/bulk-exports/{NEW_EXPORT_ID}"]
+    assert snapshot.run_count == 0
+    assert snapshot.file_uris == ()
+    assert len(snapshot.partitions) == 1
+
+
+@pytest.mark.parametrize(
+    ("partition", "message"),
+    (
+        (
+            _partition_payload(rows_written=1, exported_files=[]),
+            "did not publish Parquet files",
+        ),
+        (
+            _partition_payload(
+                rows_written=1,
+                exported_files=["traces-prd/langsmith/bulk/out.parquet"],
+            ),
+            "outside the configured destination",
+        ),
+        (
+            _partition_payload(rows_written=0, exported_files=[], status="Failed"),
+            "partition .* is Failed",
+        ),
+    ),
+)
+def test_bulk_export_rejects_invalid_completed_partitions(
+    partition: dict[str, object], message: str
+) -> None:
+    def request(
+        method: str,
+        path: str,
+        params: dict[str, object] | None,
+        payload: dict[str, object] | None,
+    ) -> object:
+        if path.startswith("/api/v1/bulk-exports/destinations/"):
+            return _destination_request(method, path, params, payload)
+        if path == f"/api/v1/bulk-exports/{NEW_EXPORT_ID}/runs":
+            return [partition]
+        raise AssertionError((method, path))
+
+    error = BulkExportFailedError if partition["status"] == "Failed" else ValueError
+    with pytest.raises(error, match=message):
+        _exporter(request_json=request).complete_export(
+            _job(BulkExportStatus.COMPLETED)
+        )
+
+
+@pytest.mark.parametrize(
+    ("result", "message"),
+    (
+        (None, "partition has no result"),
+        ({"rows_written": -1, "exported_files": []}, "must be non-negative"),
+        (
+            {"rows_written": 1, "exported_files": [123]},
+            "file path must be a string",
+        ),
+    ),
+)
+def test_bulk_export_rejects_malformed_partition_results(
+    result: object, message: str
+) -> None:
+    partition = _partition_payload(rows_written=0, exported_files=[])
+    metadata = cast(dict[str, object], partition["metadata"])
+    metadata["result"] = result
+
+    def request(
+        method: str,
+        path: str,
+        params: dict[str, object] | None,
+        payload: dict[str, object] | None,
+    ) -> object:
+        if path.startswith("/api/v1/bulk-exports/destinations/"):
+            return _destination_request(method, path, params, payload)
+        return [partition]
+
+    with pytest.raises(ValueError, match=message):
+        _exporter(request_json=request).complete_export(
+            _job(BulkExportStatus.COMPLETED)
+        )
+
+
+def test_bulk_export_rejects_missing_partition_coverage() -> None:
+    def request(
+        method: str,
+        path: str,
+        params: dict[str, object] | None,
+        payload: dict[str, object] | None,
+    ) -> object:
+        if path.startswith("/api/v1/bulk-exports/destinations/"):
+            return _destination_request(method, path, params, payload)
+        return []
+
+    with pytest.raises(ValueError, match="has no partition runs"):
+        _exporter(request_json=request).complete_export(
+            _job(BulkExportStatus.COMPLETED)
         )
 
 

@@ -107,6 +107,10 @@ def test_bulk_backfill_submits_all_projects_before_importing(
             name="stg/not-selected",
             project_id="32345678-1234-5678-1234-567812345678",
         ),
+        create_project(
+            name="qa/unrouted",
+            project_id="52345678-1234-5678-1234-567812345678",
+        ),
     ]
     client = FakeArchiveClient(projects, [])
     monkeypatch.setattr(archive_commands, "get_or_create_client", lambda ctx: client)
@@ -179,6 +183,55 @@ def test_bulk_backfill_submits_all_projects_before_importing(
         "dev/agent",
         "dev/other",
     ]
+    assert payload["unmatched_projects"] == ["qa/unrouted"]
+
+
+@pytest.mark.parametrize(
+    ("project_name", "message"),
+    (
+        ("stg/not-selected", "belongs to route staging"),
+        ("qa/unrouted", "No archive route matches project"),
+    ),
+)
+def test_bulk_backfill_rejects_explicit_project_outside_route(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    runner,
+    project_name: str,
+    message: str,
+) -> None:
+    from langsmith_cli.commands import archive as archive_commands
+
+    client = FakeArchiveClient([create_project(name=project_name)], [])
+    monkeypatch.setattr(archive_commands, "get_or_create_client", lambda ctx: client)
+    monkeypatch.setattr(
+        archive_commands.LangSmithBulkExporter,
+        "from_langsmith_client",
+        staticmethod(lambda client, **kwargs: object()),
+    )
+    result = runner.invoke(
+        cli,
+        [
+            "--json",
+            "archive",
+            "backfill",
+            "--config",
+            str(_write_config(tmp_path)),
+            "--route",
+            "dev",
+            "--project",
+            project_name,
+            "--start-date",
+            "2026-08-18",
+            "--end-date",
+            "2026-08-20",
+            "--bulk-export-destination-id",
+            "42345678-1234-5678-1234-567812345678",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert message in parse_json_output(result.output)["message"]
 
 
 def test_sync_command_rejects_project_from_another_selected_route(
