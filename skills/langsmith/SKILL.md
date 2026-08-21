@@ -99,6 +99,9 @@ langsmith-cli --json runs get <id> --fields inputs,outputs,error
 | Server-side search | `langsmith-cli --json runs search "pattern" --fields id,name,status --limit 20` |
 | Scoped content search | `langsmith-cli --json runs search "pattern" --in outputs --fields id,name,outputs --limit 20` |
 | Search cached runs | `langsmith-cli --json runs cache grep "pattern" -E --grep-in outputs --project <name> --fields id,name,outputs` |
+| Search S3 archive | `langsmith-cli --json runs search "pattern" --archive --project <name> --fields id,name,status` |
+| Sync trace archive | `langsmith-cli --json archive sync --route <name>` |
+| Check archive status | `langsmith-cli --json archive status --all-routes` |
 | Download cache | `langsmith-cli --json runs cache download --project <name> --last 7d` |
 | List cache | `langsmith-cli --json runs cache list --fields project_name,run_count,path` |
 | Discover cache schema | `langsmith-cli --json runs cache schema --project <name> --include outputs` |
@@ -127,6 +130,11 @@ When your task matches one of the sections below, **you MUST load that reference
 - You need to use `--trace-filter`, `--tree-filter`, `--sort-by`, `--roots`, `--run-type`, `--tag`, `--model`, `--min-latency`, `--max-latency`
 - You need to filter runs by metadata: `--metadata key=value` (supports wildcards `key=val*` and regex `key=/pattern/`)
 - You need to paginate, export to files, or watch live runs
+
+### → Read [references/archive.md](references/archive.md) when:
+- You need to configure project-to-S3 routing such as `dev/**` and `stg/**`
+- You need to operate D+2 primary and D+12 reconciliation exports
+- You need to query retained Parquet with `--archive` and DuckDB
 
 ### → Read [references/search.md](references/search.md) when:
 - You need to choose between `--query` (server-side, fast, first 250 chars) vs `--grep` (client-side, all content, regex)

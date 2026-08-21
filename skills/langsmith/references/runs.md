@@ -9,6 +9,7 @@ langsmith-cli --json runs list [OPTIONS]
 ```
 
 **Options:**
+- `--archive` - Query the configured canonical Parquet archive instead of LangSmith
 - `--project TEXT` - Project name (default: "default")
 - `--project-id TEXT` - Project UUID (bypasses name resolution, fastest lookup)
 - `--project-name TEXT` - Substring/contains match for project names
@@ -105,6 +106,7 @@ langsmith-cli --json runs get <run-id> [OPTIONS]
 - `run-id` (required) - Run UUID or trace ID
 
 **Options:**
+- `--archive` - Read the run and optional children from canonical Parquet
 - `--fields TEXT` - Comma-separated list of fields to return (critical for context efficiency)
 
 **Available Fields:**
@@ -189,6 +191,7 @@ langsmith-cli --json runs get-latest [OPTIONS]
 ```
 
 **Options:**
+- `--archive` - Query the latest archived run instead of LangSmith
 - `--project TEXT` - Project name (default: "default")
 - `--project-id TEXT` - Project UUID
 - `--project-name TEXT` - Substring match for project names
@@ -238,6 +241,7 @@ langsmith-cli --json runs search <query> [OPTIONS]
 - `query` (required) - Search query string
 
 **Options:**
+- `--archive` - Search complete archived inputs/outputs/errors through DuckDB
 - `--project TEXT` - Project name (default: "default")
 - `--project-id TEXT` - Project UUID
 - `--project-name TEXT` - Substring match for project names

@@ -32,6 +32,11 @@ if TYPE_CHECKING:
 
 @runs.command("get")
 @click.argument("run_id")
+@click.option(
+    "--archive",
+    is_flag=True,
+    help="Read canonical Parquet from the configured archive.",
+)
 @fields_option(
     "Comma-separated field names to include (e.g., 'id,name,inputs,error'). Reduces context usage."
 )
@@ -46,7 +51,7 @@ if TYPE_CHECKING:
     ),
 )
 @click.pass_context
-def get_run(ctx, run_id, fields, output, follow_children):
+def get_run(ctx, run_id, archive, fields, output, follow_children):
     """Fetch details of a single run.
 
     Use --follow-children when the run is a parent chain (e.g. RunnableSequence)
@@ -57,6 +62,21 @@ def get_run(ctx, run_id, fields, output, follow_children):
         langsmith-cli --json runs get <id> --fields inputs,outputs
         langsmith-cli --json runs get <id> --follow-children --fields id,name,inputs,outputs
     """
+    if archive:
+        from langsmith_cli.archive.query import read_archived_run
+
+        try:
+            run, children = read_archived_run(run_id, follow_children=follow_children)
+        except LookupError as exc:
+            raise click.ClickException(str(exc)) from exc
+        data = filter_fields(run, fields)
+        if follow_children:
+            data["_children"] = [filter_fields(child, fields) for child in children]
+        output_single_item(
+            ctx, data, console, output=output, render_fn=render_run_details
+        )
+        return
+
     client = get_or_create_client(ctx)
     run = client.read_run(run_id)
 
@@ -85,6 +105,11 @@ def get_run(ctx, run_id, fields, output, follow_children):
 
 @runs.command("get-latest")
 @add_project_filter_options
+@click.option(
+    "--archive",
+    is_flag=True,
+    help="Read canonical Parquet from the configured archive.",
+)
 @click.option(
     "--status", type=click.Choice(["success", "error"]), help="Filter by status."
 )
@@ -125,6 +150,7 @@ def get_run(ctx, run_id, fields, output, follow_children):
 @click.pass_context
 def get_latest_run(
     ctx,
+    archive,
     project,
     project_id,
     project_name,
@@ -166,6 +192,58 @@ def get_latest_run(
         # Get latest slow run from last hour
         langsmith-cli --json runs get-latest --project my-project --slow --recent --fields name,latency
     """
+    if archive:
+        from datetime import datetime, time, timedelta, timezone
+
+        from langsmith_cli.archive.query import ArchiveRunQuery, query_archive_runs
+        from langsmith_cli.time_parsing import parse_time_range
+
+        if filter_ or slow or min_latency or max_latency:
+            raise click.ClickException(
+                "Archive backend does not yet support --filter or latency flags"
+            )
+        since_dt, before_dt = parse_time_range(since=since, last=last, before=before)
+        now = datetime.now(timezone.utc)
+        if recent:
+            since_dt = now - timedelta(hours=1)
+        if today:
+            since_dt = datetime.combine(now.date(), time.min, tzinfo=timezone.utc)
+        error_filter = None
+        if status == "error" or failed:
+            error_filter = True
+        elif status == "success" or succeeded:
+            error_filter = False
+        archived = query_archive_runs(
+            ArchiveRunQuery(
+                project=project,
+                project_id=project_id,
+                project_name=project_name,
+                project_name_exact=project_name_exact,
+                project_name_pattern=project_name_pattern,
+                project_name_regex=project_name_regex,
+                since=since_dt,
+                before=before_dt,
+                limit=1,
+                error=error_filter,
+                run_type=run_type,
+                is_root=roots,
+                tags=tuple(tag),
+                text=model,
+                text_fields=("extra",),
+            )
+        )
+        if not archived:
+            raise click.ClickException("No archived runs found matching the filters")
+        data = filter_fields(archived[0], fields)
+
+        def render_archived_latest(data: dict, console: Any) -> None:
+            render_run_details(data, console, title="Latest Archived Run")
+
+        output_single_item(
+            ctx, data, console, output=output, render_fn=render_archived_latest
+        )
+        return
+
     logger = ctx.obj["logger"]
     configure_logger_streams(ctx, logger, output=output, fields=fields)
 

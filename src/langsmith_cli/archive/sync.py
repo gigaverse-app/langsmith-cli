@@ -1,0 +1,292 @@
+"""Idempotent project-day export and canonicalization."""
+
+from __future__ import annotations
+
+from dataclasses import replace
+from datetime import date, datetime, time, timedelta, timezone
+from decimal import Decimal
+from enum import Enum
+import base64
+from collections.abc import Iterator as IteratorABC
+import json
+from pathlib import Path
+import tempfile
+from typing import TYPE_CHECKING, Any, Iterator, Protocol
+from uuid import uuid4
+from uuid import UUID
+
+from langsmith_cli.archive.models import (
+    ArchiveManifest,
+    ArchivePhase,
+    ArchiveProject,
+    PhaseRecord,
+    PhaseStatus,
+)
+from langsmith_cli.archive.duckdb import configure_duckdb_s3
+from langsmith_cli.archive.repository import (
+    ManifestSnapshot,
+    ensure_project_record,
+    manifest_key,
+    read_manifest_snapshot,
+    write_manifest,
+)
+from langsmith_cli.archive.storage import ArchiveStore
+
+if TYPE_CHECKING:
+    from langsmith.schemas import Run
+
+
+class RunsExportClient(Protocol):
+    def list_runs(self, **kwargs: Any) -> Iterator[Run]: ...
+
+
+def _sql_string(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _archive_json_default(value: object) -> object:
+    """Serialize strict SDK values while preserving arbitrary binary payloads."""
+    if isinstance(value, bytes):
+        return {
+            "__langsmith_archive_encoding__": "base64",
+            "data": base64.b64encode(value).decode("ascii"),
+        }
+    if isinstance(value, (datetime, date, time)):
+        return value.isoformat()
+    if isinstance(value, UUID):
+        return str(value)
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, (set, frozenset)):
+        return sorted(value, key=str)
+    if isinstance(value, IteratorABC):
+        return list(value)
+    raise TypeError(f"Unsupported archive value type: {type(value).__name__}")
+
+
+def due_trace_dates(
+    today: date, retention_days: int
+) -> tuple[tuple[date, ArchivePhase], ...]:
+    if retention_days < 4:
+        raise ValueError("Archive retention must be at least 4 days")
+    return (
+        (today - timedelta(days=2), ArchivePhase.PRIMARY),
+        (today - timedelta(days=retention_days - 2), ArchivePhase.RECONCILIATION),
+    )
+
+
+def _new_manifest(
+    project_id: str, project_name: str, trace_date: date
+) -> ArchiveManifest:
+    start = datetime.combine(trace_date, time.min, tzinfo=timezone.utc)
+    return ArchiveManifest(
+        schema_version=1,
+        project_id=project_id,
+        project_name=project_name,
+        trace_date=trace_date,
+        window_start=start,
+        window_end=start + timedelta(days=1),
+        primary=None,
+        reconciliation=None,
+        canonical_key=None,
+        canonical_run_count=0,
+        sealed=False,
+        updated_at=datetime.now(timezone.utc),
+    )
+
+
+def _write_runs_parquet(
+    client: RunsExportClient, manifest: ArchiveManifest, target: Path
+) -> int:
+    import duckdb
+
+    filter_ = f'lt(start_time, "{manifest.window_end.isoformat()}")'
+    # Close the JSONL before DuckDB opens it. Windows does not guarantee that a
+    # named temporary file can be reopened while Python still holds its handle.
+    rows_path = target.with_suffix(".jsonl")
+    with rows_path.open(mode="w", encoding="utf-8") as rows:
+        run_count = 0
+        for run in client.list_runs(
+            project_id=manifest.project_id,
+            start_time=manifest.window_start,
+            filter=filter_,
+            limit=None,
+        ):
+            rows.write(
+                json.dumps(
+                    run.model_dump(mode="python"),
+                    ensure_ascii=False,
+                    default=_archive_json_default,
+                )
+            )
+            rows.write("\n")
+            run_count += 1
+
+    connection = duckdb.connect()
+    try:
+        if run_count:
+            connection.execute(
+                "COPY (SELECT * FROM read_json_auto("
+                f"{_sql_string(str(rows_path))}, maximum_object_size=104857600)) "
+                f"TO {_sql_string(str(target))} "
+                "(FORMAT PARQUET, COMPRESSION ZSTD)"
+            )
+        else:
+            connection.execute(
+                "COPY (SELECT CAST(NULL AS VARCHAR) AS id WHERE false) "
+                f"TO {_sql_string(str(target))} "
+                "(FORMAT PARQUET, COMPRESSION ZSTD)"
+            )
+    finally:
+        connection.close()
+        rows_path.unlink(missing_ok=True)
+    return run_count
+
+
+def _canonicalize(store: ArchiveStore, manifest: ArchiveManifest, target: Path) -> int:
+    import duckdb
+
+    sources: list[tuple[str, int]] = []
+    if manifest.primary is not None:
+        sources.append((store.object_uri(manifest.primary.raw_key), 1))
+    if manifest.reconciliation is not None:
+        sources.append((store.object_uri(manifest.reconciliation.raw_key), 2))
+    if not sources:
+        raise ValueError("Cannot canonicalize a manifest without snapshots")
+
+    connection = duckdb.connect()
+    try:
+        configure_duckdb_s3(connection, [uri for uri, _ in sources])
+        selects: list[str] = []
+        for index, (uri, rank) in enumerate(sources):
+            view = f"archive_snapshot_{index}"
+            connection.execute(
+                f"CREATE TEMP VIEW {view} AS SELECT *, {rank} AS snapshot_rank "
+                f"FROM read_parquet({_sql_string(uri)}, union_by_name=true)"
+            )
+            counts = connection.execute(
+                f"SELECT count(*), count(DISTINCT id) FROM {view}"
+            ).fetchone()
+            if counts is None or counts[0] != counts[1]:
+                raise ValueError(f"Snapshot contains duplicate run IDs: {uri}")
+            selects.append(f"SELECT * FROM {view}")
+
+        union_sql = " UNION ALL BY NAME ".join(selects)
+        query = (
+            "SELECT * EXCLUDE (snapshot_rank, archive_row_number) FROM ("
+            "SELECT *, row_number() OVER (PARTITION BY id ORDER BY snapshot_rank DESC) "
+            f"AS archive_row_number FROM ({union_sql}) snapshots) ranked "
+            "WHERE archive_row_number = 1"
+        )
+        connection.execute(
+            f"COPY ({query}) TO {_sql_string(str(target))} "
+            "(FORMAT PARQUET, COMPRESSION ZSTD)"
+        )
+        # Verify the artifact we will upload instead of rerunning the remote union
+        # and window function. This is one local scan and proves canonical IDs are
+        # unique at the actual publication boundary.
+        count_row = connection.execute(
+            "SELECT count(*), count(DISTINCT id) FROM "
+            f"read_parquet({_sql_string(str(target))})"
+        ).fetchone()
+        if count_row is None:
+            raise ValueError("DuckDB did not return a canonical row count")
+        if count_row[0] != count_row[1]:
+            raise ValueError("Canonical snapshot contains duplicate run IDs")
+        return int(count_row[0])
+    finally:
+        connection.close()
+
+
+def sync_project_day(
+    client: RunsExportClient,
+    store: ArchiveStore,
+    *,
+    project_id: str,
+    project_name: str,
+    trace_date: date,
+    phase: ArchivePhase,
+    existing_snapshot: ManifestSnapshot | None = None,
+    manifest_known_absent: bool = False,
+    existing_project: ArchiveProject | None = None,
+    project_record_checked: bool = False,
+) -> ArchiveManifest:
+    """Export one phase and conditionally publish a canonical generation.
+
+    The manifest is the sole mutable publication pointer. Immutable raw/canonical
+    objects are uploaded first; compare-and-swap publication then ensures a stale
+    worker can leave only orphan objects, never clobber a newer verified manifest.
+    """
+    if project_record_checked and existing_project is not None:
+        if (
+            existing_project.project_id != project_id
+            or existing_project.project_name != project_name
+        ):
+            raise ValueError(
+                "Archived project identity changed; migrate it before syncing"
+            )
+    else:
+        ensure_project_record(store, project_id, project_name)
+    key = manifest_key(project_id, trace_date.isoformat())
+    snapshot = existing_snapshot
+    if snapshot is None and not manifest_known_absent:
+        snapshot = read_manifest_snapshot(store, key)
+    manifest = (
+        snapshot.manifest
+        if snapshot is not None
+        else _new_manifest(project_id, project_name, trace_date)
+    )
+    if manifest.project_name != project_name:
+        raise ValueError(
+            "Archived project name changed; migrate its manifest before syncing"
+        )
+    existing = manifest.phase(phase)
+    if existing is not None and existing.status is PhaseStatus.VERIFIED:
+        return manifest
+    if manifest.sealed:
+        raise ValueError("A sealed archive day is immutable")
+    generation_id = str(uuid4())
+    raw_key = (
+        f"raw/project_id={project_id}/date={trace_date.isoformat()}/"
+        f"phase={phase.value}/generation={generation_id}/runs.parquet"
+    )
+    now = datetime.now(timezone.utc)
+    with tempfile.TemporaryDirectory(prefix="langsmith-archive-") as directory:
+        staging = Path(directory)
+        raw_file = staging / "raw.parquet"
+        run_count = _write_runs_parquet(client, manifest, raw_file)
+        store.put_file(raw_key, raw_file)
+
+        record = PhaseRecord(
+            status=PhaseStatus.VERIFIED,
+            generation_id=generation_id,
+            raw_key=raw_key,
+            run_count=run_count,
+            verified_at=now,
+        )
+        manifest = manifest.with_phase(phase, record)
+        canonical_generation = str(uuid4())
+        canonical_key = (
+            f"canonical/project_id={project_id}/date={trace_date.isoformat()}/"
+            f"generation={canonical_generation}/runs.parquet"
+        )
+        canonical_file = staging / "canonical.parquet"
+        canonical_count = _canonicalize(store, manifest, canonical_file)
+        store.put_file(canonical_key, canonical_file)
+
+    published = replace(
+        manifest,
+        canonical_key=canonical_key,
+        canonical_run_count=canonical_count,
+        sealed=phase is ArchivePhase.RECONCILIATION,
+        updated_at=now,
+    )
+    write_manifest(
+        store,
+        key,
+        published,
+        expected_version=snapshot.version if snapshot is not None else None,
+    )
+    return published

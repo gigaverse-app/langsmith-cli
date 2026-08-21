@@ -1,0 +1,10 @@
+routes:
+  - name: dev
+    project_pattern: "dev/**"
+    archive_uri: s3://gigaverse-langsmith-traces-dev/langsmith
+  - name: staging
+    project_pattern: "stg/**"
+    archive_uri: s3://gigaverse-langsmith-traces-stg/langsmith
+  - name: production
+    project_pattern: "prd/**"
+    archive_uri: s3://gigaverse-langsmith-traces-prd/langsmith
