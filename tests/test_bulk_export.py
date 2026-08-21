@@ -5,15 +5,22 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 import json
 from pathlib import Path
-from typing import Any, Iterator, cast
+import time
+from typing import Any, Callable, Iterator, cast
 
+import pytest
 from conftest import create_run
 from langsmith.schemas import Run
 from langsmith_cli.archive.backfill import import_backfill_snapshot
 from langsmith_cli.archive.bulk import (
     BULK_EXPORT_FIELDS,
+    BulkExportFailedError,
+    BulkExportJob,
     BulkExportPartition,
     BulkExportSnapshot,
+    BulkExportStatus,
+    BulkExportTimeoutError,
+    JsonRequest,
     LangSmithBulkExporter,
 )
 from langsmith_cli.archive.models import ArchivePhase
@@ -106,6 +113,98 @@ def _job_payload(export_id: str, status: str, created_at: str) -> dict[str, obje
         "finished_at": created_at if status == "Completed" else None,
         "source_bulk_export_id": None,
     }
+
+
+def _job(status: BulkExportStatus) -> BulkExportJob:
+    return BulkExportJob(
+        export_id=NEW_EXPORT_ID,
+        destination_id=DESTINATION_ID,
+        project_id=PROJECT_ID,
+        start_time=TRACE_START,
+        end_time=TRACE_END,
+        status=status,
+        created_at=TRACE_START,
+        format_version="v2_beta",
+        compression="zstandard",
+        interval_hours=None,
+        filter=None,
+        export_fields=BULK_EXPORT_FIELDS,
+        all_experiments=False,
+    )
+
+
+def _destination_request(
+    method: str,
+    path: str,
+    params: dict[str, object] | None,
+    payload: dict[str, object] | None,
+) -> object:
+    assert method == "GET"
+    assert path == f"/api/v1/bulk-exports/destinations/{DESTINATION_ID}"
+    return {
+        "id": DESTINATION_ID,
+        "config": {
+            "bucket_name": "traces-dev",
+            "prefix": "langsmith/bulk",
+            "region": "us-east-1",
+        },
+    }
+
+
+def _exporter(
+    *,
+    request_json: JsonRequest = _destination_request,
+    timeout_seconds: float = 5 * 60 * 60,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> LangSmithBulkExporter:
+    return LangSmithBulkExporter(
+        api_url="https://api.smith.langchain.com",
+        api_key="test-key",
+        workspace_id=None,
+        destination_id=DESTINATION_ID,
+        archive_uri="s3://traces-dev/langsmith",
+        request_json=request_json,
+        poll_interval_seconds=0,
+        timeout_seconds=timeout_seconds,
+        monotonic=monotonic,
+    )
+
+
+def test_bulk_export_fails_fast_on_terminal_failure() -> None:
+    with pytest.raises(BulkExportFailedError, match="ended as Failed"):
+        _exporter().complete_export(_job(BulkExportStatus.FAILED))
+
+
+def test_bulk_export_wait_is_bounded() -> None:
+    clock = iter((0.0, 2.0))
+    exporter = _exporter(timeout_seconds=1, monotonic=lambda: next(clock))
+    with pytest.raises(BulkExportTimeoutError, match="did not finish in time"):
+        exporter.complete_export(_job(BulkExportStatus.CREATED))
+
+
+def test_bulk_export_rejects_destination_outside_archive() -> None:
+    def wrong_destination(
+        method: str,
+        path: str,
+        params: dict[str, object] | None,
+        payload: dict[str, object] | None,
+    ) -> object:
+        response = cast(
+            dict[str, object], _destination_request(method, path, params, payload)
+        )
+        response["config"] = {
+            "bucket_name": "traces-prd",
+            "prefix": "langsmith/bulk",
+        }
+        return response
+
+    with pytest.raises(ValueError, match="bucket does not match"):
+        _exporter(request_json=wrong_destination).begin_window(
+            project_id=PROJECT_ID,
+            start_time=TRACE_START,
+            end_time=TRACE_END,
+            excluded_export_ids=frozenset(),
+        )
 
 
 def test_bulk_export_adopts_latest_matching_job_and_excludes_prior_phase() -> None:

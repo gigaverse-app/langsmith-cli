@@ -89,6 +89,98 @@ def test_sync_command_routes_projects_and_reports_unmatched(
     assert all(item["route"] == "dev" for item in payload["processed"])
 
 
+def test_bulk_backfill_submits_all_projects_before_importing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    runner,
+) -> None:
+    from langsmith_cli.archive.backfill import BackfillImportResult
+    from langsmith_cli.commands import archive as archive_commands
+
+    projects = [
+        create_project(name="dev/agent"),
+        create_project(
+            name="dev/other",
+            project_id="22345678-1234-5678-1234-567812345678",
+        ),
+        create_project(
+            name="stg/not-selected",
+            project_id="32345678-1234-5678-1234-567812345678",
+        ),
+    ]
+    client = FakeArchiveClient(projects, [])
+    monkeypatch.setattr(archive_commands, "get_or_create_client", lambda ctx: client)
+    events: list[str] = []
+
+    class FakeManagedExporter:
+        def begin_window(self, **kwargs: object) -> str:
+            project_id = str(kwargs["project_id"])
+            events.append(f"begin:{project_id}")
+            return project_id
+
+        def complete_export(self, job: str) -> str:
+            events.append(f"complete:{job}")
+            return job
+
+    exporter = FakeManagedExporter()
+    monkeypatch.setattr(
+        archive_commands.LangSmithBulkExporter,
+        "from_langsmith_client",
+        staticmethod(lambda client, **kwargs: exporter),
+    )
+
+    def import_snapshot(
+        store: object,
+        *,
+        project_id: str,
+        project_name: str,
+        snapshot: str,
+    ) -> BackfillImportResult:
+        assert snapshot == project_id
+        events.append(f"import:{project_id}")
+        return BackfillImportResult(
+            export_id=f"export-{project_name}",
+            imported_days=2,
+            skipped_days=0,
+            canonical_run_count=7,
+        )
+
+    monkeypatch.setattr(archive_commands, "import_backfill_snapshot", import_snapshot)
+    result = runner.invoke(
+        cli,
+        [
+            "--json",
+            "archive",
+            "backfill",
+            "--config",
+            str(_write_config(tmp_path)),
+            "--route",
+            "dev",
+            "--start-date",
+            "2026-08-18",
+            "--end-date",
+            "2026-08-20",
+            "--bulk-export-destination-id",
+            "42345678-1234-5678-1234-567812345678",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert events == [
+        f"begin:{projects[0].id}",
+        f"begin:{projects[1].id}",
+        f"complete:{projects[0].id}",
+        f"import:{projects[0].id}",
+        f"complete:{projects[1].id}",
+        f"import:{projects[1].id}",
+    ]
+    payload = parse_json_output(result.output)
+    assert [item["project_name"] for item in payload["projects"]] == [
+        "dev/agent",
+        "dev/other",
+    ]
+
+
 def test_sync_command_rejects_project_from_another_selected_route(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
