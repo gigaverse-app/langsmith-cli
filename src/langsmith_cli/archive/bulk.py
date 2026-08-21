@@ -82,6 +82,15 @@ BULK_EXPORT_FIELDS = (
     "trace_id",
     "trace_tier",
 )
+BULK_EXPORT_FORMAT_VERSION = "v2_beta"
+BULK_EXPORT_COMPRESSION = "zstandard"
+BULK_EXPORT_TERMINAL_FAILURES = frozenset(
+    {
+        BulkExportStatus.CANCELLED,
+        BulkExportStatus.FAILED,
+        BulkExportStatus.TIMED_OUT,
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -100,6 +109,16 @@ class BulkExportJob:
     export_fields: tuple[str, ...] | None
     all_experiments: bool
 
+    def __post_init__(self) -> None:
+        """Enforce the identity/window contract for every construction path."""
+        # INVARIANT: callers may only hold jobs with canonical managed-resource
+        # identities and a non-empty UTC window. Keeping this on the model avoids
+        # a trusted/untrusted split between API-parsed jobs and direct instances.
+        _require_uuid(self.export_id, "bulk export ID")
+        _require_uuid(self.destination_id, "bulk export destination ID")
+        _require_uuid(self.project_id, "bulk export project ID")
+        _require_utc_range(self.start_time, self.end_time)
+
 
 @dataclass(frozen=True)
 class BulkExportSnapshot:
@@ -109,6 +128,15 @@ class BulkExportSnapshot:
     run_count: int
     file_uris: tuple[str, ...]
     partitions: tuple[BulkExportPartition, ...] = ()
+
+    def __post_init__(self) -> None:
+        """Enforce contracts assumed by daily slicing and publication."""
+        # INVARIANT: snapshot windows are always comparable to UTC archive-day
+        # boundaries; malformed provider implementations fail at model creation.
+        _require_uuid(self.export_id, "bulk export ID")
+        _require_utc_range(self.start_time, self.end_time)
+        if self.run_count < 0:
+            raise ValueError("Bulk export run count must be non-negative")
 
     def for_utc_date(self, trace_date: date) -> BulkExportSnapshot:
         start = datetime.combine(trace_date, datetime_time.min, tzinfo=timezone.utc)
@@ -143,6 +171,12 @@ class BulkExportPartition:
     end_time: datetime
     run_count: int
     file_uris: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        """Enforce contracts assumed by exact partition coverage checks."""
+        _require_utc_range(self.start_time, self.end_time)
+        if self.run_count < 0:
+            raise ValueError("Bulk export partition run count must be non-negative")
 
 
 class BulkWindowExporter(Protocol):
@@ -235,10 +269,6 @@ class LangSmithBulkExporter:
         end_time: datetime,
         excluded_export_ids: frozenset[str],
     ) -> BulkExportSnapshot:
-        _require_uuid(project_id, "bulk export project ID")
-        _require_utc_range(start_time, end_time)
-        for export_id in excluded_export_ids:
-            _require_uuid(export_id, "excluded bulk export ID")
         job = self.begin_window(
             project_id=project_id,
             start_time=start_time,
@@ -265,12 +295,7 @@ class LangSmithBulkExporter:
             for job in self._list_exports()
             if self._matches_window(job, project_id, start_time, end_time)
             and job.export_id not in excluded_export_ids
-            and job.status
-            not in {
-                BulkExportStatus.CANCELLED,
-                BulkExportStatus.FAILED,
-                BulkExportStatus.TIMED_OUT,
-            }
+            and job.status not in BULK_EXPORT_TERMINAL_FAILURES
         ]
         if candidates:
             return max(candidates, key=lambda candidate: candidate.created_at)
@@ -295,11 +320,7 @@ class LangSmithBulkExporter:
             made_progress = False
             terminal_failure: BulkExportJob | None = None
             for export_id, current in tuple(pending.items()):
-                if current.status in {
-                    BulkExportStatus.CANCELLED,
-                    BulkExportStatus.FAILED,
-                    BulkExportStatus.TIMED_OUT,
-                }:
+                if current.status in BULK_EXPORT_TERMINAL_FAILURES:
                     if terminal_failure is None:
                         terminal_failure = current
                     continue
@@ -398,8 +419,8 @@ class LangSmithBulkExporter:
             "session_id": project_id,
             "start_time": start_time.isoformat(),
             "end_time": end_time.isoformat(),
-            "format_version": "v2_beta",
-            "compression": "zstandard",
+            "format_version": BULK_EXPORT_FORMAT_VERSION,
+            "compression": BULK_EXPORT_COMPRESSION,
             "export_fields": list(BULK_EXPORT_FIELDS),
         }
         raw = self._request(
@@ -487,8 +508,8 @@ class LangSmithBulkExporter:
             and job.project_id == project_id
             and job.start_time == start_time
             and job.end_time == end_time
-            and job.format_version == "v2_beta"
-            and job.compression == "zstandard"
+            and job.format_version == BULK_EXPORT_FORMAT_VERSION
+            and job.compression == BULK_EXPORT_COMPRESSION
             and job.interval_hours is None
             and job.filter is None
             and job.export_fields == BULK_EXPORT_FIELDS
@@ -562,10 +583,6 @@ def _parse_job(raw: object) -> BulkExportJob:
         export_fields=fields,
         all_experiments=all_experiments,
     )
-    _require_uuid(job.export_id, "bulk export ID")
-    _require_uuid(job.destination_id, "bulk export destination ID")
-    _require_uuid(job.project_id, "bulk export project ID")
-    _require_utc_range(job.start_time, job.end_time)
     return job
 
 
@@ -574,6 +591,7 @@ def _validate_partition_coverage(
     expected_start: datetime,
     expected_end: datetime,
 ) -> None:
+    """Enforce one contiguous, exact cover of the requested export window."""
     if not intervals:
         raise ValueError("Completed bulk export has no partition runs")
     ordered = sorted(intervals)

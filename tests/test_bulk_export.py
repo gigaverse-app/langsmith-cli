@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 import json
 from pathlib import Path
 import time
@@ -34,7 +34,7 @@ from langsmith_cli.archive.query import (
 )
 from langsmith_cli.archive.query import _normalize_run_payload
 from langsmith_cli.archive.storage import create_store
-from langsmith_cli.archive.sync import sync_project_day
+from langsmith_cli.archive.sync import ARCHIVE_JSON_COLUMNS, sync_project_day
 from langsmith_cli.main import cli
 
 
@@ -44,6 +44,50 @@ PRIMARY_EXPORT_ID = "32345678-1234-5678-1234-567812345678"
 NEW_EXPORT_ID = "42345678-1234-5678-1234-567812345678"
 TRACE_START = datetime(2026, 8, 19, tzinfo=timezone.utc)
 TRACE_END = datetime(2026, 8, 20, tzinfo=timezone.utc)
+
+
+def test_archive_json_columns_are_one_explicit_provider_schema_contract() -> None:
+    """INVARIANT: writer, reader, and fixtures share the complete JSON schema."""
+    assert ARCHIVE_JSON_COLUMNS == (
+        "extra",
+        "inputs",
+        "outputs",
+        "feedback_stats",
+        "events",
+        "tags",
+        "parent_run_ids",
+    )
+
+
+def _bulk_v2_payload(run: Run) -> dict[str, object]:
+    """Encode a Run like Bulk Export v2's JSON-valued Parquet columns."""
+    payload = cast(dict[str, object], run.model_dump(mode="json"))
+    for field in ARCHIVE_JSON_COLUMNS:
+        if field in payload and payload[field] is not None:
+            payload[field] = json.dumps(payload[field])
+    return payload
+
+
+def _write_json_rows_as_parquet(
+    rows_path: Path, parquet_path: Path, payloads: list[dict[str, object]]
+) -> None:
+    """Write JSON fixture rows through DuckDB's production-compatible reader."""
+    import duckdb
+
+    rows_path.write_text(
+        "".join(json.dumps(payload) + "\n" for payload in payloads),
+        encoding="utf-8",
+    )
+    connection = duckdb.connect()
+    try:
+        parquet_sql = str(parquet_path).replace("'", "''")
+        connection.execute(
+            f"COPY (SELECT * FROM read_json_auto(?)) TO '{parquet_sql}' "
+            "(FORMAT PARQUET)",
+            [str(rows_path)],
+        )
+    finally:
+        connection.close()
 
 
 def test_bulk_json_strings_normalize_to_run_contracts() -> None:
@@ -203,6 +247,47 @@ def _job(status: BulkExportStatus) -> BulkExportJob:
         export_fields=BULK_EXPORT_FIELDS,
         all_experiments=False,
     )
+
+
+@pytest.mark.parametrize(
+    ("job_update", "message"),
+    (
+        ({"export_id": "not-a-uuid"}, "bulk export ID must be a UUID"),
+        (
+            {"start_time": TRACE_START.replace(tzinfo=None)},
+            "window must be a non-empty UTC range",
+        ),
+    ),
+    ids=("canonical-export-id", "utc-window"),
+)
+def test_bulk_export_job_model_enforces_identity_and_window_invariants(
+    job_update: dict[str, object], message: str
+) -> None:
+    """INVARIANT: every job instance has canonical IDs and a non-empty UTC window."""
+    with pytest.raises(ValueError, match=message):
+        replace(_job(BulkExportStatus.CREATED), **job_update)
+
+
+@pytest.mark.parametrize(
+    "start_time",
+    (
+        TRACE_START.replace(tzinfo=None),
+        TRACE_START.astimezone(timezone(timedelta(hours=2))),
+    ),
+    ids=("naive", "non-utc"),
+)
+def test_bulk_export_snapshot_model_enforces_utc_window_invariant(
+    start_time: datetime,
+) -> None:
+    """INVARIANT: snapshots are expressed as non-empty UTC ranges."""
+    with pytest.raises(ValueError, match="window must be a non-empty UTC range"):
+        BulkExportSnapshot(
+            export_id=NEW_EXPORT_ID,
+            start_time=start_time,
+            end_time=start_time + timedelta(days=1),
+            run_count=0,
+            file_uris=(),
+        )
 
 
 def _destination_request(
@@ -770,6 +855,48 @@ def test_bulk_export_rejects_missing_partition_coverage() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "intervals",
+    (
+        (
+            (TRACE_START, TRACE_START + timedelta(hours=12)),
+            (TRACE_START + timedelta(hours=13), TRACE_END),
+        ),
+        (
+            (TRACE_START, TRACE_START + timedelta(hours=13)),
+            (TRACE_START + timedelta(hours=12), TRACE_END),
+        ),
+    ),
+    ids=("gap", "overlap"),
+)
+def test_bulk_export_partitions_exactly_cover_requested_window(
+    intervals: tuple[tuple[datetime, datetime], ...],
+) -> None:
+    """INVARIANT: completed partitions have neither gaps nor overlaps."""
+    partitions: list[dict[str, object]] = []
+    for start_time, end_time in intervals:
+        partition = _partition_payload(rows_written=0, exported_files=[])
+        metadata = cast(dict[str, object], partition["metadata"])
+        metadata["start_time"] = start_time.isoformat()
+        metadata["end_time"] = end_time.isoformat()
+        partitions.append(partition)
+
+    def request(
+        method: str,
+        path: str,
+        params: dict[str, object] | None,
+        payload: dict[str, object] | None,
+    ) -> object:
+        if path.startswith("/api/v1/bulk-exports/destinations/"):
+            return _destination_request(method, path, params, payload)
+        return partitions
+
+    with pytest.raises(ValueError, match="exactly cover the window"):
+        _exporter(request_json=request).complete_export(
+            _job(BulkExportStatus.COMPLETED)
+        )
+
+
 def test_bulk_export_adopts_latest_matching_job_and_excludes_prior_phase() -> None:
     requests: list[tuple[str, str]] = []
 
@@ -862,34 +989,10 @@ def test_bulk_export_adopts_latest_matching_job_and_excludes_prior_phase() -> No
 def test_bulk_snapshot_integrates_with_canonical_reconciliation(
     tmp_path: Path, monkeypatch
 ) -> None:
-    import duckdb
-
     run = create_run(outputs={"source": "bulk"}, tags=["bulk-provider"])
     source = tmp_path / "bulk.parquet"
     rows = tmp_path / "bulk.json"
-    payload = run.model_dump(mode="json")
-    for field in (
-        "extra",
-        "inputs",
-        "outputs",
-        "feedback_stats",
-        "events",
-        "tags",
-        "parent_run_ids",
-    ):
-        if field in payload and payload[field] is not None:
-            payload[field] = json.dumps(payload[field])
-    rows.write_text(json.dumps(payload) + "\n", encoding="utf-8")
-    connection = duckdb.connect()
-    try:
-        source_sql = str(source).replace("'", "''")
-        connection.execute(
-            f"COPY (SELECT * FROM read_json_auto(?)) TO '{source_sql}' "
-            "(FORMAT PARQUET)",
-            [str(rows)],
-        )
-    finally:
-        connection.close()
+    _write_json_rows_as_parquet(rows, source, [_bulk_v2_payload(run)])
 
     archive_uri = str(tmp_path / "archive")
     monkeypatch.setenv("LANGSMITH_ARCHIVE_URI", archive_uri)
@@ -920,8 +1023,6 @@ def test_bulk_reconciliation_unifies_runs_api_and_v2_json_column_types(
     tmp_path: Path, monkeypatch, runner
 ) -> None:
     """A Bulk v2 reconciliation must replace native Runs API rows by run ID."""
-    import duckdb
-
     primary_run = create_run(outputs={"version": "runs-api"}, tags=["primary"])
     reconciled_run = primary_run.model_copy(
         update={"outputs": {"version": "bulk-v2"}, "tags": ["reconciled"]}
@@ -937,39 +1038,17 @@ def test_bulk_reconciliation_unifies_runs_api_and_v2_json_column_types(
         }
     )
     json_rows = tmp_path / "bulk-mixed.json"
-    payloads: list[dict[str, object]] = []
-    for run in (reconciled_run, late_child):
-        payload = run.model_dump(mode="json")
-        if run.id == late_child.id:
-            events = cast(list[dict[str, object]], payload["events"])
-            events[0]["time"] = "2026-08-19T21:59:53.948395"
-        for field in (
-            "extra",
-            "inputs",
-            "outputs",
-            "feedback_stats",
-            "events",
-            "tags",
-            "parent_run_ids",
-        ):
-            if field in payload and payload[field] is not None:
-                payload[field] = json.dumps(payload[field])
-        payloads.append(payload)
-    json_rows.write_text(
-        "".join(json.dumps(payload) + "\n" for payload in payloads),
-        encoding="utf-8",
+    reconciled_payload = _bulk_v2_payload(reconciled_run)
+    late_child_payload = cast(dict[str, object], late_child.model_dump(mode="json"))
+    events = cast(list[dict[str, object]], late_child_payload["events"])
+    events[0]["time"] = "2026-08-19T21:59:53.948395"
+    late_child_payload = _bulk_v2_payload(
+        late_child.model_copy(update={"events": events})
     )
     bulk_parquet = tmp_path / "bulk-mixed.parquet"
-    connection = duckdb.connect()
-    try:
-        bulk_parquet_sql = str(bulk_parquet).replace("'", "''")
-        connection.execute(
-            f"COPY (SELECT * FROM read_json_auto(?)) TO '{bulk_parquet_sql}' "
-            "(FORMAT PARQUET)",
-            [str(json_rows)],
-        )
-    finally:
-        connection.close()
+    _write_json_rows_as_parquet(
+        json_rows, bulk_parquet, [reconciled_payload, late_child_payload]
+    )
 
     archive_uri = str(tmp_path / "archive")
     monkeypatch.setenv("LANGSMITH_ARCHIVE_URI", archive_uri)
@@ -1041,8 +1120,6 @@ def test_bulk_reconciliation_unifies_runs_api_and_v2_json_column_types(
 def test_range_backfill_publishes_daily_partitions_and_resumes(
     tmp_path: Path, monkeypatch
 ) -> None:
-    import duckdb
-
     files: list[Path] = []
     partitions: list[BulkExportPartition] = []
     for offset, day in enumerate((19, 20)):
@@ -1052,17 +1129,11 @@ def test_range_backfill_publishes_daily_partitions_and_resumes(
         )
         rows = tmp_path / f"day-{day}.json"
         parquet = tmp_path / f"day-{day}.parquet"
-        rows.write_text(run.model_dump_json() + "\n", encoding="utf-8")
-        connection = duckdb.connect()
-        try:
-            parquet_sql = str(parquet).replace("'", "''")
-            connection.execute(
-                f"COPY (SELECT * FROM read_json_auto(?)) TO '{parquet_sql}' "
-                "(FORMAT PARQUET)",
-                [str(rows)],
-            )
-        finally:
-            connection.close()
+        _write_json_rows_as_parquet(
+            rows,
+            parquet,
+            [cast(dict[str, object], run.model_dump(mode="json"))],
+        )
         files.append(parquet)
         start = datetime(2026, 8, day, tzinfo=timezone.utc)
         partitions.append(
@@ -1098,6 +1169,13 @@ def test_range_backfill_publishes_daily_partitions_and_resumes(
         project_name="dev/agent",
         snapshot=snapshot,
     )
+    with pytest.raises(ValueError, match="project name changed"):
+        import_backfill_snapshot(
+            store,
+            project_id=PROJECT_ID,
+            project_name="dev/renamed-agent",
+            snapshot=snapshot,
+        )
 
     assert first.imported_days == 2
     assert first.skipped_days == 0

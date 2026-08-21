@@ -13,6 +13,10 @@ from langsmith_cli.archive.config import load_archive_config
 from langsmith_cli.archive.duckdb import configure_duckdb_s3
 from langsmith_cli.archive.repository import list_project_records, read_manifest
 from langsmith_cli.archive.storage import create_store
+from langsmith_cli.archive.sync import (
+    ARCHIVE_JSON_LIST_COLUMNS,
+    ARCHIVE_JSON_OBJECT_COLUMNS,
+)
 from langsmith_cli.time_parsing import ensure_aware_datetime
 
 if TYPE_CHECKING:
@@ -181,6 +185,21 @@ def _date_partition_overlaps(
     )
 
 
+def _normalize_event_time(value: object) -> object:
+    """Return one event time as zoned UTC, preserving unparseable values."""
+    event_time = value
+    if isinstance(event_time, str):
+        try:
+            event_time = datetime.fromisoformat(event_time.replace("Z", "+00:00"))
+        except ValueError:
+            return value
+    if not isinstance(event_time, datetime):
+        return value
+    if event_time.tzinfo is None:
+        event_time = event_time.replace(tzinfo=timezone.utc)
+    return event_time.astimezone(timezone.utc).isoformat()
+
+
 def _normalize_run_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Normalize provider-specific Parquet values to the LangSmith Run contract."""
     for field in (
@@ -198,15 +217,11 @@ def _normalize_run_payload(payload: dict[str, Any]) -> dict[str, Any]:
             if not isinstance(decoded, str):
                 raise ValueError(f"Archived UUID field is not a string: {field}")
             payload[field] = decoded
-    for field, expected_type in (
-        ("extra", dict),
-        ("inputs", dict),
-        ("outputs", dict),
-        ("feedback_stats", dict),
-        ("events", list),
-        ("tags", list),
-        ("parent_run_ids", list),
-    ):
+    expected_json_types = {
+        **dict.fromkeys(ARCHIVE_JSON_OBJECT_COLUMNS, dict),
+        **dict.fromkeys(ARCHIVE_JSON_LIST_COLUMNS, list),
+    }
+    for field, expected_type in expected_json_types.items():
         value = payload[field] if field in payload else None
         if not isinstance(value, str):
             continue
@@ -226,17 +241,9 @@ def _normalize_run_payload(payload: dict[str, Any]) -> dict[str, Any]:
     events = payload.get("events")
     if isinstance(events, list):
         for event in events:
-            if not isinstance(event, dict) or not isinstance(event.get("time"), str):
+            if not isinstance(event, dict) or "time" not in event:
                 continue
-            try:
-                event_time = datetime.fromisoformat(
-                    event["time"].replace("Z", "+00:00")
-                )
-            except ValueError:
-                continue
-            if event_time.tzinfo is None:
-                event_time = event_time.replace(tzinfo=timezone.utc)
-            event["time"] = event_time.astimezone(timezone.utc).isoformat()
+            event["time"] = _normalize_event_time(event["time"])
     for details_field in (
         "prompt_token_details",
         "completion_token_details",
@@ -261,16 +268,8 @@ def _validated_archive_run(payload: dict[str, Any]) -> Run:
     normalized_events: list[dict[str, Any]] = []
     for event in run.events or []:
         normalized_event = dict(event)
-        event_time = normalized_event.get("time")
-        if isinstance(event_time, str):
-            try:
-                event_time = datetime.fromisoformat(event_time.replace("Z", "+00:00"))
-            except ValueError:
-                event_time = None
-        if isinstance(event_time, datetime):
-            if event_time.tzinfo is None:
-                event_time = event_time.replace(tzinfo=timezone.utc)
-            normalized_event["time"] = event_time.astimezone(timezone.utc).isoformat()
+        if "time" in normalized_event:
+            normalized_event["time"] = _normalize_event_time(normalized_event["time"])
         normalized_events.append(normalized_event)
     return run.model_copy(update={"events": normalized_events or run.events})
 

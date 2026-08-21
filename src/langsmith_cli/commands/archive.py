@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import TypedDict
 
 import click
+from langsmith import Client
 
 from langsmith_cli.archive.config import (
+    ArchiveConfig,
     ArchiveRoute,
     UnmatchedProjectError,
     UnknownRouteError,
@@ -58,15 +61,21 @@ class BackfillProjectResultDict(TypedDict):
     canonical_run_count: int
 
 
+@dataclass(frozen=True)
+class _RoutedProject:
+    project_id: str
+    project_name: str
+    route: ArchiveRoute
+
+
 @click.group()
 def archive() -> None:
     """Export traces to organization-owned Parquet archives."""
 
 
 def _selected_routes(
-    config_path: str | None, route_name: str | None, all_routes: bool
+    config: ArchiveConfig, route_name: str | None, all_routes: bool
 ) -> tuple[ArchiveRoute, ...]:
-    config = load_archive_config(config_path)
     if route_name is not None and all_routes:
         raise click.ClickException("Use either --route or --all-routes, not both")
     if route_name is not None:
@@ -79,6 +88,57 @@ def _selected_routes(
     raise click.ClickException(
         "Config has multiple archive routes; select --route NAME or --all-routes"
     )
+
+
+def _routed_projects(
+    client: Client,
+    config: ArchiveConfig,
+    requested_names: tuple[str, ...],
+    selected_route_names: set[str],
+) -> tuple[list[_RoutedProject], list[str]]:
+    """Resolve one stable, unique project selection for archive commands."""
+    projects = (
+        [client.read_project(project_name=name) for name in requested_names]
+        if requested_names
+        else list(client.list_projects(limit=None))
+    )
+    routed: list[_RoutedProject] = []
+    unmatched: list[str] = []
+    seen_project_ids: set[str] = set()
+    for project in projects:
+        if project.name is None:
+            raise click.ClickException("LangSmith project is missing its name")
+        project_id = str(project.id)
+        # INVARIANT: one command invocation processes each project identity once.
+        # This is especially load-bearing for backfill, where routed projects are
+        # submitted to concurrent import workers after this check.
+        if project_id in seen_project_ids:
+            raise click.ClickException(
+                f"Duplicate LangSmith project ID in selection: {project_id}"
+            )
+        seen_project_ids.add(project_id)
+        try:
+            route = config.route_project(project.name)
+        except UnmatchedProjectError as exc:
+            if requested_names:
+                raise click.ClickException(str(exc)) from exc
+            unmatched.append(project.name)
+            continue
+        if route.name not in selected_route_names:
+            if requested_names:
+                raise click.ClickException(
+                    f"Project {project.name} belongs to route {route.name}, "
+                    "not the selected route"
+                )
+            continue
+        routed.append(
+            _RoutedProject(
+                project_id=project_id,
+                project_name=project.name,
+                route=route,
+            )
+        )
+    return routed, unmatched
 
 
 @archive.command("sync")
@@ -122,7 +182,8 @@ def sync_archive(
     today_text: str | None,
 ) -> None:
     """Run due D+2 primary and D+(retention-2) reconciliation exports."""
-    routes = _selected_routes(config_path, route_name, all_routes)
+    config = load_archive_config(config_path)
+    routes = _selected_routes(config, route_name, all_routes)
     today = (
         date.fromisoformat(today_text)
         if today_text is not None
@@ -150,15 +211,11 @@ def sync_archive(
         else None
     )
 
-    if projects:
-        project_models = [client.read_project(project_name=name) for name in projects]
-    else:
-        project_models = list(client.list_projects(limit=None))
-
     results: list[SyncResultDict] = []
-    unmatched_projects: list[str] = []
-    config = load_archive_config(config_path)
     selected_names = {route.name for route in routes}
+    routed_projects, unmatched_projects = _routed_projects(
+        client, config, projects, selected_names
+    )
     stores = {route.name: create_store(route.archive_uri) for route in routes}
     manifest_keys = {
         route.name: set(stores[route.name].list_keys("manifests")) for route in routes
@@ -170,26 +227,14 @@ def sync_archive(
         }
         for route in routes
     }
-    for project in project_models:
-        try:
-            matched_route = config.route_project(project.name)
-        except UnmatchedProjectError as exc:
-            if projects:
-                raise click.ClickException(str(exc)) from exc
-            unmatched_projects.append(project.name)
-            continue
-        if matched_route.name not in selected_names:
-            if projects:
-                raise click.ClickException(
-                    f"Project {project.name} belongs to route {matched_route.name}, "
-                    f"not the selected route"
-                )
-            continue
-
+    for routed_project in routed_projects:
+        project_id = routed_project.project_id
+        project_name = routed_project.project_name
+        matched_route = routed_project.route
         store = stores[matched_route.name]
         for trace_date, phase in due:
             before_key = (
-                f"manifests/project_id={project.id}/date={trace_date.isoformat()}.json"
+                f"manifests/project_id={project_id}/date={trace_date.isoformat()}.json"
             )
             before_snapshot = (
                 read_manifest_snapshot(store, before_key, known_exists=True)
@@ -204,14 +249,14 @@ def sync_archive(
                 manifest = sync_project_day(
                     client,
                     store,
-                    project_id=str(project.id),
-                    project_name=project.name,
+                    project_id=project_id,
+                    project_name=project_name,
                     trace_date=trace_date,
                     phase=phase,
                     existing_snapshot=before_snapshot,
                     manifest_known_absent=before_snapshot is None,
                     existing_project=project_records[matched_route.name].get(
-                        str(project.id)
+                        project_id
                     ),
                     project_record_checked=True,
                     bulk_exporter=bulk_exporter,
@@ -221,17 +266,17 @@ def sync_archive(
                     "Archive manifest changed concurrently; rerun the sync safely"
                 ) from exc
             manifest_keys[matched_route.name].add(before_key)
-            project_records[matched_route.name][str(project.id)] = ArchiveProject(
+            project_records[matched_route.name][project_id] = ArchiveProject(
                 schema_version=1,
-                project_id=str(project.id),
-                project_name=project.name,
+                project_id=project_id,
+                project_name=project_name,
             )
             results.append(
                 {
                     "route": matched_route.name,
                     "archive_uri": matched_route.archive_uri,
-                    "project_name": project.name,
-                    "project_id": str(project.id),
+                    "project_name": project_name,
+                    "project_id": project_id,
                     "trace_date": trace_date.isoformat(),
                     "phase": phase.value,
                     "provider": (
@@ -300,7 +345,8 @@ def backfill_archive(
     import_workers: int,
 ) -> None:
     """Export a historical range once and publish sealed daily partitions."""
-    routes = _selected_routes(config_path, route_name, False)
+    config = load_archive_config(config_path)
+    routes = _selected_routes(config, route_name, False)
     route = routes[0]
     window_start, window_end = backfill_window(
         date.fromisoformat(start_date), date.fromisoformat(end_date)
@@ -312,31 +358,12 @@ def backfill_archive(
         archive_uri=route.archive_uri,
         timeout_seconds=bulk_export_timeout_hours * 60 * 60,
     )
-    if projects:
-        project_models = [client.read_project(project_name=name) for name in projects]
-    else:
-        project_models = list(client.list_projects(limit=None))
-    config = load_archive_config(config_path)
-    selected_projects: list[tuple[str, str]] = []
-    unmatched_projects: list[str] = []
-    for project in project_models:
-        try:
-            matched_route = config.route_project(project.name)
-        except UnmatchedProjectError as exc:
-            if projects:
-                raise click.ClickException(str(exc)) from exc
-            unmatched_projects.append(project.name)
-            continue
-        if matched_route.name != route.name:
-            if projects:
-                raise click.ClickException(
-                    f"Project {project.name} belongs to route {matched_route.name}, "
-                    f"not the selected route"
-                )
-            continue
-        if project.name is None:
-            raise click.ClickException("LangSmith project is missing its name")
-        selected_projects.append((str(project.id), project.name))
+    routed_projects, unmatched_projects = _routed_projects(
+        client, config, projects, {route.name}
+    )
+    selected_projects = [
+        (item.project_id, item.project_name) for item in routed_projects
+    ]
 
     jobs: list[BulkExportJob] = []
     project_by_export_id: dict[str, tuple[str, str]] = {}
@@ -384,8 +411,8 @@ def backfill_archive(
     with ThreadPoolExecutor(max_workers=import_workers) as executor:
         for snapshot in exporter.complete_exports(jobs):
             project_id, project_name = project_by_export_id[snapshot.export_id]
-            # INVARIANT: export IDs are unique above, so at most one worker can
-            # publish a given project's daily manifests in this invocation.
+            # Project identities and export IDs are both unique before any worker
+            # starts, so this invocation has at most one publisher per project-day.
             future = executor.submit(
                 import_backfill_snapshot,
                 create_store(route.archive_uri),
@@ -436,7 +463,8 @@ def archive_status(
     all_routes: bool,
 ) -> None:
     """List published archive manifests."""
-    routes = _selected_routes(config_path, route_name, all_routes)
+    config = load_archive_config(config_path)
+    routes = _selected_routes(config, route_name, all_routes)
     manifests: list[ArchiveManifestDict] = []
     for route in routes:
         store = create_store(route.archive_uri)

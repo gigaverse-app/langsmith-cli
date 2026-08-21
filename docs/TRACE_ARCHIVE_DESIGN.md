@@ -226,27 +226,31 @@ worker B: read v1 ─ export raw B ─ canonical B ─ CAS(v1) ──► CONFLIC
 
 ## Enforced invariants
 
-| Invariant | Enforcement point | Failure behavior |
-|---|---|---|
-| One project matches exactly one route | Config routing | Unmatched/ambiguous explicit projects fail; catalog scans report unmatched projects |
-| Project identity is immutable inside a route | `projects/project_id=<uuid>.json` create/verify | Rename or route move requires explicit migration |
-| A manifest is exactly one UTC day | Manifest construction and deserialization | Non-UTC or non-24-hour windows fail before query/publication |
-| Object keys are normalized and namespace-bound | Store key validation plus manifest model | Absolute, traversal, wrong project/date/phase, and malformed generation keys fail |
-| Snapshot run IDs are unique | DuckDB validation before canonicalization | No manifest is published; uploaded raw attempt remains an expirable orphan |
-| Canonical run IDs are unique | Validation of the written canonical Parquet | No manifest is published |
-| Canonical count is between the largest input and their sum | Manifest publication/read boundary | Truncated or inflated manifests fail closed |
-| Reconciliation wins duplicate IDs | Canonical `row_number` rank | Updated D+12 rows replace D+2; primary-only and late rows are retained |
-| A sealed day cannot regress | Phase idempotency plus sealed-state validation | Repeated phase calls return the published manifest without exporting |
-| Only one concurrent publisher wins | S3 ETag/local locked CAS | Stale writer receives a concurrency error; winning pointer is preserved |
-| Readers use only published canonical keys | Manifest-directed discovery | Raw/orphan/unreferenced canonical generations are invisible |
-| Empty project-days return zero | Zero-count manifest pruning | DuckDB is not asked to union an empty partial schema |
-| Text-search SQL identifiers are fixed | `ArchiveRunQuery` field allowlist | Unsupported `--grep-in` fields fail before SQL construction |
-| Full-trace semantic values are provider-independent | Archive read normalization restores Bulk nested values, UTC event offsets, and derived child IDs | Real API/archive traces match after treating missing and null object members as equivalent |
+| ID | Invariant | Enforcement point | Regression proof |
+|---|---|---|---|
+| A1 | One project matches exactly one route | `ArchiveConfig.route_project` requires exactly one match | `test_route_config_selects_exactly_one_destination`, `test_overlapping_routes_fail_fast` |
+| A2 | One command processes each project identity at most once | `_routed_projects` rejects duplicate project IDs before export/worker submission | `test_bulk_backfill_rejects_duplicate_project_identity_before_export` |
+| A3 | Project identity is immutable inside a route | `ensure_project_record` create-or-verify boundary | `test_project_catalog_rejects_silent_rename` |
+| A4 | A manifest is exactly one UTC day | `ArchiveManifest` construction/deserialization validation | `test_corrupt_manifest_fails_at_the_storage_boundary` |
+| A5 | Object keys are normalized and namespace-bound | Store key validation plus manifest model | `test_store_rejects_object_key_traversal`, `test_manifest_location_must_match_its_project_and_date` |
+| B1 | Every managed job has canonical IDs, a non-empty UTC window, and the exact requested destination/project/format contract | `BulkExportJob.__post_init__`, `BulkExportSnapshot.__post_init__`, `_matches_window` | `test_bulk_export_job_model_enforces_identity_and_window_invariants`, `test_bulk_export_snapshot_model_enforces_utc_window_invariant`, `test_bulk_export_batch_rejects_polled_request_identity_drift` |
+| B2 | Every exported file remains inside the normalized configured S3 destination | `_get_validated_destination`, `_exported_file_uri`, `_require_normalized_s3_path` | `test_bulk_export_rejects_destination_outside_archive`, `test_bulk_export_rejects_invalid_completed_partitions`, `test_bulk_export_rejects_unsafe_identity_and_storage_configuration` |
+| B3 | Completed partitions exactly cover the requested UTC window | `_validate_partition_coverage` rejects missing, gapped, overlapping, reversed, or extra intervals | `test_bulk_export_rejects_missing_partition_coverage`, `test_bulk_export_partitions_exactly_cover_requested_window` |
+| B4 | Completion order never controls harvest order | `complete_exports` removes and yields every ready job before waiting or reporting a terminal peer | `test_bulk_export_batch_harvests_completed_jobs_without_head_of_line_blocking`, `test_bulk_export_batch_harvests_ready_peer_before_reporting_failure` |
+| A6 | Snapshot and canonical run IDs are unique | DuckDB `count(*) = count(DISTINCT id)` checks before and after canonicalization | `test_snapshot_duplicate_run_ids_fail_before_publication`, `test_reconciliation_deduplicates_and_is_idempotent` |
+| A7 | Canonical count is between the largest input and their sum | Manifest publication/read validation | `test_canonical_count_is_bounded_by_snapshot_counts` |
+| A8 | Reconciliation wins duplicate IDs without losing primary-only or late rows | Canonical `row_number` ordered by snapshot rank | `test_reconciliation_deduplicates_and_is_idempotent`, `test_bulk_reconciliation_unifies_runs_api_and_v2_json_column_types` |
+| A9 | A sealed day cannot regress | Phase idempotency plus sealed-state validation | `test_sealed_day_is_idempotent_and_cannot_be_unsealed`, `test_range_backfill_publishes_daily_partitions_and_resumes` |
+| A10 | Only one concurrent publisher wins | S3 ETag/local locked compare-and-swap | `test_manifest_publication_rejects_a_stale_writer`, `test_two_manifest_publishers_cannot_both_win` |
+| A11 | Readers use only published canonical keys | Manifest-directed discovery | `test_queries_ignore_unpublished_raw_and_canonical_objects` |
+| A12 | Empty project-days return zero without schema-union failures | Zero-count manifest pruning | `test_empty_archive_is_queryable_as_zero_rows` |
+| A13 | Text-search SQL identifiers come only from a fixed allowlist | `ArchiveRunQuery.__post_init__` | `test_archive_text_fields_are_an_explicit_allowlist` |
+| A14 | Full-trace semantic values and topology are provider-independent | `_normalize_run_payload`, `_validated_archive_run`, and derived `child_run_ids` | `test_bulk_json_normalization_matches_live_run_shape`, `test_bulk_reconciliation_unifies_runs_api_and_v2_json_column_types` plus the documented real three-trace comparison |
 
-These invariants are executable contracts, not documentation only. Unit tests cover
-corrupt manifests, duplicate IDs, stale and simultaneous writers, sealed retries,
-empty partitions, unsafe text fields, route pruning, and Windows paths. CLI tests
-cover scheduled D+2/D+12 routing, explicit-project failures, and status output.
+The table deliberately names the enforcing code and executable regression test for
+each contract. Tests without an enforcement point prove an accident; comments without
+a falsifying test are only claims. CLI tests additionally cover scheduled D+2/D+12
+routing, explicit-project failures, progress behavior, and status output.
 
 Bulk Export and the Runs API encode a few equivalent values differently. Bulk may
 pad inferred nested objects with null keys, add one JSON layer to LangChain's reserved

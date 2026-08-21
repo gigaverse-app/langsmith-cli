@@ -40,15 +40,18 @@ if TYPE_CHECKING:
 # Canonical Parquet stores nested provider fields as JSON text. Runs API JSONL is
 # inferred as STRUCT/LIST while Bulk Export v2 emits VARCHAR for the same fields;
 # normalizing here keeps reconciliation and cross-day union schema-stable.
-ARCHIVE_JSON_COLUMNS = (
+ARCHIVE_JSON_OBJECT_COLUMNS = (
     "extra",
     "inputs",
     "outputs",
     "feedback_stats",
+)
+ARCHIVE_JSON_LIST_COLUMNS = (
     "events",
     "tags",
     "parent_run_ids",
 )
+ARCHIVE_JSON_COLUMNS = ARCHIVE_JSON_OBJECT_COLUMNS + ARCHIVE_JSON_LIST_COLUMNS
 
 
 class RunsExportClient(Protocol):

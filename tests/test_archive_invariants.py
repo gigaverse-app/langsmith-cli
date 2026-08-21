@@ -223,6 +223,22 @@ def test_empty_archive_is_queryable_as_zero_rows(
     assert count_archive_runs(query) == 0
 
 
+def test_queries_ignore_unpublished_raw_and_canonical_objects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """INVARIANT: manifests are the only publication pointers visible to readers."""
+    archive_uri = str(tmp_path / "archive")
+    monkeypatch.setenv("LANGSMITH_ARCHIVE_URI", archive_uri)
+    store, manifest = _sync_primary(tmp_path, [create_run()])
+    assert manifest.canonical_key is not None
+    store.put_text("raw/orphan/runs.parquet", "not parquet")
+    store.put_text("canonical/orphan/runs.parquet", "not parquet")
+
+    runs = query_archive_runs(ArchiveRunQuery(project="dev/agent", limit=0))
+
+    assert len(runs) == 1
+
+
 def test_project_catalog_prunes_unrelated_manifest_reads(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

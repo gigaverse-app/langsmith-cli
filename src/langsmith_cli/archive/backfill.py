@@ -68,6 +68,13 @@ def import_backfill_snapshot(
             if key in manifest_keys
             else None
         )
+        # INVARIANT: resume may skip work, never identity validation. Otherwise a
+        # rename/route move could make sealed data look successfully backfilled
+        # under a project name that the published manifest does not contain.
+        if existing is not None and existing.manifest.project_name != project_name:
+            raise ValueError(
+                "Archived project name changed; migrate its manifest before backfill"
+            )
         if existing is not None and existing.manifest.sealed:
             skipped_days += 1
             canonical_run_count += existing.manifest.canonical_run_count

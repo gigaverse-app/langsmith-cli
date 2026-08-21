@@ -356,6 +356,55 @@ def test_bulk_backfill_rejects_one_export_selected_for_multiple_projects(
     assert "was selected for multiple projects" in result.output
 
 
+def test_bulk_backfill_rejects_duplicate_project_identity_before_export(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    runner,
+) -> None:
+    """INVARIANT: one backfill invocation submits at most one job per project ID."""
+    from langsmith_cli.commands import archive as archive_commands
+
+    duplicate_id = "22345678-1234-5678-1234-567812345678"
+    client = FakeArchiveClient(
+        [
+            create_project(name="dev/agent", project_id=duplicate_id),
+            create_project(name="dev/renamed-agent", project_id=duplicate_id),
+        ],
+        [],
+    )
+    monkeypatch.setattr(archive_commands, "get_or_create_client", lambda ctx: client)
+
+    class ExportMustNotStart:
+        def begin_window(self, **kwargs: object) -> None:
+            raise AssertionError("duplicate project identity reached export submission")
+
+    monkeypatch.setattr(
+        archive_commands.LangSmithBulkExporter,
+        "from_langsmith_client",
+        staticmethod(lambda client, **kwargs: ExportMustNotStart()),
+    )
+    result = runner.invoke(
+        cli,
+        [
+            "archive",
+            "backfill",
+            "--config",
+            str(_write_config(tmp_path)),
+            "--route",
+            "dev",
+            "--start-date",
+            "2026-08-18",
+            "--end-date",
+            "2026-08-20",
+            "--bulk-export-destination-id",
+            "42345678-1234-5678-1234-567812345678",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "Duplicate LangSmith project ID" in result.output
+
+
 @pytest.mark.parametrize(
     ("project_name", "message"),
     (
