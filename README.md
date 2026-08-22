@@ -117,7 +117,7 @@ langsmith-cli --json archive backfill --config archive.yaml --route production \
   --bulk-export-destination-id <uuid> --import-workers 8
 
 # Scan the retained archive without paging through the live Runs API.
-langsmith-cli --json runs search "timeout" --archive \
+langsmith-cli --json runs search "timeout" --source archive \
   --project prd/my-agent --last 365d --fields id,name,status,error
 ```
 
@@ -125,6 +125,23 @@ The backfill is resumable: it adopts exact matching remote jobs and skips sealed
 project-days. See the [archive operator reference](skills/langsmith/references/archive.md)
 for setup, safe scaling, progress checks, and recovery, and the
 [archive design](docs/TRACE_ARCHIVE_DESIGN.md) for storage and invariants.
+
+### 🦆 **Local Parquet Working Cache**
+
+Materialize traces explicitly for fast or offline intermediate work, then use the
+same Runs facade against local DuckDB. Reads never cache automatically:
+
+```bash
+langsmith-cli --json runs pull --source cloud --to local \
+  --project prd/my-agent --last 7d
+langsmith-cli --json runs list --source local \
+  --project prd/my-agent --fields id,name,status
+langsmith-cli --json runs search "timeout" --source local \
+  --project prd/my-agent --fields id,name,error
+```
+
+Pulls are additive and idempotent. Local is a disposable working cache; cloud is
+the live authority and the S3 archive is the durable retained history.
 
 ### 📦 **Complete Coverage**
 Every LangSmith resource at your fingertips:
@@ -405,6 +422,7 @@ runs stats             # Aggregate statistics
 runs watch             # Live run dashboard
 runs open <id>         # Open trace in browser
 runs search            # Full-text search across runs
+runs pull              # Explicitly add cloud/archive traces to local Parquet
 runs sample            # Stratified sampling by tags/metadata
 runs analyze           # Group runs and compute metrics
 runs tags              # Discover tag patterns
@@ -414,7 +432,7 @@ runs describe          # Detailed field statistics
 runs view-file         # View runs from JSONL files
 runs usage             # Token usage analysis with grouping
 runs pricing           # Model pricing coverage check
-runs cache download    # Download runs to local JSONL cache
+runs cache download    # Legacy alias for cloud-to-local Parquet materialization
 runs cache list        # List cached projects
 runs cache clear       # Clear cached data
 datasets list          # List datasets

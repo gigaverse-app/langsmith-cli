@@ -211,14 +211,15 @@ organization has chosen and documented its repair/audit retention window.
 ## Archive queries
 
 ```bash
-langsmith-cli --json runs list --archive --project dev/my-agent --last 90d
-langsmith-cli --json runs search "timeout" --archive --project dev/my-agent
-langsmith-cli --json runs get <id> --archive --project dev/my-agent --last 1d --follow-children
-langsmith-cli --json runs get-latest --archive --project dev/my-agent --failed
+langsmith-cli --json runs list --source archive --project dev/my-agent --last 90d
+langsmith-cli --json runs search "timeout" --source archive --project dev/my-agent
+langsmith-cli --json runs get <id> --source archive --project dev/my-agent --last 1d --follow-children
+langsmith-cli --json runs get-latest --source archive --project dev/my-agent --failed
 ```
 
 Archive readers do not need `LANGSMITH_API_KEY`. They need read/list access to the
-configured archive. `--archive` currently supports project selectors, time windows,
+configured archive. `--archive` is a compatibility alias for `--source archive`.
+Archive queries support project selectors, time windows,
 status, trace ID, root selection, run type, tags, model text, full-content text/regex
 search, sorting, field projection, counts, and output formats. Raw FQL, trace/tree
 FQL, metadata predicates, and latency flags fail explicitly until translated to the

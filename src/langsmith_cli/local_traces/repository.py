@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from datetime import datetime
 from fnmatch import fnmatchcase
 import hashlib
 import json
@@ -128,8 +129,42 @@ class LocalTraceRepository:
     def count(self, query: RunQuery) -> int:
         return self._count_catalog(self.read_catalog(), query)
 
-    def get(self, run_id: str, *, follow_children: bool) -> tuple[Run, list[Run]]:
-        matches = self.query(RunQuery(run_id=run_id, limit=1))
+    def validate_integrity(self) -> TraceCatalog:
+        """Verify every reachable fragment against its catalog checksum.
+
+        INVARIANT: repair validates the exact immutable bytes named by the atomic
+        catalog before DuckDB is allowed to interpret their contents.
+        """
+        catalog = self.read_catalog()
+        for fragment in catalog.fragments:
+            path = Path(self._approved_fragment_path(fragment))
+            if _file_sha256(path) != fragment.sha256:
+                raise ValueError(
+                    f"Local trace fragment checksum mismatch: {fragment.key}"
+                )
+        return catalog
+
+    def get(
+        self,
+        run_id: str,
+        *,
+        follow_children: bool,
+        project: str | None = None,
+        project_id: str | None = None,
+        since: datetime | None = None,
+        before: datetime | None = None,
+    ) -> tuple[Run, list[Run]]:
+        """Read one scoped run and, optionally, children from that same project."""
+        matches = self.query(
+            RunQuery(
+                run_id=run_id,
+                project=project,
+                project_id=project_id,
+                since=since,
+                before=before,
+                limit=1,
+            )
+        )
         if not matches:
             raise LookupError(f"Local run not found: {run_id}")
         run = matches[0]
@@ -139,7 +174,17 @@ class LocalTraceRepository:
             children = [
                 candidate
                 for candidate in reversed(
-                    self.query(RunQuery(trace_id=trace_id, limit=None))
+                    self.query(
+                        RunQuery(
+                            trace_id=trace_id,
+                            project_id=(
+                                str(run.session_id)
+                                if run.session_id is not None
+                                else project_id
+                            ),
+                            limit=None,
+                        )
+                    )
                 )
                 if str(candidate.id) != run_id
             ]
@@ -251,7 +296,10 @@ class LocalTraceRepository:
         fragment: TraceFragment,
         runs: list[Run],
     ) -> tuple[TraceCatalog, int]:
-        selected_ids = {str(run.id) for run in runs}
+        # INVARIANT: LangSmith run UUIDs are scoped by project/session in the
+        # logical inventory. A coincident UUID in another project is a new local
+        # identity, not an update of the first project's run.
+        selected_ids = {(str(run.session_id), str(run.id)) for run in runs}
         for _attempt in range(MAX_CATALOG_PUBLICATION_ATTEMPTS):
             catalog, expected_version = self._read_catalog_snapshot()
             if any(
@@ -260,7 +308,7 @@ class LocalTraceRepository:
             ):
                 return catalog, 0
             existing_ids = {
-                str(run.id)
+                (str(run.session_id), str(run.id))
                 for run in self._query_catalog(catalog, RunQuery(limit=None))
             }
             added_count = len(selected_ids - existing_ids)

@@ -262,11 +262,55 @@ def test_runs_pull_cloud_then_list_local_offline(
     assert list(tmp_path.rglob("*.jsonl")) == []
 
 
+def test_empty_cloud_pull_is_a_successful_noop(
+    runner, mock_client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Selecting no remote runs is normal and must not invent project identity."""
+    monkeypatch.setenv("LANGSMITH_CLI_RUN_CACHE_DIR", str(tmp_path))
+    mock_client.list_runs.return_value = []
+
+    result = runner.invoke(
+        cli,
+        [
+            "--json",
+            "runs",
+            "pull",
+            "--source",
+            "cloud",
+            "--to",
+            "local",
+            "--project",
+            PROJECT_NAME,
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert parse_json_output(result.output) == {
+        "added_run_count": 0,
+        "selected_run_count": 0,
+        "total_run_count": 0,
+        "fragment_count": 0,
+        "content_digest": None,
+    }
+    assert list(tmp_path.rglob("*")) == []
+
+
 def test_source_and_archive_alias_conflict_fails_fast(runner, mock_client) -> None:
     result = runner.invoke(cli, ["runs", "list", "--source", "local", "--archive"])
 
     assert result.exit_code != 0
     assert "Use either --source or --archive" in result.output
+    mock_client.assert_not_called()
+
+
+def test_local_backend_rejects_unsupported_fql(runner, mock_client) -> None:
+    result = runner.invoke(
+        cli,
+        ["runs", "list", "--source", "local", "--filter", 'eq(name, "x")'],
+    )
+
+    assert result.exit_code != 0
+    assert "Local backend does not yet support: --filter" in result.output
     mock_client.assert_not_called()
 
 
@@ -329,6 +373,54 @@ def test_runs_get_and_get_latest_use_the_local_source(
     assert parse_json_output(latest.output)["id"] == FIRST_RUN_ID
 
 
+def test_local_get_scopes_duplicate_run_ids_by_project(
+    runner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """INVARIANT: local identity is (project, run ID), including child lookup."""
+    second_project_id = "f47ac10b-58cc-4372-a567-0e02b2c3d480"
+    second_project_name = "dev/other-local-traces"
+    monkeypatch.setenv("LANGSMITH_CLI_RUN_CACHE_DIR", str(tmp_path))
+    repository = LocalTraceRepository(tmp_path)
+    repository.add_runs(
+        _pull_request(),
+        [_run(FIRST_RUN_ID, "first-project", outputs={"project": "first"})],
+    )
+    second_addition = repository.add_runs(
+        TracePullRequest(
+            source=TraceSource.CLOUD,
+            project_id=second_project_id,
+            project_name=second_project_name,
+            requested_at=OBSERVED_AT,
+        ),
+        [
+            create_run(
+                id_str=FIRST_RUN_ID,
+                name="second-project",
+                outputs={"project": "second"},
+                session_id=second_project_id,
+            )
+        ],
+    )
+    assert second_addition.added_run_count == 1
+
+    fetched = runner.invoke(
+        cli,
+        [
+            "--json",
+            "runs",
+            "get",
+            FIRST_RUN_ID,
+            "--source",
+            "local",
+            "--project",
+            second_project_name,
+        ],
+    )
+
+    assert fetched.exit_code == 0, fetched.output
+    assert parse_json_output(fetched.output)["outputs"] == {"project": "second"}
+
+
 def test_runs_pull_archive_then_get_local(
     runner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -372,3 +464,152 @@ def test_runs_pull_archive_then_get_local(
     assert pulled.exit_code == 0, pulled.output
     assert fetched.exit_code == 0, fetched.output
     assert parse_json_output(fetched.output)["outputs"] == {"source": "archive"}
+
+
+def test_archive_pull_expands_complete_trace_outside_selection_window(
+    runner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """INVARIANT: selection bounds choose traces, never truncate their members."""
+    archive_root = tmp_path / "archive"
+    local_root = tmp_path / "local"
+    monkeypatch.setenv("LANGSMITH_ARCHIVE_URI", str(archive_root))
+    monkeypatch.setenv("LANGSMITH_CLI_RUN_CACHE_DIR", str(local_root))
+    root = _run(FIRST_RUN_ID, "root")
+    child = create_run(
+        id_str=SECOND_RUN_ID,
+        name="early-child",
+        parent_run_id=FIRST_RUN_ID,
+        trace_id=FIRST_RUN_ID,
+        session_id=PROJECT_ID,
+    ).model_copy(update={"start_time": datetime(2024, 7, 3, 8, 0, tzinfo=timezone.utc)})
+    sync_project_day(
+        _ArchiveRunsClient([root, child]),
+        LocalArchiveStore(archive_root, str(archive_root)),
+        project_id=PROJECT_ID,
+        project_name=PROJECT_NAME,
+        trace_date=root.start_time.date(),
+        phase=ArchivePhase.PRIMARY,
+    )
+
+    pulled = runner.invoke(
+        cli,
+        [
+            "--json",
+            "runs",
+            "pull",
+            "--source",
+            "archive",
+            "--to",
+            "local",
+            "--project",
+            PROJECT_NAME,
+            "--since",
+            "2024-07-03T09:00:00Z",
+            "--before",
+            "2024-07-04T00:00:00Z",
+        ],
+    )
+    fetched = runner.invoke(
+        cli,
+        [
+            "--json",
+            "runs",
+            "get",
+            FIRST_RUN_ID,
+            "--source",
+            "local",
+            "--follow-children",
+        ],
+    )
+
+    assert pulled.exit_code == 0, pulled.output
+    assert parse_json_output(pulled.output)["selected_run_count"] == 2
+    assert fetched.exit_code == 0, fetched.output
+    assert parse_json_output(fetched.output)["_children"][0]["id"] == SECOND_RUN_ID
+
+
+def test_archive_trace_expansion_uses_one_batched_query() -> None:
+    """Archive expansion must not rescan manifests once per selected trace."""
+    from langsmith_cli.local_traces.models import TraceSelection
+    from langsmith_cli.local_traces.transfer import complete_archive_traces
+
+    selected = [_run(FIRST_RUN_ID, "first"), _run(SECOND_RUN_ID, "second")]
+    selection = TraceSelection(
+        source=TraceSource.ARCHIVE,
+        project_name=PROJECT_NAME,
+        requested_at=OBSERVED_AT,
+    )
+    with patch(
+        "langsmith_cli.archive.query.query_archive_runs", return_value=selected
+    ) as query_archive_runs:
+        expanded = complete_archive_traces(selection, selected)
+
+    assert expanded == selected
+    query_archive_runs.assert_called_once()
+    query = query_archive_runs.call_args.args[0]
+    assert query.trace_ids == (FIRST_RUN_ID, SECOND_RUN_ID)
+
+
+def test_cache_repair_rejects_tampered_fragment(
+    runner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """INVARIANT: repair verifies bytes against the catalog's SHA-256 contract."""
+    monkeypatch.setenv("LANGSMITH_CLI_RUN_CACHE_DIR", str(tmp_path))
+    repository = LocalTraceRepository(tmp_path)
+    repository.add_runs(_pull_request(), [_run(FIRST_RUN_ID, "stored")])
+    fragment = repository.read_catalog().fragments[0]
+    (tmp_path / fragment.key).write_bytes(b"not parquet")
+
+    repaired = runner.invoke(cli, ["--json", "runs", "cache", "repair"])
+
+    assert repaired.exit_code != 0
+    assert "checksum mismatch" in repaired.output
+
+
+def test_archive_and_local_share_supported_query_semantics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Golden query: shared predicates return identical IDs and ordering."""
+    from langsmith_cli.archive.query import query_archive_runs
+
+    archive_root = tmp_path / "archive"
+    monkeypatch.setenv("LANGSMITH_ARCHIVE_URI", str(archive_root))
+    matching = create_run(
+        id_str=FIRST_RUN_ID,
+        name="matching",
+        run_type="llm",
+        tags=["production"],
+        outputs={"message": "Needle"},
+        session_id=PROJECT_ID,
+    )
+    ignored = create_run(
+        id_str=SECOND_RUN_ID,
+        name="ignored",
+        run_type="tool",
+        tags=["production"],
+        outputs={"message": "Needle"},
+        session_id=PROJECT_ID,
+    )
+    sync_project_day(
+        _ArchiveRunsClient([matching, ignored]),
+        LocalArchiveStore(archive_root, str(archive_root)),
+        project_id=PROJECT_ID,
+        project_name=PROJECT_NAME,
+        trace_date=matching.start_time.date(),
+        phase=ArchivePhase.PRIMARY,
+    )
+    repository = LocalTraceRepository(tmp_path / "local")
+    repository.add_runs(_pull_request(), [matching, ignored])
+    query = RunQuery(
+        project=PROJECT_NAME,
+        run_type="llm",
+        tags=("production",),
+        text="needle",
+        text_ignore_case=True,
+        limit=None,
+    )
+
+    archived_ids = [str(run.id) for run in query_archive_runs(query)]
+    local_ids = [str(run.id) for run in repository.query(query)]
+
+    assert archived_ids == local_ids == [FIRST_RUN_ID]

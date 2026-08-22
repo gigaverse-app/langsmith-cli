@@ -64,9 +64,10 @@ Users should be able to choose in seconds:
 
 The CLI should reinforce that choice in diagnostics. Human output identifies a
 non-default source in its heading; verbose output reports source revision and
-coverage; JSON row output stays backward-compatible and sparse. `runs source
-status <name>` is the authoritative way to inspect freshness and coverage before a
-query.
+coverage; JSON row output stays backward-compatible and sparse. For the implemented
+local slice, `runs cache list` reports reachable project inventory and `runs cache
+repair` verifies catalog and fragment integrity. Rich coverage comparison remains a
+deferred source-management capability.
 
 ## Product contract
 
@@ -126,20 +127,19 @@ are not goals of this design.
 
 ### Resolved CLI surface
 
-**Use `runs source` for source lifecycle and comparison; keep data reads on the
-existing `runs` commands.** The source command family is singular because every
-lifecycle command has one explicit target, except the deliberately two-sided
-comparison. Existing `datasets` and `examples` gain the same source selector.
+**Keep data reads on the existing `runs` commands and make movement explicit.** The
+implemented trace slice uses `runs pull --source <cloud|archive> --to local` because
+it states both ends without introducing an otherwise-empty source-management
+namespace. Existing `datasets` and `examples` use their own source selector.
 
 | Command | Contract |
 |---|---|
-| `runs source list` | List configured source names, kinds, and capabilities |
-| `runs source status <name>` | Report availability, coverage, freshness, and cache/archive health |
-| `runs source pull local --from <cloud\|archive>` | Add or refresh selected full trace bundles; preserve unrelated cached traces |
-| `runs source import local <path> --format jsonl` | Validate and convert external JSONL into the Parquet cache |
-| `runs source remove local <selector>` | Remove selected traces; never affect datasets or another source |
-| `runs source evict local` | Delete the disposable local trace inventory; dataset replicas are separate |
-| `runs source compare <left> <right>` | Report bounded identity/content differences without merging rows |
+| `runs pull --source <cloud\|archive> --to local` | Implemented: add selected full trace bundles while preserving unrelated cached traces |
+| `runs cache list` / `runs cache repair` | Implemented: inspect reachable local inventory and verify its integrity |
+| `runs cache clear [--project]` | Implemented: atomically evict all or one project's logical local inventory |
+| Local JSONL import | Deferred: validate and convert external JSONL into the Parquet cache |
+| Selective trace removal | Deferred: remove selected traces without affecting another source |
+| Source comparison | Deferred: report bounded identity/content differences without merging rows |
 | `datasets list/get/status --source <name>` | Read the Dataset contract; status adds replica lineage/head/attachment health |
 | `examples list/get --source <name> --dataset <dataset>` | Read examples, splits, attachments, and `--as-of` versions uniformly |
 | `datasets pull <dataset> --from <source> --to <source> [--as-of <version>\|--all-versions]` | Replicate exact dataset version(s) and their examples/attachments |
@@ -147,8 +147,9 @@ comparison. Existing `datasets` and `examples` gain the same source selector.
 | `datasets create/delete` and `examples create/update/delete/from-run` | Cloud-only mutations using the existing LangSmith model |
 | `datasets evict <dataset> --source local` | Remove a disposable replica; this is cache lifecycle, not a Dataset mutation |
 
-`runs cache download/list/clear` remain temporary aliases for local
-pull/status/evict. Commands fail before loading a backend when the selected source
+`runs cache download` is a compatibility alias for cloud-to-local pull;
+`list/repair/clear` remain the implemented local lifecycle facade. Commands fail
+before loading a backend when the selected source
 lacks the requested capability. A local trace pull must select traces by IDs or a
 bounded project/time/filter query. It performs an idempotent set-union/upsert: new
 trace identities are added, a newer observation of an existing trace replaces its
@@ -171,10 +172,10 @@ mode for callers that need source and coverage evidence:
 ```
 
 Human and sparse JSON modes warn on partial/unknown coverage through stderr. The
-source-aware read commands also accept `--require-complete`; when coverage cannot
-satisfy the request, they exit nonzero without presenting rows as a complete
-answer. `runs source status <name> --json` remains the preflight interface for full
-source metadata.
+source-aware read commands may later accept `--require-complete`; when coverage
+cannot satisfy the request, they should exit nonzero without presenting rows as a
+complete answer. That strict coverage envelope is deferred beyond the implemented
+local inventory slice.
 
 Dataset/example sparse JSON likewise remains the SDK model shape. Replica lineage,
 source namespace, resolved `as_of`, content digest, attachment health, and optional
@@ -338,9 +339,10 @@ Coverage uses typed states rather than a boolean:
 | Partial | Some requested projects or intervals are absent |
 | Unknown | Imported/external data has insufficient evidence to claim coverage |
 
-Machine-readable run output remains sparse and backward-compatible. Coverage
-warnings go to stderr, while `runs source status <name> --json` returns the full
-evidence. `--json-envelope` returns the complete `TracePage` evidence with the runs.
+Machine-readable run output remains sparse and backward-compatible. The implemented
+slice records pull evidence in the catalog but does not yet expose the proposed full
+coverage envelope. A later explicit status/compare surface can return that evidence;
+`--json-envelope` remains deferred with it.
 
 ## Local trace cache
 
@@ -782,7 +784,7 @@ langsmith-cli --json runs search "timeout" \
   --source cloud --project prd/my-agent --last 2h
 
 # If the investigation will be repeated or taken offline, add that slice locally.
-langsmith-cli --json runs source pull local --from cloud \
+langsmith-cli --json runs pull --source cloud --to local \
   --project prd/my-agent --since 2026-08-22T08:00:00Z \
   --before 2026-08-22T10:00:00Z
 
@@ -805,7 +807,7 @@ langsmith-cli --json runs search "timeout" \
   --since 2025-01-01 --before 2025-02-01
 
 # Check out the same evidence only when repeated/offline analysis justifies it.
-langsmith-cli --json runs source pull local --from archive \
+langsmith-cli --json runs pull --source archive --to local \
   --project prd/my-agent --since 2025-01-01 --before 2025-02-01
 ```
 
@@ -854,13 +856,14 @@ Consumers query only published generations; partially written data is invisible.
 ### Offline/private analysis: prove locality before relying on it
 
 ```bash
-langsmith-cli --json runs source status local
+langsmith-cli --json runs cache list
+langsmith-cli --json runs cache repair
 langsmith-cli --json runs list --source local \
   --project prd/my-agent --since 2026-08-01 --before 2026-08-08
 ```
 
-The status check exposes inventory counts, pull-batch coverage, freshness, and
-fragment health.
+The inventory and repair checks expose reachable project counts and fragment
+health. Rich interval-coverage reporting remains deferred.
 Local querying then operates with cloud and archive credentials absent and network
 access denied. “Private” here means no query-time transfer; users must still decide
 whether downloading the traces was permitted in the first place.
@@ -901,11 +904,11 @@ than a local pull. The resolved pull command makes direction explicit:
 
 ```bash
 # Add a bounded live slice to the cache
-langsmith-cli --json runs source pull local --from cloud \
+langsmith-cli --json runs pull --source cloud --to local \
   --project prd/my-agent --last 7d
 
 # Check out sealed history without contacting LangSmith
-langsmith-cli --json runs source pull local --from archive \
+langsmith-cli --json runs pull --source archive --to local \
   --project prd/my-agent --since 2025-01-01 --before 2025-02-01
 ```
 
@@ -1166,7 +1169,7 @@ resolved the former open items as follows.
 
 | Former question | Resolution |
 |---|---|
-| Source-management names | `runs source list/status/pull/import/remove/evict/compare`; existing cache commands are aliases |
+| Source-management names | Core reads use `--source`; explicit trace movement is `runs pull --source <cloud\|archive> --to local`; cache lifecycle stays under `runs cache`; comparison/import remain deferred |
 | Local root and metadata | Platform user-cache `traces/v1/local`, immutable fragments, typed Parquet catalogs, and atomic `active.json` revision |
 | JSON coverage envelope | Sparse `--json` stays stable; `--json-envelope` returns `runs/source/coverage/diagnostics` |
 | Coverage enforcement | `--require-complete` succeeds only when authoritative/sealed evidence, compatible pull batches, or `IdentityComplete` evidence covers the exact trace request |

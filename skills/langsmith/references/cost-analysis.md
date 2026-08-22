@@ -4,7 +4,7 @@
 
 | Flag | Commands | What It Does |
 |------|----------|--------------|
-| `--from-cache` | `runs usage`, `runs pricing` | Read from local JSONL cache (fast, no API) |
+| `--from-cache` | `runs usage`, `runs pricing` | Read from the local Parquet working cache (fast, no API) |
 | `--group-by metadata:<field>` | `runs usage`, `runs analyze` | Group results by metadata or tag field |
 | `--breakdown model` | `runs usage` | Add model dimension to aggregation |
 | `--breakdown provider` | `runs usage` | Add provider (Google, OpenAI, Anthropic, etc.) |
@@ -21,8 +21,8 @@
 ## Recipe 1: Basic Cost Breakdown by Model
 
 ```bash
-# Ensure cache is fresh first
-langsmith-cli --json runs cache download --project-name-pattern "prd/*" --last 7d
+# Explicitly materialize the projects needed for this analysis first
+langsmith-cli --json runs pull --source cloud --to local --project "prd/service" --last 7d
 
 # Analyze costs broken down by model, provider, gateway
 langsmith-cli --json runs usage \

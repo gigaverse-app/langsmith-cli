@@ -23,10 +23,11 @@ from langsmith_cli.utils import (
     get_matching_items,
     get_or_create_client,
     is_json_context,
+    json_dumps,
     output_formatted_data,
     output_option,
     partition_metadata_filters,
-    render_output,
+    quote_fql_string,
     require_confirmation,
     resolve_project_filters,
     write_output_to_file,
@@ -72,7 +73,12 @@ def cache_download(
     adapts its historical project/filter options to that same transfer service; it
     never writes JSONL.
     """
-    del full, workers
+    if full or workers is not None:
+        raise click.ClickException(
+            "--full and --workers are not supported by the additive Parquet cache; "
+            "use 'runs cache clear --yes' explicitly before a pull when replacement "
+            "is intended"
+        )
     from langsmith_cli.local_traces.models import (
         ProjectTraceCacheWriteResult,
         TraceSelection,
@@ -108,12 +114,12 @@ def cache_download(
     if additional_filter is not None:
         fql_filters.append(additional_filter)
     if run_type is not None:
-        fql_filters.append(f'eq(run_type, "{run_type}")')
+        fql_filters.append(f"eq(run_type, {quote_fql_string(run_type)})")
     exact_name = name_pattern is not None and not any(
         character in name_pattern for character in "*?["
     )
-    if exact_name:
-        fql_filters.append(f'eq(name, "{name_pattern}")')
+    if name_pattern is not None and exact_name:
+        fql_filters.append(f"eq(name, {quote_fql_string(name_pattern)})")
 
     results = []
     repository = local_trace_repository()
@@ -127,15 +133,17 @@ def cache_download(
             filter=combine_fql_filters(fql_filters),
             limit=None,
         )
-        selected = select_cloud_runs(client, selection)
+        selected = list(select_cloud_runs(client, selection))
         if name_pattern is not None and not exact_name:
-            selected = get_matching_items(
-                selected,
-                name_pattern=name_pattern,
-                name_getter=lambda run: run.name or "",
+            selected = list(
+                get_matching_items(
+                    selected,
+                    name_pattern=name_pattern,
+                    name_getter=lambda run: run.name or "",
+                )
             )
         if client_metadata:
-            selected = apply_metadata_filter(selected, client_metadata)
+            selected = list(apply_metadata_filter(selected, client_metadata))
         complete = complete_cloud_traces(client, selected)
         try:
             result = publish_selected_traces(selection, selected, complete, repository)
@@ -200,18 +208,26 @@ def cache_list(
     if machine_format != "table":
         output_formatted_data(selected, machine_format)
         return
-    render_output(
-        rows,
-        columns=[
-            ("Project", "project_name"),
-            ("Runs", "run_count"),
-            ("Fragments", "fragment_count"),
-            ("Updated", "last_updated"),
-        ],
-        title="Local Trace Cache",
-        empty_message="No local traces. Use 'runs pull --to local' first.",
-        console=console,
-    )
+    if not rows:
+        console.print(
+            "[yellow]No local traces. Use 'runs pull --to local' first.[/yellow]"
+        )
+        return
+    from rich.table import Table
+
+    table = Table(title="Local Trace Cache")
+    table.add_column("Project")
+    table.add_column("Runs", justify="right")
+    table.add_column("Fragments", justify="right")
+    table.add_column("Updated")
+    for row in rows:
+        table.add_row(
+            str(row["project_name"]),
+            str(row["run_count"]),
+            str(row["fragment_count"]),
+            str(row["last_updated"]),
+        )
+    console.print(table)
 
 
 @cache_group.command("clear")
@@ -245,7 +261,10 @@ def cache_repair(ctx: click.Context) -> None:
     from langsmith_cli.trace_query import RunQuery
 
     repository = local_trace_repository()
-    catalog = repository.read_catalog()
+    try:
+        catalog = repository.validate_integrity()
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
     run_count = repository.count(RunQuery(limit=None))
     payload = TraceCacheHealth(
         status=TraceCacheStatus.HEALTHY,
@@ -285,12 +304,14 @@ def cache_schema(
         raise click.ClickException(str(exc)) from exc
     schema = infer_schema(rows)
     if include:
-        schema = filter_schema_by_paths(schema, include)
+        schema = filter_schema_by_paths(schema, list(include))
     payload = schema_to_dict(schema)
     if is_json_context(ctx):
-        output_formatted_data(payload, "json")
+        click.echo(json_dumps(payload))
         return
-    output_formatted_data(payload, "yaml")
+    import yaml
+
+    click.echo(yaml.safe_dump(payload, sort_keys=False))
 
 
 @cache_group.command("grep")

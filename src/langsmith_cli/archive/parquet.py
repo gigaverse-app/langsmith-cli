@@ -136,6 +136,9 @@ def parquet_where_clause(query: RunQuery) -> tuple[str, list[object]]:
     if query.trace_id is not None:
         clauses.append("CAST(trace_id AS VARCHAR) = ?")
         parameters.append(query.trace_id)
+    if query.trace_ids:
+        clauses.append("CAST(trace_id AS VARCHAR) = ANY(?)")
+        parameters.append(list(query.trace_ids))
     if query.run_type is not None:
         clauses.append("run_type = ?")
         parameters.append(query.run_type)

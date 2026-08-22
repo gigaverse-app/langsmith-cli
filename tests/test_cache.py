@@ -121,6 +121,28 @@ def test_cache_download_is_compatibility_alias_for_local_inventory(
     assert list(cache_root.rglob("*.jsonl")) == []
 
 
+@pytest.mark.parametrize("legacy_option", ["--full", "--workers=4"])
+def test_cache_download_rejects_legacy_options_it_cannot_honor(
+    runner, mock_client, legacy_option: str
+) -> None:
+    """Compatibility flags must never be accepted and silently ignored."""
+    result = runner.invoke(
+        cli,
+        [
+            "runs",
+            "cache",
+            "download",
+            "--project",
+            PROJECT_NAME,
+            legacy_option,
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "not supported by the additive Parquet cache" in result.output
+    mock_client.assert_not_called()
+
+
 def test_cache_grep_delegates_to_runs_list_local(runner, cache_root: Path) -> None:
     append_runs_to_cache(
         PROJECT_NAME,
@@ -175,3 +197,24 @@ def test_cache_dir_reports_shared_root(runner, cache_root: Path) -> None:
 
     assert result.exit_code == 0
     assert result.output.strip() == str(cache_root)
+
+
+def test_usage_and_pricing_loader_reads_shared_parquet_inventory(
+    cache_root: Path,
+) -> None:
+    """Legacy analysis commands consume the same inventory as --source local."""
+    from langsmith_cli.cache import load_runs_from_cache
+    from langsmith_cli.local_traces.repository import LocalTraceRepository
+    from langsmith_cli.trace_query import RunQuery
+
+    append_runs_to_cache(PROJECT_NAME, [_run(FIRST_RUN_ID, "analysis")])
+
+    loaded = load_runs_from_cache([PROJECT_NAME])
+    local = LocalTraceRepository(cache_root).query(
+        RunQuery(project=PROJECT_NAME, limit=None)
+    )
+
+    assert [str(run.id) for run in loaded.items] == [FIRST_RUN_ID]
+    assert [str(run.id) for run in local] == [FIRST_RUN_ID]
+    assert loaded.successful_sources == [PROJECT_NAME]
+    assert list(cache_root.rglob("*.jsonl")) == []

@@ -48,6 +48,20 @@ def publish_selected_traces(
     repository: LocalTraceRepository,
 ) -> TraceCacheWriteResult:
     """Publish an already selected and trace-expanded remote working set."""
+    if not selected and not complete:
+        # An empty remote selection is a successful no-op. There is no SDK Run
+        # from which to derive the stable project UUID, so no coverage-ledger
+        # record can be published without weakening the identity invariant.
+        catalog = repository.read_catalog()
+        from langsmith_cli.trace_query import RunQuery
+
+        return TraceCacheWriteResult(
+            added_run_count=0,
+            selected_run_count=0,
+            total_run_count=repository.count(RunQuery(limit=None)),
+            fragment_count=len(catalog.fragments),
+            content_digest=None,
+        )
     project_id = one_project_id(selection.project_name, complete or selected)
     request = TracePullRequest(
         source=selection.source,
@@ -82,9 +96,12 @@ def select_cloud_runs(client: RunsClient, selection: TraceSelection) -> list[Run
 
 
 def complete_cloud_traces(client: RunsClient, selected: list[Run]) -> list[Run]:
-    by_id: dict[str, Run] = {}
-    for run in selected:
-        trace_id = str(run.trace_id or run.id)
+    # The selection is already known-good source data. Seed with it so an
+    # eventually-consistent trace expansion can add members but never erase the
+    # rows that caused the user to select the trace.
+    by_id: dict[str, Run] = {str(run.id): run for run in selected}
+    trace_ids = {str(run.trace_id or run.id) for run in selected}
+    for trace_id in trace_ids:
         for member in client.list_runs(trace_id=trace_id, limit=None):
             by_id[str(member.id)] = member
     return list(by_id.values())
@@ -110,18 +127,18 @@ def complete_archive_traces(
     from langsmith_cli.archive.query import query_archive_runs
     from langsmith_cli.trace_query import RunQuery
 
-    by_id: dict[str, Run] = {}
-    for trace_id in {str(run.trace_id or run.id) for run in selected}:
-        for member in query_archive_runs(
-            RunQuery(
-                project=selection.project_name,
-                since=selection.since,
-                before=selection.before,
-                trace_id=trace_id,
-                limit=None,
-            )
-        ):
-            by_id[str(member.id)] = member
+    by_id: dict[str, Run] = {str(run.id): run for run in selected}
+    trace_ids = tuple(sorted({str(run.trace_id or run.id) for run in selected}))
+    if not trace_ids:
+        return list(by_id.values())
+    for member in query_archive_runs(
+        RunQuery(
+            project=selection.project_name,
+            trace_ids=trace_ids,
+            limit=None,
+        )
+    ):
+        by_id[str(member.id)] = member
     return list(by_id.values())
 
 

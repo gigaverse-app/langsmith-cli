@@ -120,7 +120,12 @@ def get_run(
                 from langsmith_cli.local_traces.service import local_trace_repository
 
                 run, children = local_trace_repository().get(
-                    run_id, follow_children=follow_children
+                    run_id,
+                    follow_children=follow_children,
+                    project=project,
+                    project_id=project_id,
+                    since=since_dt,
+                    before=before_dt,
                 )
         except LookupError as exc:
             raise click.ClickException(str(exc)) from exc
@@ -292,6 +297,7 @@ def get_latest_run(
             tags=tuple(tag),
             text=model,
             text_fields=("extra",),
+            text_ignore_case=bool(model),
         )
         if selected_source is TraceSource.ARCHIVE:
             from langsmith_cli.archive.query import query_archive_runs

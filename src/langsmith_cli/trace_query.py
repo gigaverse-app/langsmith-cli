@@ -27,6 +27,7 @@ class RunQuery(BaseModel):
     error: bool | None = None
     run_id: str | None = None
     trace_id: str | None = None
+    trace_ids: tuple[str, ...] = ()
     run_type: str | None = None
     is_root: bool | None = None
     tags: tuple[str, ...] = ()
@@ -44,6 +45,8 @@ class RunQuery(BaseModel):
 
     @model_validator(mode="after")
     def _validate_text_search(self) -> "RunQuery":
+        if self.trace_id is not None and self.trace_ids:
+            raise ValueError("Use either trace_id or trace_ids, not both")
         if self.text is not None and not self.text_fields:
             raise ValueError("Run text search requires at least one field")
         invalid_fields = set(self.text_fields) - TRACE_TEXT_FIELDS
