@@ -260,10 +260,12 @@ def detect_language_safe(text: str) -> str | None:
 
     try:
         # Lazy import for performance
-        from langdetect import detect
+        from langdetect import DetectorFactory, detect
         from langdetect.lang_detect_exception import LangDetectException
 
         try:
+            # langdetect is nondeterministic unless its factory seed is fixed.
+            DetectorFactory.seed = 0
             return detect(sample)
         except LangDetectException:
             # Empty text after filtering, no detectable language, etc.

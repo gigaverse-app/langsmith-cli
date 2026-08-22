@@ -147,6 +147,20 @@ class TestDetectLanguageSafe:
         # Should still work and detect English
         assert result == "en"
 
+    def test_detection_uses_a_fixed_seed(self, monkeypatch):
+        """Identical text must not produce different languages across calls."""
+        from langdetect import DetectorFactory
+
+        monkeypatch.setattr(DetectorFactory, "seed", None)
+
+        def assert_seeded(text: str) -> str:
+            assert DetectorFactory.seed == 0
+            return "en"
+
+        monkeypatch.setattr("langdetect.detect", assert_seeded)
+
+        assert detect_language_safe("This text is long enough for detection.") == "en"
+
     def test_detection_failure_returns_none(self, monkeypatch):
         """Language detection failures are treated as unknown language."""
         from langdetect.lang_detect_exception import LangDetectException
