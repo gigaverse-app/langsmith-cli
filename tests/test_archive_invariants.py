@@ -824,3 +824,25 @@ def test_s3_store_propagates_non_concurrency_service_errors(
         store.put_text_if_version("manifests/day.json", "{}", None)
     with pytest.raises(ClientError):
         store.exists("manifests/day.json")
+
+
+def test_duckdb_threads_are_environment_configurable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    DuckDB defaults its thread count to the HOST's cores, not the container's CPU
+    quota — 8 threads inside a 1-CPU pod, each holding JSON read buffers up to
+    maximum_object_size plus write buffers, multiplies the working set until real
+    project-days OOM. The pod owner knows its CPU quota; the library does not.
+    """
+    import duckdb
+
+    monkeypatch.setenv("LANGSMITH_ARCHIVE_DUCKDB_THREADS", "2")
+    connection = duckdb.connect()
+    try:
+        configure_duckdb_resources(connection, tmp_path / "project-a")
+        assert connection.execute("SELECT current_setting('threads')").fetchone() == (
+            2,
+        )
+    finally:
+        connection.close()

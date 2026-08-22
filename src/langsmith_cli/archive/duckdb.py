@@ -28,6 +28,20 @@ def duckdb_memory_limit() -> str:
     return configured or DUCKDB_MEMORY_LIMIT
 
 
+# DuckDB defaults its thread count to the HOST's cores, not the container's CPU quota
+# (8 threads inside a 1-CPU pod). Each thread holds its own read/write buffers — for
+# JSON staging up to maximum_object_size per thread — so oversubscribed threads
+# multiply the working set until real project-days OOM. The pod owner knows its CPU
+# quota; the library does not, so this is an operator override with DuckDB's own
+# default left untouched when unset.
+DUCKDB_THREADS_ENV = "LANGSMITH_ARCHIVE_DUCKDB_THREADS"
+
+
+def duckdb_threads() -> int | None:
+    configured = os.environ.get(DUCKDB_THREADS_ENV, "").strip()
+    return int(configured) if configured else None
+
+
 # Trace rows carry multi-megabyte JSON text (inputs/outputs), so DuckDB's default
 # row-COUNT-sized row groups buffer gigabytes before flushing, and that buffer cannot
 # spill (real project-days OOMed a 1 GiB bound in-cluster). Bounding row groups by
@@ -59,6 +73,9 @@ def configure_duckdb_resources(
     # snapshot_rank. Tested by
     # test_duckdb_connections_do_not_preserve_insertion_order.
     connection.execute("SET preserve_insertion_order = false")
+    threads = duckdb_threads()
+    if threads is not None:
+        connection.execute("SET threads = ?", [threads])
 
 
 @contextmanager
