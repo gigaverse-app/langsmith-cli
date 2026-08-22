@@ -13,8 +13,10 @@ langsmith-cli --json examples list [OPTIONS]
 - `--archive-uri TEXT` - Archive root; defaults to `LANGSMITH_ARCHIVE_URI`
 - `--local-dir DIRECTORY` - Override the platform-local dataset cache
 - `--dataset TEXT` (required) - Dataset name or UUID
-- `--limit INTEGER` - Maximum results (default: 20)
-- `--offset INTEGER` - Skip N examples (default: 0)
+- `--limit INTEGER` - Maximum results after filtering and sorting (default: 20;
+  must be at least 1)
+- `--offset INTEGER` - Skip N examples after filtering and sorting (default: 0;
+  must be non-negative)
 - `--example-ids TEXT` - Comma-separated list of example UUIDs
 - `--filter TEXT` - Advanced FQL query
 - `--metadata JSON` - Filter by metadata (JSON object)
@@ -62,6 +64,9 @@ langsmith-cli --json examples list --dataset "my-dataset" --source local \
 
 `--filter` is cloud-only in the initial replica implementation. ID, metadata,
 split, pagination, field selection, and sorting filters work for replica sources.
+The uniform list pipeline is filter, then sort, then offset/limit; cloud fetches an
+unbounded SDK page only when a client-side option such as `--sort-by` or `--exclude`
+requires it.
 
 ### `examples get`
 

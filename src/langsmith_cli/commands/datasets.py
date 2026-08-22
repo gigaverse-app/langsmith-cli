@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, TypedDict
 
 import click
 from langsmith_cli.dataset_replica.cli import (
+    replica_list_pagination_options,
     replica_repository,
     replica_source_options,
 )
@@ -17,8 +18,6 @@ from langsmith_cli.utils import (
     ConsoleProtocol,
     LazyConsole,
     add_name_filter_options,
-    apply_exclude_filter,
-    apply_name_filters,
     configure_logger_streams,
     confirm_option,
     count_option,
@@ -30,7 +29,6 @@ from langsmith_cli.utils import (
     is_json_context,
     json_dumps,
     sort_by_option,
-    sort_items,
     parse_fields_option,
     output_option,
     output_single_item,
@@ -98,8 +96,12 @@ def datasets():
 @datasets.command("list")
 @replica_source_options()
 @click.option("--dataset-ids", help="Specific dataset IDs (comma-separated).")
-@click.option("--limit", default=20, help="Limit number of datasets (default 20).")
-@click.option("--data-type", help="Filter by dataset type (kv, chat, llm).")
+@replica_list_pagination_options(item_name="datasets")
+@click.option(
+    "--data-type",
+    type=click.Choice(["kv", "chat", "llm"]),
+    help="Filter by dataset type (kv, chat, llm).",
+)
 @click.option("--name", "dataset_name", help="Exact dataset name match.")
 @click.option("--name-contains", help="Dataset name substring search.")
 @click.option("--metadata", help="Filter by metadata (JSON string).")
@@ -154,69 +156,40 @@ def list_datasets(
     # Parse metadata JSON
     metadata_dict = parse_json_string(metadata, "metadata")
 
-    if source is ReplicaSource.CLOUD:
-        client = get_or_create_client(ctx)
-        # Build kwargs for list_datasets (type-safe approach)
-        list_kwargs = {
-            "limit": limit,
-            "data_type": data_type,
-            "dataset_name": dataset_name,
-            "dataset_name_contains": name_contains,
-            "metadata": metadata_dict,
-        }
-        if dataset_ids_list is not None:
-            list_kwargs["dataset_ids"] = dataset_ids_list
-        datasets_list = list(client.list_datasets(**list_kwargs))
-    else:
-        repository = replica_repository(source, archive_uri, local_dir)
-        datasets_list = repository.list_datasets()
-        if dataset_ids_list is not None:
-            selected_ids = set(dataset_ids_list)
-            datasets_list = [d for d in datasets_list if str(d.id) in selected_ids]
-        if data_type is not None:
-            datasets_list = [
-                d
-                for d in datasets_list
-                if d.data_type is not None and d.data_type.value == data_type
-            ]
-        if dataset_name is not None:
-            datasets_list = [d for d in datasets_list if d.name == dataset_name]
-        if name_contains is not None:
-            datasets_list = [d for d in datasets_list if name_contains in d.name]
-        if metadata_dict is not None:
-            datasets_list = [
-                d
-                for d in datasets_list
-                if d.metadata is not None
-                and all(
-                    key in d.metadata and d.metadata[key] == value
-                    for key, value in metadata_dict.items()
-                )
-            ]
-        datasets_list = datasets_list[:limit]
+    from langsmith_cli.dataset_replica.query import DatasetListQuery
 
-    # Client-side name pattern/regex filtering
-    datasets_list = apply_name_filters(
-        datasets_list,
-        lambda d: d.name,
+    query = DatasetListQuery.from_options(
+        dataset_ids=dataset_ids_list,
+        limit=limit,
+        data_type=data_type,
+        dataset_name=dataset_name,
+        name_contains=name_contains,
+        metadata=metadata_dict,
         name_pattern=name_pattern,
         name_regex=name_regex,
+        sort_by=sort_by,
+        exclude=exclude,
     )
 
-    # Client-side exclude filtering
-    datasets_list = apply_exclude_filter(datasets_list, exclude, lambda d: d.name)
-
-    # Client-side sorting
-    if sort_by:
-        datasets_list = sort_items(
-            datasets_list,
-            sort_by,
-            {
-                "name": lambda d: d.name,
-                "created_at": lambda d: d.created_at,
-                "example_count": lambda d: d.example_count,
-            },
+    if source is ReplicaSource.CLOUD:
+        client = get_or_create_client(ctx)
+        datasets_list = query.apply_to_cloud_response(
+            client.list_datasets(
+                dataset_ids=(
+                    list(query.dataset_ids) if query.dataset_ids is not None else None
+                ),
+                limit=query.cloud_limit,
+                data_type=(
+                    query.data_type.value if query.data_type is not None else None
+                ),
+                dataset_name=query.dataset_name,
+                dataset_name_contains=query.name_contains,
+                metadata=query.metadata,
+            )
         )
+    else:
+        repository = replica_repository(source, archive_uri, local_dir)
+        datasets_list = query.apply_to_replica(repository.list_datasets())
 
     # Define table builder function
     def build_datasets_table(datasets):

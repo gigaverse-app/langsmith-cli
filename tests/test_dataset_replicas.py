@@ -182,6 +182,36 @@ def test_repository_is_idempotent_and_reads_historical_versions(tmp_path: Path):
     assert repository.read_dataset(str(DATASET_ID)).name == renamed.name
 
 
+def test_version_selection_reads_only_the_selected_authenticated_manifest(
+    tmp_path: Path,
+) -> None:
+    """INVARIANT: selecting one version never scans unrelated manifests."""
+    store = create_store(str(tmp_path))
+    repository = DatasetReplicaRepository(store)
+    for offset, tag in enumerate(("oldest", "middle", "newest")):
+        repository.write_snapshot(
+            replica_dataset(),
+            DatasetVersion(as_of=VERSION_ONE + timedelta(days=offset), tags=[tag]),
+            [replica_example(input_value=tag, attachment=None)],
+        )
+    head = json.loads(store.get_text(f"datasets/heads/{DATASET_ID}.json"))
+    selected_manifest_key = head["versions"][0]["manifest_key"]
+    guarded_store = MagicMock(wraps=store)
+
+    def read_selected_object(key: str) -> str:
+        if "/manifests/" in key and key != selected_manifest_key:
+            raise AssertionError("version selection read an unrelated manifest")
+        return store.get_text(key)
+
+    guarded_store.get_text.side_effect = read_selected_object
+
+    restored = DatasetReplicaRepository(guarded_store).read_dataset(
+        str(DATASET_ID), as_of="oldest"
+    )
+
+    assert restored.id == DATASET_ID
+
+
 def test_same_timestamp_rejects_different_snapshot_content(tmp_path: Path) -> None:
     """INVARIANT: one dataset timestamp identifies exactly one snapshot."""
     repository = DatasetReplicaRepository(create_store(str(tmp_path)))
@@ -1082,7 +1112,7 @@ def test_version_selection_and_cloud_requirements_fail_fast(tmp_path: Path):
     assert _select_version(versions, "baseline") is old
     with pytest.raises(ValueError, match="no versions"):
         _select_version([], "latest")
-    with pytest.raises(ValueError, match="not found or ambiguous"):
+    with pytest.raises(ValueError, match="tag not found"):
         _select_version(versions, "missing")
     with pytest.raises(ValueError, match="at or before"):
         _select_version(versions, "2020-01-01T00:00:00+00:00")
@@ -1103,3 +1133,302 @@ def test_version_selection_and_cloud_requirements_fail_fast(tmp_path: Path):
     selected = resolve_cloud_version(client, str(DATASET_ID), VERSION_ONE.isoformat())
     assert selected is old
     assert client.read_dataset_version.call_args.kwargs["as_of"] == VERSION_ONE
+
+
+@pytest.mark.parametrize("source", [ReplicaSource.ARCHIVE, ReplicaSource.LOCAL])
+def test_replica_list_filters_and_sorts_before_pagination(
+    runner, tmp_path: Path, source: ReplicaSource
+) -> None:
+    """INVARIANT: source-independent list semantics page the final result set."""
+    root = tmp_path / source.value
+    repository = DatasetReplicaRepository(create_store(str(root)))
+    first = replica_example(attachment=None)
+    second = replica_example(SECOND_EXAMPLE_ID, attachment=None).model_copy(
+        update={"created_at": first.created_at + timedelta(hours=1)}
+    )
+    repository.write_snapshot(
+        replica_dataset(), DatasetVersion(as_of=VERSION_ONE), [first, second]
+    )
+    zeta_id = UUID("ffffffff-ffff-4fff-8fff-ffffffffffff")
+    repository.write_snapshot(
+        replica_dataset().model_copy(update={"id": zeta_id, "name": "zeta"}),
+        DatasetVersion(as_of=VERSION_ONE),
+        [],
+    )
+    location_options = (
+        ["--archive-uri", str(root)]
+        if source is ReplicaSource.ARCHIVE
+        else ["--local-dir", str(root)]
+    )
+
+    sorted_datasets = runner.invoke(
+        cli,
+        [
+            "--json",
+            "datasets",
+            "list",
+            "--source",
+            source.value,
+            *location_options,
+            "--sort-by",
+            "-name",
+            "--limit",
+            "1",
+        ],
+    )
+    matching_dataset = runner.invoke(
+        cli,
+        [
+            "--json",
+            "datasets",
+            "list",
+            "--source",
+            source.value,
+            *location_options,
+            "--name-pattern",
+            "z*",
+            "--limit",
+            "1",
+        ],
+    )
+    sorted_examples = runner.invoke(
+        cli,
+        [
+            "--json",
+            "examples",
+            "list",
+            "--dataset",
+            str(DATASET_ID),
+            "--source",
+            source.value,
+            *location_options,
+            "--sort-by",
+            "-created_at",
+            "--offset",
+            "1",
+            "--limit",
+            "1",
+        ],
+    )
+    excluded_examples = runner.invoke(
+        cli,
+        [
+            "--json",
+            "examples",
+            "list",
+            "--dataset",
+            str(DATASET_ID),
+            "--source",
+            source.value,
+            *location_options,
+            "--exclude",
+            str(EXAMPLE_ID),
+            "--limit",
+            "1",
+        ],
+    )
+
+    assert sorted_datasets.exit_code == 0, sorted_datasets.output
+    assert [item["name"] for item in json.loads(sorted_datasets.output)] == ["zeta"]
+    assert matching_dataset.exit_code == 0, matching_dataset.output
+    assert [item["name"] for item in json.loads(matching_dataset.output)] == ["zeta"]
+    assert sorted_examples.exit_code == 0, sorted_examples.output
+    assert [item["id"] for item in json.loads(sorted_examples.output)] == [
+        str(EXAMPLE_ID)
+    ]
+    assert excluded_examples.exit_code == 0, excluded_examples.output
+    assert [item["id"] for item in json.loads(excluded_examples.output)] == [
+        str(SECOND_EXAMPLE_ID)
+    ]
+
+
+def test_cloud_list_defers_pagination_for_client_side_operations(runner) -> None:
+    """INVARIANT: cloud and replica sources page the same final ordering."""
+    first_dataset = replica_dataset()
+    second_dataset = first_dataset.model_copy(
+        update={
+            "id": UUID("ffffffff-ffff-4fff-8fff-ffffffffffff"),
+            "name": "zeta",
+        }
+    )
+    first_example = replica_example(attachment=None)
+    second_example = replica_example(SECOND_EXAMPLE_ID, attachment=None).model_copy(
+        update={"created_at": first_example.created_at + timedelta(hours=1)}
+    )
+    with patch("langsmith.Client") as client_class:
+        client = client_class.return_value
+        client.list_datasets.return_value = iter([first_dataset, second_dataset])
+        client.list_examples.return_value = iter([first_example, second_example])
+
+        datasets_result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "datasets",
+                "list",
+                "--sort-by",
+                "-name",
+                "--limit",
+                "1",
+            ],
+        )
+        examples_result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "examples",
+                "list",
+                "--dataset",
+                str(DATASET_ID),
+                "--sort-by",
+                "-created_at",
+                "--offset",
+                "1",
+                "--limit",
+                "1",
+            ],
+        )
+
+    assert datasets_result.exit_code == 0, datasets_result.output
+    assert [item["name"] for item in json.loads(datasets_result.output)] == ["zeta"]
+    assert client.list_datasets.call_args.kwargs["limit"] is None
+    assert examples_result.exit_code == 0, examples_result.output
+    assert [item["id"] for item in json.loads(examples_result.output)] == [
+        str(EXAMPLE_ID)
+    ]
+    assert client.list_examples.call_args.kwargs["limit"] is None
+    assert client.list_examples.call_args.kwargs["offset"] == 0
+
+
+def test_cloud_filter_only_page_stops_after_enough_survivors(runner) -> None:
+    """INVARIANT: only global sorting may require full cloud materialization."""
+    excluded = replica_example(attachment=None)
+    included = replica_example(SECOND_EXAMPLE_ID, attachment=None)
+
+    def examples():
+        yield excluded
+        yield included
+        raise AssertionError("filter-only pagination consumed beyond its final page")
+
+    with patch("langsmith.Client") as client_class:
+        client = client_class.return_value
+        client.list_examples.return_value = examples()
+
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "examples",
+                "list",
+                "--exclude",
+                str(EXAMPLE_ID),
+                "--limit",
+                "1",
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert [item["id"] for item in json.loads(result.output)] == [
+        str(SECOND_EXAMPLE_ID)
+    ]
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["datasets", "list", "--limit", "0"],
+        ["datasets", "list", "--limit", "-1"],
+        ["examples", "list", "--limit", "0"],
+        ["examples", "list", "--limit", "-1"],
+        ["examples", "list", "--offset", "-1"],
+    ],
+)
+def test_replica_list_rejects_invalid_page_bounds(
+    runner, tmp_path: Path, arguments: list[str]
+) -> None:
+    """INVARIANT: pagination bounds cannot acquire backend-specific meanings."""
+    result = runner.invoke(
+        cli,
+        [
+            "--json",
+            *arguments,
+            "--source",
+            "local",
+            "--local-dir",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "Invalid value" in result.output
+
+
+def test_pull_rejects_conflicting_version_selectors_and_same_repository(
+    runner, tmp_path: Path
+) -> None:
+    """INVARIANT: a transfer names one selection and two distinct stores."""
+    repository = DatasetReplicaRepository(create_store(str(tmp_path)))
+    repository.write_snapshot(replica_dataset(), DatasetVersion(as_of=VERSION_ONE), [])
+
+    conflicting_selection = runner.invoke(
+        cli,
+        [
+            "--json",
+            "datasets",
+            "pull",
+            str(DATASET_ID),
+            "--source",
+            "archive",
+            "--to",
+            "local",
+            "--archive-uri",
+            str(tmp_path),
+            "--local-dir",
+            str(tmp_path / "local"),
+            "--all-versions",
+            "--as-of",
+            VERSION_ONE.isoformat(),
+        ],
+    )
+    same_repository = runner.invoke(
+        cli,
+        [
+            "--json",
+            "datasets",
+            "pull",
+            str(DATASET_ID),
+            "--source",
+            "archive",
+            "--to",
+            "local",
+            "--archive-uri",
+            str(tmp_path),
+            "--local-dir",
+            str(tmp_path),
+        ],
+    )
+
+    assert conflicting_selection.exit_code == 1
+    assert "cannot be combined" in conflicting_selection.output
+    assert same_repository.exit_code == 1
+    assert "same repository" in same_repository.output
+
+
+@pytest.mark.parametrize(
+    "versions",
+    [
+        [
+            DatasetVersion(tags=["old"], as_of=VERSION_ONE),
+            DatasetVersion(tags=["new"], as_of=VERSION_TWO),
+        ],
+        [
+            DatasetVersion(tags=["new"], as_of=VERSION_TWO),
+            DatasetVersion(tags=["old"], as_of=VERSION_ONE),
+        ],
+    ],
+)
+def test_latest_version_selection_is_independent_of_backend_order(
+    versions: list[DatasetVersion],
+) -> None:
+    """INVARIANT: latest means max(as_of), not the backend's first row."""
+    assert _select_version(versions, "latest").as_of == VERSION_TWO

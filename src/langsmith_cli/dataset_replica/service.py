@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import timezone
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
@@ -13,6 +13,7 @@ from langsmith_cli.dataset_replica.contracts import ReplicaWriteResult
 from langsmith_cli.dataset_replica.models import (
     ReplicaDestination,
     ReplicaSource,
+    parse_datetime,
 )
 from langsmith_cli.dataset_replica.repository import (
     DatasetReplicaConfigurationError,
@@ -81,6 +82,8 @@ def pull_dataset(
     archive_uri: str | None,
     local_directory: str | None,
 ) -> list[ReplicaWriteResult]:
+    if all_versions and as_of != "latest":
+        raise ValueError("--all-versions cannot be combined with --as-of")
     if (
         source is ReplicaSource.ARCHIVE and destination is ReplicaDestination.ARCHIVE
     ) or (source is ReplicaSource.LOCAL and destination is ReplicaDestination.LOCAL):
@@ -105,11 +108,15 @@ def pull_dataset(
         archive_uri=archive_uri,
         local_directory=local_directory,
     )
+    if source_repository.base_uri == target.base_uri:
+        raise ValueError(
+            "Dataset source and destination resolve to the same repository"
+        )
     versions = source_repository.list_versions(dataset_name_or_id)
     selected = versions if all_versions else [_select_version(versions, as_of)]
     dataset = source_repository.read_dataset(dataset_name_or_id)
     results: list[ReplicaWriteResult] = []
-    for version in reversed(selected):
+    for version in sorted(selected, key=lambda item: item.as_of):
         version_text = version.as_of.astimezone(timezone.utc).isoformat()
         examples = source_repository.iter_examples(
             dataset_name_or_id,
@@ -137,7 +144,7 @@ def resolve_cloud_version(
     client: Client, dataset_id: str, requested: str
 ) -> DatasetVersion:
     try:
-        requested_time = datetime.fromisoformat(requested.replace("Z", "+00:00"))
+        requested_time = parse_datetime(requested)
     except ValueError:
         return client.read_dataset_version(dataset_id=dataset_id, tag=requested)
     return client.read_dataset_version(dataset_id=dataset_id, as_of=requested_time)
@@ -175,22 +182,22 @@ def _pull_from_cloud(
 
 
 def _select_version(versions: list[DatasetVersion], requested: str) -> DatasetVersion:
-    if not versions:
-        raise ValueError("Dataset replica has no versions")
-    if requested == "latest":
-        return versions[0]
+    from langsmith_cli.dataset_replica.versioning import (
+        SelectableVersion,
+        VersionSelectionError,
+        select_version,
+    )
+
+    selectable = [
+        SelectableVersion(
+            position=position,
+            as_of=version.as_of,
+            tags=tuple(version.tags or ()),
+        )
+        for position, version in enumerate(versions)
+    ]
     try:
-        requested_time = datetime.fromisoformat(requested.replace("Z", "+00:00"))
-    except ValueError:
-        matching = [
-            version
-            for version in versions
-            if version.tags is not None and requested in version.tags
-        ]
-        if len(matching) != 1:
-            raise ValueError(f"Dataset version tag not found or ambiguous: {requested}")
-        return matching[0]
-    eligible = [version for version in versions if version.as_of <= requested_time]
-    if not eligible:
-        raise ValueError(f"No dataset version exists at or before {requested}")
-    return max(eligible, key=lambda item: item.as_of)
+        selected = select_version(selectable, requested)
+    except VersionSelectionError as exc:
+        raise ValueError(str(exc)) from exc
+    return versions[selected.position]

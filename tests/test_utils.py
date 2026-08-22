@@ -479,6 +479,12 @@ class TestParseJsonString:
             parse_json_string("invalid", "custom_field")
         assert "custom_field" in str(exc_info.value)
 
+    @pytest.mark.parametrize("value", ["[]", '"text"', "42", "null"])
+    def test_rejects_non_object_json(self, value):
+        """INVARIANT: SDK object options never carry an arbitrary JSON root."""
+        with pytest.raises(click.BadParameter, match="must be a JSON object"):
+            parse_json_string(value, "metadata")
+
 
 class TestParseCommaSeparatedList:
     """Tests for parse_comma_separated_list function."""

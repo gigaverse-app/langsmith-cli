@@ -1,5 +1,6 @@
 import click
 from langsmith_cli.dataset_replica.cli import (
+    replica_list_pagination_options,
     replica_repository,
     replica_source_options,
 )
@@ -7,7 +8,6 @@ from langsmith_cli.dataset_replica.models import ReplicaSource, parse_datetime
 from langsmith_cli.utils import (
     ConsoleProtocol,
     LazyConsole,
-    apply_exclude_filter,
     configure_logger_streams,
     confirm_option,
     count_option,
@@ -28,7 +28,6 @@ from langsmith_cli.utils import (
     render_output,
     require_confirmation,
     sort_by_option,
-    sort_items,
 )
 
 console = LazyConsole()
@@ -51,8 +50,7 @@ def examples():
 @replica_source_options()
 @click.option("--dataset", help="Dataset ID or Name.")
 @click.option("--example-ids", help="Specific example IDs (comma-separated).")
-@click.option("--limit", default=20, help="Limit number of examples (default 20).")
-@click.option("--offset", default=0, help="Number of examples to skip (pagination).")
+@replica_list_pagination_options(include_offset=True, item_name="examples")
 @click.option("--filter", "filter_", help="LangSmith query filter.")
 @click.option("--metadata", help="Filter by metadata (JSON string).")
 @click.option("--splits", help="Filter by dataset splits (comma-separated).")
@@ -118,17 +116,31 @@ def list_examples(
     splits_list = parse_comma_separated_list(splits)
     metadata_dict = parse_json_string(metadata, "metadata")
 
+    from langsmith_cli.dataset_replica.query import ExampleListQuery
+
+    query = ExampleListQuery.from_options(
+        example_ids=example_ids_list,
+        limit=limit,
+        offset=offset,
+        metadata=metadata_dict,
+        splits=splits_list,
+        sort_by=sort_by,
+        exclude=exclude,
+    )
+
     if source is ReplicaSource.CLOUD:
         client = get_or_create_client(ctx)
-        examples_list = list(
+        examples_list = query.apply_to_cloud_response(
             client.list_examples(
                 dataset_name=dataset,
-                example_ids=example_ids_list,
-                limit=limit,
-                offset=offset,
+                example_ids=(
+                    list(query.example_ids) if query.example_ids is not None else None
+                ),
+                limit=query.cloud_limit,
+                offset=query.cloud_offset,
                 filter=filter_,
-                metadata=metadata_dict,
-                splits=splits_list,
+                metadata=query.metadata,
+                splits=list(query.splits) if query.splits is not None else None,
                 inline_s3_urls=inline_s3_urls,
                 include_attachments=include_attachments,
                 as_of=as_of,
@@ -169,43 +181,7 @@ def list_examples(
                 # A global query spans independent histories. A version absent
                 # from one Dataset does not invalidate eligible peer histories.
                 continue
-        if example_ids_list is not None:
-            selected_ids = set(example_ids_list)
-            examples_list = [e for e in examples_list if str(e.id) in selected_ids]
-        if metadata_dict is not None:
-            examples_list = [
-                e
-                for e in examples_list
-                if e.metadata is not None
-                and all(
-                    key in e.metadata and e.metadata[key] == value
-                    for key, value in metadata_dict.items()
-                )
-            ]
-        if splits_list is not None:
-            selected_splits = set(splits_list)
-            examples_list = [
-                e
-                for e in examples_list
-                if e.metadata is not None
-                and "dataset_split" in e.metadata
-                and bool(selected_splits.intersection(e.metadata["dataset_split"]))
-            ]
-        examples_list = examples_list[offset : offset + limit]
-
-    # Client-side exclude filtering (filter by ID string representation)
-    examples_list = apply_exclude_filter(examples_list, exclude, lambda e: str(e.id))
-
-    # Client-side sorting
-    if sort_by:
-        examples_list = sort_items(
-            examples_list,
-            sort_by,
-            {
-                "created_at": lambda e: e.created_at,
-                "modified_at": lambda e: e.modified_at,
-            },
-        )
+        examples_list = query.apply_to_replica(examples_list)
 
     # Define table builder function
     def build_examples_table(examples):

@@ -637,6 +637,10 @@ and tag mapping. `datasets versions --source archive|local` reports versions act
 present in that replica, while `datasets status` distinguishes a one-version checkout
 from a complete copied history.
 
+`--all-versions` and a non-default `--as-of` are mutually exclusive. A transfer also
+requires distinct physical repositories: selecting `archive` and `local` labels that
+resolve to the same directory fails before reading or publishing a snapshot.
+
 ### Identity, lineage, and conflict policy
 
 **A replica is identified by source namespace plus Dataset ID, never by name.** The
@@ -993,6 +997,7 @@ semantics, and warn-or-fail by explicit policy for insufficient coverage.
 | A large Dataset is pulled | Multiple full Python copies exhaust the workstation before DuckDB batching | Stream SDK pages into bounded Pydantic batches and disk-backed DuckDB staging; stream attachments in fixed chunks |
 | SDK adds or changes a required field | Replica silently drops cloud semantics | Fail schema compatibility until explicit migration and round-trip fixture exist |
 | Backend compilers order ties differently | `--limit` returns different runs | Canonical ordering includes a stable run-ID tie-breaker |
+| A list backend pages before client-side filtering or sorting | A valid match disappears or the wrong row occupies the page | Use one typed filter → sort → offset/limit pipeline; defer cloud pagination when a client-side operation requires the complete eligible set |
 | Example filtering is pushed down differently | Cloud and DuckDB disagree on examples/splits | Shared typed semantics and cross-backend golden fixtures |
 | A local path references outside the cache | Metadata points DuckDB at unintended workstation files | Canonicalize paths and enforce a fixed root after symlink resolution |
 | DuckDB installs or auto-loads an unapproved extension | A “local” query reaches the network | Preload only bundled allowlisted format support; disable external access and unapproved extension loading |

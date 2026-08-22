@@ -46,6 +46,32 @@ def replica_source_options(
     return decorate
 
 
+def replica_list_pagination_options(
+    *, include_offset: bool = False, item_name: str
+) -> Callable[[CommandFunction], CommandFunction]:
+    """Apply validated list bounds consistently to every readable source."""
+
+    def decorate(function: CommandFunction) -> CommandFunction:
+        if include_offset:
+            function = click.option(
+                "--offset",
+                type=click.IntRange(min=0),
+                default=0,
+                show_default=True,
+                help=f"Number of {item_name} to skip after filtering and sorting.",
+            )(function)
+        function = click.option(
+            "--limit",
+            type=click.IntRange(min=1),
+            default=20,
+            show_default=True,
+            help=f"Maximum number of {item_name} to return.",
+        )(function)
+        return function
+
+    return decorate
+
+
 def replica_repository(
     source: ReplicaSource,
     archive_uri: str | None,

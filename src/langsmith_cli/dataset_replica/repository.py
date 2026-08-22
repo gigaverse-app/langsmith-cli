@@ -575,30 +575,29 @@ class DatasetReplicaRepository:
     def _resolve_manifest(
         self, head: DatasetHeadPayload, as_of: str | None
     ) -> SnapshotManifestPayload:
-        if as_of is None or as_of == "latest":
-            selected = head["versions"][-1]
-            return self._read_manifest_for_head(head, selected)
+        from langsmith_cli.dataset_replica.versioning import (
+            NoVersionsError,
+            SelectableVersion,
+            VersionAmbiguousError,
+            VersionNotFoundError,
+            select_version,
+        )
 
-        tag_matches: list[SnapshotManifestPayload] = []
+        selectable = [
+            SelectableVersion(
+                position=position,
+                as_of=parse_datetime(item["as_of"]),
+                tags=tuple(item["tags"] or ()),
+            )
+            for position, item in enumerate(head["versions"])
+        ]
         try:
-            requested_time = parse_datetime(as_of)
-        except ValueError:
-            requested_time = None
-        for item in reversed(head["versions"]):
-            manifest = self._read_manifest_for_head(head, item)
-            tags = item["tags"]
-            if tags is not None and as_of in tags:
-                tag_matches.append(manifest)
-            if (
-                requested_time is not None
-                and parse_datetime(item["as_of"]) <= requested_time
-            ):
-                return manifest
-        if len(tag_matches) == 1:
-            return tag_matches[0]
-        if len(tag_matches) > 1:
-            raise DatasetReplicaAmbiguousError(f"Version tag is ambiguous: {as_of}")
-        raise DatasetReplicaNotFoundError(f"Dataset version not found: {as_of}")
+            selected = select_version(selectable, as_of)
+        except VersionAmbiguousError as exc:
+            raise DatasetReplicaAmbiguousError(str(exc)) from exc
+        except (NoVersionsError, VersionNotFoundError) as exc:
+            raise DatasetReplicaNotFoundError(str(exc)) from exc
+        return self._read_manifest_for_head(head, head["versions"][selected.position])
 
     def _read_dataset_from_head(self, head: DatasetHeadPayload) -> Dataset:
         from langsmith.schemas import Dataset

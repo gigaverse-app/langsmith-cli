@@ -12,7 +12,8 @@ langsmith-cli --json datasets list [OPTIONS]
 - `--source [cloud|archive|local]` - Read from one backend (default: `cloud`)
 - `--archive-uri TEXT` - Archive root; defaults to `LANGSMITH_ARCHIVE_URI`
 - `--local-dir DIRECTORY` - Override the platform-local dataset cache
-- `--limit INTEGER` - Maximum results (default: 20)
+- `--limit INTEGER` - Maximum results after filtering and sorting (default: 20;
+  must be at least 1)
 - `--name TEXT` - Filter by exact dataset name
 - `--name-contains TEXT` - Filter by name substring
 - `--dataset-ids TEXT` - Comma-separated list of dataset UUIDs
@@ -112,6 +113,10 @@ compare-and-swap head safely merges concurrent versions and keeps each movable t
 unique. Use
 `--archive-uri` when the command needs the archive; local data defaults to the OS
 cache directory.
+
+`--all-versions` cannot be combined with a non-default `--as-of` selection. Source
+and destination must also resolve to different physical repositories; changing only
+the source label does not make one directory a valid transfer pair.
 
 ### `datasets versions`
 

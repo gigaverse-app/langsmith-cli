@@ -390,21 +390,14 @@ def apply_name_filters(
     Returns:
         Filtered list of items
     """
-    import fnmatch
-
     if not name_pattern and not name_regex:
         return items
 
     filtered = items
     if name_pattern:
-        filtered = [
-            item
-            for item in filtered
-            if fnmatch.fnmatch(name_getter(item), name_pattern)
-        ]
+        filtered = apply_wildcard_filter(filtered, name_pattern, name_getter)
     if name_regex:
-        compiled = re.compile(name_regex)
-        filtered = [item for item in filtered if compiled.search(name_getter(item))]
+        filtered = apply_regex_filter(filtered, name_regex, name_getter)
 
     return filtered
 
@@ -422,8 +415,10 @@ def sort_by_option(
     Returns:
         Click option decorator
     """
+    example_field = fields.split(",", maxsplit=1)[0].strip()
     default_help = (
-        f"Sort by field ({fields}). Prefix with - for descending (e.g., '-name')."
+        f"Sort by field ({fields}). Prefix with - for descending "
+        f"(e.g., '-{example_field}')."
     )
     return click.option(
         "--sort-by",
@@ -527,23 +522,14 @@ def apply_wildcard_filter(
     if not wildcard_pattern:
         return items
 
-    # Convert wildcards to regex
-    pattern = wildcard_pattern.replace("*", ".*").replace("?", ".")
+    import fnmatch
 
-    # Add anchors if pattern doesn't use wildcards at edges
-    if not wildcard_pattern.startswith("*"):
-        pattern = "^" + pattern
-    if not wildcard_pattern.endswith("*"):
-        pattern = pattern + "$"
-
-    regex_pattern = re.compile(pattern)
-
-    filtered = []
-    for item in items:
-        field_value = field_getter(item)
-        if field_value and regex_pattern.search(field_value):
-            filtered.append(item)
-    return filtered
+    return [
+        item
+        for item in items
+        if (field_value := field_getter(item))
+        and fnmatch.fnmatchcase(field_value, wildcard_pattern)
+    ]
 
 
 def parse_json_string(
@@ -566,9 +552,12 @@ def parse_json_string(
         return None
 
     try:
-        return json.loads(json_str)
+        parsed = json.loads(json_str)
     except json.JSONDecodeError as e:
         raise click.BadParameter(f"Invalid JSON in {field_name}: {e}")
+    if not isinstance(parsed, dict):
+        raise click.BadParameter(f"{field_name} must be a JSON object")
+    return parsed
 
 
 def parse_comma_separated_list(input_str: str | None) -> list[str] | None:

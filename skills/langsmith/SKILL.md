@@ -125,6 +125,11 @@ langsmith-cli --json runs get <id> --fields inputs,outputs,error
 | View experiment results | `langsmith-cli --json experiments results <experiment-name>` |
 | Open run in browser | Construct URL manually — see **LangSmith URLs** section below |
 
+Dataset/example list bounds are strict and source-independent: `--limit` must be
+positive, `--offset` must be non-negative, and filtering/sorting happens before the
+page is selected. Do not combine `datasets pull --all-versions` with a non-default
+`--as-of`.
+
 ---
 
 ## 📚 When to Read Reference Files

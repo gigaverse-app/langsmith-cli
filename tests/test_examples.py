@@ -16,6 +16,15 @@ from conftest import create_example, create_run, strip_ansi
 from langsmith_cli.main import cli
 
 
+def test_examples_list_help_uses_a_valid_sort_example(runner):
+    """INVARIANT: shared option help never recommends an invalid field."""
+    result = runner.invoke(cli, ["examples", "list", "--help"])
+
+    assert result.exit_code == 0
+    assert "'-created_at'" in result.output
+    assert "'-name'" not in result.output
+
+
 def test_examples_list(runner):
     """INVARIANT: Examples list should return examples with correct structure."""
     with patch("langsmith.Client") as MockClient:
