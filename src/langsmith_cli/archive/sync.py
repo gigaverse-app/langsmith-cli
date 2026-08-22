@@ -128,7 +128,13 @@ def _new_manifest(
 # Tested by test_oversized_days_are_staged_and_converted_in_bounded_pieces.
 STAGING_PIECE_MAX_BYTES = 128 * 1024 * 1024
 
-_READ_JSON_SOURCE = "read_json_auto({path}, maximum_object_size=104857600)"
+# The JSON reader sizes reconstruction buffers to maximum_object_size PER THREAD, so
+# a blanket 100 MiB ceiling costs hundreds of MiB whether or not a large document is
+# present (observed in-cluster: 100.9 MiB allocations exhausting a 1 GiB bound). The
+# CLI writes every staging line itself and therefore knows each piece's true largest
+# document; the reader is told exactly that, with a floor for margin.
+_READ_JSON_SOURCE = "read_json_auto({path}, maximum_object_size={max_object_size})"
+_MIN_MAX_OBJECT_SIZE = 16 * 1024 * 1024
 
 
 def _serialize_run_line(run: Run) -> bytes:
@@ -211,11 +217,19 @@ def _combine_parquet_parts(part_paths: list[Path], target: Path) -> None:
                 writer.write_table(table.select(unified.names).cast(unified))
 
 
+def _read_json_source(piece_path: Path, max_line_bytes: int) -> str:
+    return _READ_JSON_SOURCE.format(
+        path=_sql_string(str(piece_path)),
+        max_object_size=max(max_line_bytes * 2, _MIN_MAX_OBJECT_SIZE),
+    )
+
+
 def _write_runs_parquet(
     client: RunsExportClient, manifest: ArchiveManifest, target: Path
 ) -> int:
     filter_ = f'lt(start_time, "{manifest.window_end.isoformat()}")'
     piece_paths: list[Path] = []
+    piece_max_lines: list[int] = []
     part_paths: list[Path] = []
     run_count = 0
     piece = None
@@ -238,9 +252,11 @@ def _write_runs_parquet(
                 # file, which Windows only guarantees after our handle closes.
                 piece = piece_path.open(mode="wb")
                 piece_paths.append(piece_path)
+                piece_max_lines.append(0)
                 piece_bytes = 0
             piece.write(encoded)
             piece_bytes += len(encoded)
+            piece_max_lines[-1] = max(piece_max_lines[-1], len(encoded))
             run_count += 1
         if piece is not None:
             piece.close()
@@ -253,15 +269,15 @@ def _write_runs_parquet(
                     f"TO {_sql_string(str(target))} " + ARCHIVE_PARQUET_COPY_OPTIONS
                 )
             elif len(piece_paths) == 1:
-                source = _READ_JSON_SOURCE.format(path=_sql_string(str(piece_paths[0])))
+                source = _read_json_source(piece_paths[0], piece_max_lines[0])
                 connection.execute(
                     f"COPY (SELECT * FROM {source}) "
                     f"TO {_sql_string(str(target))} " + ARCHIVE_PARQUET_COPY_OPTIONS
                 )
             else:
-                for piece_path in piece_paths:
+                for piece_path, max_line in zip(piece_paths, piece_max_lines):
                     part_path = piece_path.with_suffix(".part")
-                    source = _READ_JSON_SOURCE.format(path=_sql_string(str(piece_path)))
+                    source = _read_json_source(piece_path, max_line)
                     connection.execute(
                         f"COPY (SELECT * FROM {source}) "
                         f"TO {_sql_string(str(part_path))} "
