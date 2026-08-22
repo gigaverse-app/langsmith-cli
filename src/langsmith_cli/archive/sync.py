@@ -119,60 +119,110 @@ def _new_manifest(
     )
 
 
+# Bounded staging: the JSON reader's reconstruction buffers and string chunks scale
+# with the file it scans, so converting a whole project-day at once OOMed real days
+# even at a raised 2 GiB DuckDB bound. One day is staged as JSONL pieces of at most
+# this many bytes and converted piece-by-piece; the conversion working set then
+# scales with this budget, not the day. A single document larger than the budget
+# still gets its own piece (maximum_object_size bounds any one document).
+# Tested by test_oversized_days_are_staged_and_converted_in_bounded_pieces.
+STAGING_PIECE_MAX_BYTES = 128 * 1024 * 1024
+
+_READ_JSON_SOURCE = "read_json_auto({path}, maximum_object_size=104857600)"
+
+
+def _serialize_run_line(run: Run) -> bytes:
+    payload = run.model_dump(mode="python")
+    # Pre-serialize nested payload fields as JSON text so read_json_auto infers
+    # flat VARCHAR columns — the same shape Bulk Export v2 produces and
+    # canonicalization already unifies. STRUCT inference materializes
+    # payload-shaped nested columns whose memory scales with payload complexity;
+    # a real project-day OOMed a 2.5 GiB DuckDB bound here.
+    # Tested by test_runs_snapshot_stores_payloads_as_text_not_inferred_structs.
+    for column in ARCHIVE_JSON_COLUMNS:
+        value = payload.get(column)
+        if value is not None:
+            payload[column] = json.dumps(
+                value, ensure_ascii=False, default=_archive_json_default
+            )
+    line = json.dumps(payload, ensure_ascii=False, default=_archive_json_default)
+    return line.encode("utf-8") + b"\n"
+
+
 def _write_runs_parquet(
     client: RunsExportClient, manifest: ArchiveManifest, target: Path
 ) -> int:
     filter_ = f'lt(start_time, "{manifest.window_end.isoformat()}")'
-    # Close the JSONL before DuckDB opens it. Windows does not guarantee that a
-    # named temporary file can be reopened while Python still holds its handle.
-    rows_path = target.with_suffix(".jsonl")
-    with rows_path.open(mode="w", encoding="utf-8") as rows:
-        run_count = 0
+    piece_paths: list[Path] = []
+    part_paths: list[Path] = []
+    run_count = 0
+    piece = None
+    piece_bytes = 0
+    try:
         for run in client.list_runs(
             project_id=manifest.project_id,
             start_time=manifest.window_start,
             filter=filter_,
             limit=None,
         ):
-            payload = run.model_dump(mode="python")
-            # Pre-serialize nested payload fields as JSON text so read_json_auto
-            # infers flat VARCHAR columns — the same shape Bulk Export v2 produces
-            # and canonicalization already unifies. STRUCT inference materializes
-            # payload-shaped nested columns whose memory scales with payload
-            # complexity; a real project-day OOMed a 2.5 GiB DuckDB bound here.
-            # Tested by test_runs_snapshot_stores_payloads_as_text_not_inferred_structs.
-            for column in ARCHIVE_JSON_COLUMNS:
-                value = payload.get(column)
-                if value is not None:
-                    payload[column] = json.dumps(
-                        value, ensure_ascii=False, default=_archive_json_default
-                    )
-            rows.write(
-                json.dumps(
-                    payload,
-                    ensure_ascii=False,
-                    default=_archive_json_default,
-                )
-            )
-            rows.write("\n")
+            encoded = _serialize_run_line(run)
+            if piece is None or (
+                piece_bytes and piece_bytes + len(encoded) > STAGING_PIECE_MAX_BYTES
+            ):
+                if piece is not None:
+                    piece.close()
+                piece_path = target.with_suffix(f".{len(piece_paths)}.jsonl")
+                # Binary mode: piece budgets are byte-exact, and DuckDB reopens the
+                # file, which Windows only guarantees after our handle closes.
+                piece = piece_path.open(mode="wb")
+                piece_paths.append(piece_path)
+                piece_bytes = 0
+            piece.write(encoded)
+            piece_bytes += len(encoded)
             run_count += 1
+        if piece is not None:
+            piece.close()
+            piece = None
 
-    try:
         with archive_duckdb_connection(target.parent) as connection:
-            if run_count:
-                connection.execute(
-                    "COPY (SELECT * FROM read_json_auto("
-                    f"{_sql_string(str(rows_path))}, maximum_object_size=104857600)) "
-                    f"TO {_sql_string(str(target))} " + ARCHIVE_PARQUET_COPY_OPTIONS
-                )
-            else:
+            if not run_count:
                 connection.execute(
                     "COPY (SELECT CAST(NULL AS VARCHAR) AS id WHERE false) "
                     f"TO {_sql_string(str(target))} " + ARCHIVE_PARQUET_COPY_OPTIONS
                 )
+            elif len(piece_paths) == 1:
+                source = _READ_JSON_SOURCE.format(path=_sql_string(str(piece_paths[0])))
+                connection.execute(
+                    f"COPY (SELECT * FROM {source}) "
+                    f"TO {_sql_string(str(target))} " + ARCHIVE_PARQUET_COPY_OPTIONS
+                )
+            else:
+                for piece_path in piece_paths:
+                    part_path = piece_path.with_suffix(".part")
+                    source = _READ_JSON_SOURCE.format(path=_sql_string(str(piece_path)))
+                    connection.execute(
+                        f"COPY (SELECT * FROM {source}) "
+                        f"TO {_sql_string(str(part_path))} "
+                        + ARCHIVE_PARQUET_COPY_OPTIONS
+                    )
+                    part_paths.append(part_path)
+                    piece_path.unlink(missing_ok=True)
+                part_list = (
+                    "[" + ", ".join(_sql_string(str(part)) for part in part_paths) + "]"
+                )
+                connection.execute(
+                    f"COPY (SELECT * FROM read_parquet({part_list}, "
+                    "union_by_name=true)) "
+                    f"TO {_sql_string(str(target))} " + ARCHIVE_PARQUET_COPY_OPTIONS
+                )
         return run_count
     finally:
-        rows_path.unlink(missing_ok=True)
+        if piece is not None:
+            piece.close()
+        for piece_path in piece_paths:
+            piece_path.unlink(missing_ok=True)
+        for part_path in part_paths:
+            part_path.unlink(missing_ok=True)
 
 
 def _write_bulk_parquet(

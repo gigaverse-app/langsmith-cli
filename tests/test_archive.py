@@ -308,3 +308,49 @@ def test_runs_snapshot_stores_payloads_as_text_not_inferred_structs(
     archived = query_archive_runs(ArchiveRunQuery(project="dev/nested", limit=0))
     assert archived[0].inputs == {"deep": {"x": [1, 2, {"y": "z"}]}}
     assert archived[0].tags == ["t1", "t2"]
+
+
+def test_oversized_days_are_staged_and_converted_in_bounded_pieces(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    The JSON reader's reconstruction buffers and string chunks scale with the file
+    it scans, so converting one whole project-day at once OOMed real days even at a
+    2 GiB bound. Staging must split into byte-bounded pieces converted one at a
+    time; a day of any size then converts inside a fixed working set. This forces
+    every run into its own piece and proves the multi-piece path publishes the same
+    canonical contract: all rows, unique IDs, values intact.
+    """
+    from langsmith_cli.archive import sync as sync_module
+
+    monkeypatch.setattr(sync_module, "STAGING_PIECE_MAX_BYTES", 1)
+    archive_uri = str(tmp_path / "archive")
+    monkeypatch.setenv("LANGSMITH_ARCHIVE_URI", archive_uri)
+    runs = [
+        create_run(
+            id_str=f"12345678-1234-5678-1234-56781234567{index}",
+            inputs={"deep": {"index": index}},
+            outputs={"answer": f"value-{index}"},
+        )
+        for index in range(3)
+    ]
+    manifest = sync_project_day(
+        FakeRunsClient(runs),
+        create_store(archive_uri),
+        project_id="f47ac10b-58cc-4372-a567-0e02b2c3d479",
+        project_name="dev/pieces",
+        trace_date=date(2024, 7, 3),
+        phase=ArchivePhase.PRIMARY,
+    )
+    assert manifest.canonical_run_count == 3
+    archived = query_archive_runs(ArchiveRunQuery(project="dev/pieces", limit=0))
+    assert {run.outputs["answer"] for run in archived} == {
+        "value-0",
+        "value-1",
+        "value-2",
+    }
+    assert {str(run.inputs["deep"]["index"]) for run in archived} == {"0", "1", "2"}
+    # No staging litter survives a successful conversion.
+    day_directory = Path(archive_uri)
+    leftovers = [p for p in day_directory.rglob("*") if p.suffix in {".jsonl", ".part"}]
+    assert leftovers == []
