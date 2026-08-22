@@ -20,6 +20,7 @@ import langsmith_cli.commands.runs.export_cmd  # noqa: F401
 import langsmith_cli.commands.runs.get_cmd  # noqa: F401
 import langsmith_cli.commands.runs.list_cmd  # noqa: F401
 import langsmith_cli.commands.runs.pricing_cmd  # noqa: F401
+import langsmith_cli.commands.runs.pull_cmd  # noqa: F401
 import langsmith_cli.commands.runs.search_cmd  # noqa: F401
 import langsmith_cli.commands.runs.stats_cmd  # noqa: F401
 import langsmith_cli.commands.runs.usage_cmd  # noqa: F401

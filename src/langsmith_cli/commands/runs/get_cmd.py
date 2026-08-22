@@ -33,6 +33,12 @@ if TYPE_CHECKING:
 @runs.command("get")
 @click.argument("run_id")
 @click.option(
+    "--source",
+    type=click.Choice(["cloud", "archive", "local"]),
+    default=None,
+    help="Trace source to query (default: cloud).",
+)
+@click.option(
     "--archive",
     is_flag=True,
     help="Read canonical Parquet from the configured archive.",
@@ -74,6 +80,7 @@ if TYPE_CHECKING:
 def get_run(
     ctx,
     run_id,
+    source,
     archive,
     project,
     project_id,
@@ -94,20 +101,36 @@ def get_run(
         langsmith-cli --json runs get <id> --fields inputs,outputs
         langsmith-cli --json runs get <id> --follow-children --fields id,name,inputs,outputs
     """
-    if archive:
-        from langsmith_cli.archive.query import read_archived_run
+    from langsmith_cli.local_traces.models import TraceSource
+    from langsmith_cli.local_traces.service import resolve_trace_source
+
+    try:
+        selected_source = resolve_trace_source(source, archive)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if selected_source is not TraceSource.CLOUD:
         from langsmith_cli.time_parsing import parse_time_range
 
         since_dt, before_dt = parse_time_range(since=since, before=before, last=last)
         try:
-            run, children = read_archived_run(
-                run_id,
-                follow_children=follow_children,
-                project=project,
-                project_id=project_id,
-                since=since_dt,
-                before=before_dt,
-            )
+            if selected_source is TraceSource.ARCHIVE:
+                from langsmith_cli.archive.query import read_archived_run
+
+                run, children = read_archived_run(
+                    run_id,
+                    follow_children=follow_children,
+                    project=project,
+                    project_id=project_id,
+                    since=since_dt,
+                    before=before_dt,
+                )
+            else:
+                from langsmith_cli.local_traces.service import local_trace_repository
+
+                run, children = local_trace_repository().get(
+                    run_id, follow_children=follow_children
+                )
         except LookupError as exc:
             raise click.ClickException(str(exc)) from exc
         data = filter_fields(run, fields)
@@ -153,6 +176,12 @@ def get_run(
 @runs.command("get-latest")
 @add_project_filter_options
 @click.option(
+    "--source",
+    type=click.Choice(["cloud", "archive", "local"]),
+    default=None,
+    help="Trace source to query (default: cloud).",
+)
+@click.option(
     "--archive",
     is_flag=True,
     help="Read canonical Parquet from the configured archive.",
@@ -197,6 +226,7 @@ def get_run(
 @click.pass_context
 def get_latest_run(
     ctx,
+    source,
     archive,
     project,
     project_id,
@@ -239,15 +269,24 @@ def get_latest_run(
         # Get latest slow run from last hour
         langsmith-cli --json runs get-latest --project my-project --slow --recent --fields name,latency
     """
-    if archive:
+    from langsmith_cli.local_traces.models import TraceSource
+    from langsmith_cli.local_traces.service import resolve_trace_source
+
+    try:
+        selected_source = resolve_trace_source(source, archive)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if selected_source is not TraceSource.CLOUD:
         from datetime import datetime, time, timedelta, timezone
 
-        from langsmith_cli.archive.query import ArchiveRunQuery, query_archive_runs
         from langsmith_cli.time_parsing import parse_time_range
+        from langsmith_cli.trace_query import RunQuery
 
         if filter_ or slow or min_latency or max_latency:
             raise click.ClickException(
-                "Archive backend does not yet support --filter or latency flags"
+                f"{selected_source.value.title()} backend does not yet support "
+                "--filter or latency flags"
             )
         since_dt, before_dt = parse_time_range(since=since, last=last, before=before)
         now = datetime.now(timezone.utc)
@@ -260,34 +299,44 @@ def get_latest_run(
             error_filter = True
         elif status == "success" or succeeded:
             error_filter = False
-        archived = query_archive_runs(
-            ArchiveRunQuery(
-                project=project,
-                project_id=project_id,
-                project_name=project_name,
-                project_name_exact=project_name_exact,
-                project_name_pattern=project_name_pattern,
-                project_name_regex=project_name_regex,
-                since=since_dt,
-                before=before_dt,
-                limit=1,
-                error=error_filter,
-                run_type=run_type,
-                is_root=roots,
-                tags=tuple(tag),
-                text=model,
-                text_fields=("extra",),
-            )
+        query_contract = RunQuery(
+            project=project,
+            project_id=project_id,
+            project_name=project_name,
+            project_name_exact=project_name_exact,
+            project_name_pattern=project_name_pattern,
+            project_name_regex=project_name_regex,
+            since=since_dt,
+            before=before_dt,
+            limit=1,
+            error=error_filter,
+            run_type=run_type,
+            is_root=roots,
+            tags=tuple(tag),
+            text=model,
+            text_fields=("extra",),
         )
-        if not archived:
-            raise click.ClickException("No archived runs found matching the filters")
-        data = filter_fields(archived[0], fields)
+        if selected_source is TraceSource.ARCHIVE:
+            from langsmith_cli.archive.query import query_archive_runs
 
-        def render_archived_latest(data: dict, console: Any) -> None:
-            render_run_details(data, console, title="Latest Archived Run")
+            source_runs = query_archive_runs(query_contract)
+        else:
+            from langsmith_cli.local_traces.service import local_trace_repository
+
+            source_runs = local_trace_repository().query(query_contract)
+        if not source_runs:
+            raise click.ClickException(
+                f"No {selected_source.value} runs found matching the filters"
+            )
+        data = filter_fields(source_runs[0], fields)
+
+        def render_selected_latest(data: dict, console: Any) -> None:
+            render_run_details(
+                data, console, title=f"Latest {selected_source.value.title()} Run"
+            )
 
         output_single_item(
-            ctx, data, console, output=output, render_fn=render_archived_latest
+            ctx, data, console, output=output, render_fn=render_selected_latest
         )
         return
 

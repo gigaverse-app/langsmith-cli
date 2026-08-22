@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from fnmatch import fnmatchcase
 import json
@@ -25,46 +24,15 @@ from langsmith_cli.archive.sync import (
     ARCHIVE_JSON_OBJECT_COLUMNS,
 )
 from langsmith_cli.time_parsing import ensure_aware_datetime
+from langsmith_cli.trace_query import RunQuery
 
 if TYPE_CHECKING:
     from langsmith.schemas import Run
 
 
-# These values are interpolated as SQL identifiers, not bound values. Keeping the
-# allowlist adjacent to the typed query contract makes that safety invariant visible.
-ARCHIVE_TEXT_FIELDS = frozenset({"inputs", "outputs", "error", "extra"})
-
-
-@dataclass(frozen=True)
-class ArchiveRunQuery:
-    project: str | None = None
-    project_id: str | None = None
-    project_name: str | None = None
-    project_name_exact: str | None = None
-    project_name_pattern: str | None = None
-    project_name_regex: str | None = None
-    since: datetime | None = None
-    before: datetime | None = None
-    limit: int | None = 20
-    error: bool | None = None
-    trace_id: str | None = None
-    run_type: str | None = None
-    is_root: bool | None = None
-    tags: tuple[str, ...] = ()
-    text: str | None = None
-    text_fields: tuple[str, ...] = ("inputs", "outputs", "error")
-    text_regex: bool = False
-    text_ignore_case: bool = False
-
-    def __post_init__(self) -> None:
-        if self.text is not None and not self.text_fields:
-            raise ValueError("Archive text search requires at least one field")
-        invalid_fields = set(self.text_fields) - ARCHIVE_TEXT_FIELDS
-        if invalid_fields:
-            invalid = ", ".join(sorted(invalid_fields))
-            raise ValueError(f"Unsupported archive text field(s): {invalid}")
-        if self.limit is not None and self.limit < 0:
-            raise ValueError("Archive query limit must be non-negative")
+# Compatibility name for the public archive API. Archive and local now consume the
+# exact same Pydantic query contract instead of maintaining near-identical models.
+ArchiveRunQuery = RunQuery
 
 
 def _project_matches(
@@ -281,6 +249,9 @@ def _where_clause(query: ArchiveRunQuery) -> tuple[str, list[object]]:
         parameters.append(before)
     if query.error is not None:
         clauses.append("error IS NOT NULL" if query.error else "error IS NULL")
+    if query.run_id is not None:
+        clauses.append("CAST(id AS VARCHAR) = ?")
+        parameters.append(query.run_id)
     if query.trace_id is not None:
         clauses.append("CAST(trace_id AS VARCHAR) = ?")
         parameters.append(query.trace_id)
