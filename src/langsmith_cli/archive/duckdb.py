@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+import os
 from pathlib import Path
 import tempfile
 from typing import Any, Protocol
@@ -13,6 +14,18 @@ from typing import Any, Protocol
 # in-memory databases, and DuckDB's host-relative default lets each one claim most
 # of the same host memory before spilling.
 DUCKDB_MEMORY_LIMIT = "1.0 GiB"
+
+# The default bound protects shared hosts, but real project-days can exceed it during
+# canonicalization (observed: a Kubernetes daily sync OOMed at "916.1 MiB/1.0 GiB used"),
+# and only the operator knows the host's actual memory budget. The override still
+# applies per connection; an invalid value fails at configuration time via DuckDB's own
+# SET validation rather than corrupting a sync later.
+DUCKDB_MEMORY_LIMIT_ENV = "LANGSMITH_ARCHIVE_DUCKDB_MEMORY_LIMIT"
+
+
+def duckdb_memory_limit() -> str:
+    configured = os.environ.get(DUCKDB_MEMORY_LIMIT_ENV, "").strip()
+    return configured or DUCKDB_MEMORY_LIMIT
 
 
 class DuckConnection(Protocol):
@@ -25,7 +38,7 @@ def configure_duckdb_resources(
     """Bound memory and isolate spill files inside one connection boundary."""
     spill_directory = staging_directory / "duckdb-spill"
     spill_directory.mkdir(parents=True, exist_ok=True)
-    connection.execute("SET memory_limit = ?", [DUCKDB_MEMORY_LIMIT])
+    connection.execute("SET memory_limit = ?", [duckdb_memory_limit()])
     connection.execute("SET temp_directory = ?", [str(spill_directory)])
 
 

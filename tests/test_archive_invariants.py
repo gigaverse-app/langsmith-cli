@@ -711,6 +711,44 @@ def test_duckdb_resources_are_bounded_and_unique_to_each_project_staging_area(
         second.close()
 
 
+def test_duckdb_memory_limit_is_environment_configurable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Operators must be able to raise the per-connection bound without a code change.
+
+    The 1 GiB default OOMed real Gigaverse dev/production daily syncs inside a
+    Kubernetes pod (DuckDB "failed to allocate ... 916.1 MiB/1.0 GiB used" during
+    canonicalization); the pod owner knows its memory budget, the library does not.
+    """
+    import duckdb
+
+    monkeypatch.setenv("LANGSMITH_ARCHIVE_DUCKDB_MEMORY_LIMIT", "1.5 GiB")
+    connection = duckdb.connect()
+    try:
+        configure_duckdb_resources(connection, tmp_path / "project-a")
+        assert connection.execute(
+            "SELECT current_setting('memory_limit')"
+        ).fetchone() == ("1.5 GiB",)
+    finally:
+        connection.close()
+
+
+def test_duckdb_memory_limit_rejects_garbage_at_configuration_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A typo in the override must fail loudly when the connection is configured, not corrupt a sync later."""
+    import duckdb
+
+    monkeypatch.setenv("LANGSMITH_ARCHIVE_DUCKDB_MEMORY_LIMIT", "lots-of-ram")
+    connection = duckdb.connect()
+    try:
+        with pytest.raises(duckdb.Error):
+            configure_duckdb_resources(connection, tmp_path / "project-a")
+    finally:
+        connection.close()
+
+
 def test_s3_store_propagates_non_concurrency_service_errors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
