@@ -119,47 +119,256 @@ def _new_manifest(
     )
 
 
+# Bounded staging: the JSON reader's reconstruction buffers and string chunks scale
+# with the file it scans, so converting a whole project-day at once OOMed real days
+# even at a raised 2 GiB DuckDB bound. One day is staged as JSONL pieces of at most
+# this many bytes and converted piece-by-piece; the conversion working set then
+# scales with this budget, not the day. A single document larger than the budget
+# still gets its own piece (maximum_object_size bounds any one document).
+# Tested by test_oversized_days_are_staged_and_converted_in_bounded_pieces.
+STAGING_PIECE_MAX_BYTES = 128 * 1024 * 1024
+
+# The JSON reader sizes reconstruction buffers to maximum_object_size PER THREAD, so
+# a blanket 100 MiB ceiling costs hundreds of MiB whether or not a large document is
+# present (observed in-cluster: 100.9 MiB allocations exhausting a 1 GiB bound). The
+# CLI writes every staging line itself and therefore knows each piece's true largest
+# document; the reader is told exactly that, with a floor for margin.
+_READ_JSON_SOURCE = "read_json_auto({path}, maximum_object_size={max_object_size})"
+_MIN_MAX_OBJECT_SIZE = 16 * 1024 * 1024
+
+
+def _serialize_run_line(run: Run) -> bytes:
+    payload = run.model_dump(mode="python")
+    # Pre-serialize nested payload fields as JSON text so read_json_auto infers
+    # flat VARCHAR columns — the same shape Bulk Export v2 produces and
+    # canonicalization already unifies. STRUCT inference materializes
+    # payload-shaped nested columns whose memory scales with payload complexity;
+    # a real project-day OOMed a 2.5 GiB DuckDB bound here.
+    # Tested by test_runs_snapshot_stores_payloads_as_text_not_inferred_structs.
+    for column in ARCHIVE_JSON_COLUMNS:
+        value = payload.get(column)
+        if value is not None:
+            payload[column] = json.dumps(
+                value, ensure_ascii=False, default=_archive_json_default
+            )
+    line = json.dumps(payload, ensure_ascii=False, default=_archive_json_default)
+    return line.encode("utf-8") + b"\n"
+
+
+def _uuid_text(value: Any) -> str | None:
+    """Canonical text for an id however the source chunk yielded it.
+
+    arrow.uuid extension chunks yield uuid.UUID instances from to_pylist(), plain
+    fixed-binary chunks yield bytes, and text raw already yields strings.
+    """
+    import uuid
+
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    if isinstance(value, uuid.UUID):
+        return str(value)
+    return str(uuid.UUID(bytes=bytes(value)))
+
+
+def _storage_type(data_type: Any) -> Any:
+    """Portable Parquet type for archive interchange.
+
+    Extension types (DuckDB's arrow.json, arrow.uuid) collapse to their storage —
+    recursively, because real trace fields nest them inside maps and structs
+    (observed in-cluster: map<string, extension<arrow.json>> vs map<string, string>
+    refused to unify). UUIDs (DuckDB infers them from UUID-shaped JSON strings and
+    Parquet renders them as 16-byte fixed binary) become canonical text: a
+    re-serialized binares column loses the UUID annotation, and readers then match
+    nothing when comparing ids to strings.
+    """
+    import pyarrow
+
+    if isinstance(data_type, pyarrow.BaseExtensionType):
+        return _storage_type(data_type.storage_type)
+    if pyarrow.types.is_fixed_size_binary(data_type) and data_type.byte_width == 16:
+        return pyarrow.string()
+    if pyarrow.types.is_list(data_type):
+        return pyarrow.list_(_storage_type(data_type.value_type))
+    if pyarrow.types.is_large_list(data_type):
+        return pyarrow.large_list(_storage_type(data_type.value_type))
+    if pyarrow.types.is_map(data_type):
+        return pyarrow.map_(
+            _storage_type(data_type.key_type), _storage_type(data_type.item_type)
+        )
+    if pyarrow.types.is_struct(data_type):
+        return pyarrow.struct(
+            [
+                pyarrow.field(
+                    child.name, _storage_type(child.type), nullable=child.nullable
+                )
+                for child in data_type
+            ]
+        )
+    return data_type
+
+
+def _storage_schema(schema: Any) -> Any:
+    import pyarrow
+
+    return pyarrow.schema(
+        field.with_type(_storage_type(field.type)) for field in schema
+    )
+
+
+def _storage_column(column: Any, target_type: Any) -> Any:
+
+    import pyarrow
+
+    if column.type.equals(target_type):
+        return column
+    if pyarrow.types.is_string(target_type) and (
+        pyarrow.types.is_fixed_size_binary(column.type)
+        or (
+            isinstance(column.type, pyarrow.BaseExtensionType)
+            and pyarrow.types.is_fixed_size_binary(column.type.storage_type)
+        )
+    ):
+        formatted = [_uuid_text(value) for value in column.to_pylist()]
+        return pyarrow.chunked_array([pyarrow.array(formatted, type=target_type)])
+    if isinstance(column.type, pyarrow.BaseExtensionType):
+        column = pyarrow.chunked_array(
+            [chunk.storage for chunk in column.chunks],
+            type=column.type.storage_type,
+        )
+    return column.cast(target_type)
+
+
+def _storage_table(table: Any) -> Any:
+    import pyarrow
+
+    schema = _storage_schema(table.schema)
+    columns = [
+        _storage_column(table.column(index), field.type)
+        for index, field in enumerate(schema)
+    ]
+    return pyarrow.table(columns, schema=schema)
+
+
+def _combine_parquet_parts(part_paths: list[Path], target: Path) -> None:
+    """
+    Concatenate Parquet parts into one file, one row group at a time.
+
+    Pieces are inferred independently, so a column that is all-null in one piece may
+    carry a different type there (DuckDB writes it as the arrow.json extension type
+    while pieces with values carry plain string). Extension types are stripped to
+    their storage type — lossless, the storage IS the JSON text — before permissive
+    schema unification, and every row group is cast to the unified schema. Working
+    memory is bounded by one decoded row group (parts are written with byte-bounded
+    row groups), not by the day.
+    """
+    import contextlib
+
+    import pyarrow
+    import pyarrow.parquet
+
+    with contextlib.ExitStack() as stack:
+        part_files = [
+            stack.enter_context(pyarrow.parquet.ParquetFile(str(part)))
+            for part in part_paths
+        ]
+        unified = pyarrow.unify_schemas(
+            [_storage_schema(part.schema_arrow) for part in part_files],
+            promote_options="permissive",
+        )
+        writer = stack.enter_context(
+            pyarrow.parquet.ParquetWriter(str(target), unified, compression="zstd")
+        )
+        for part in part_files:
+            for group_index in range(part.num_row_groups):
+                table = _storage_table(part.read_row_group(group_index))
+                writer.write_table(table.select(unified.names).cast(unified))
+
+
+def _read_json_source(piece_path: Path, max_line_bytes: int) -> str:
+    return _READ_JSON_SOURCE.format(
+        path=_sql_string(str(piece_path)),
+        max_object_size=max(max_line_bytes * 2, _MIN_MAX_OBJECT_SIZE),
+    )
+
+
 def _write_runs_parquet(
     client: RunsExportClient, manifest: ArchiveManifest, target: Path
 ) -> int:
     filter_ = f'lt(start_time, "{manifest.window_end.isoformat()}")'
-    # Close the JSONL before DuckDB opens it. Windows does not guarantee that a
-    # named temporary file can be reopened while Python still holds its handle.
-    rows_path = target.with_suffix(".jsonl")
-    with rows_path.open(mode="w", encoding="utf-8") as rows:
-        run_count = 0
+    piece_paths: list[Path] = []
+    piece_max_lines: list[int] = []
+    part_paths: list[Path] = []
+    run_count = 0
+    piece = None
+    piece_bytes = 0
+    try:
         for run in client.list_runs(
             project_id=manifest.project_id,
             start_time=manifest.window_start,
             filter=filter_,
             limit=None,
         ):
-            rows.write(
-                json.dumps(
-                    run.model_dump(mode="python"),
-                    ensure_ascii=False,
-                    default=_archive_json_default,
-                )
-            )
-            rows.write("\n")
+            encoded = _serialize_run_line(run)
+            if piece is None or (
+                piece_bytes and piece_bytes + len(encoded) > STAGING_PIECE_MAX_BYTES
+            ):
+                if piece is not None:
+                    piece.close()
+                piece_path = target.with_suffix(f".{len(piece_paths)}.jsonl")
+                # Binary mode: piece budgets are byte-exact, and DuckDB reopens the
+                # file, which Windows only guarantees after our handle closes.
+                piece = piece_path.open(mode="wb")
+                piece_paths.append(piece_path)
+                piece_max_lines.append(0)
+                piece_bytes = 0
+            piece.write(encoded)
+            piece_bytes += len(encoded)
+            piece_max_lines[-1] = max(piece_max_lines[-1], len(encoded))
             run_count += 1
+        if piece is not None:
+            piece.close()
+            piece = None
 
-    try:
         with archive_duckdb_connection(target.parent) as connection:
-            if run_count:
-                connection.execute(
-                    "COPY (SELECT * FROM read_json_auto("
-                    f"{_sql_string(str(rows_path))}, maximum_object_size=104857600)) "
-                    f"TO {_sql_string(str(target))} " + ARCHIVE_PARQUET_COPY_OPTIONS
-                )
-            else:
+            if not run_count:
                 connection.execute(
                     "COPY (SELECT CAST(NULL AS VARCHAR) AS id WHERE false) "
                     f"TO {_sql_string(str(target))} " + ARCHIVE_PARQUET_COPY_OPTIONS
                 )
+            elif len(piece_paths) == 1:
+                source = _read_json_source(piece_paths[0], piece_max_lines[0])
+                connection.execute(
+                    f"COPY (SELECT * FROM {source}) "
+                    f"TO {_sql_string(str(target))} " + ARCHIVE_PARQUET_COPY_OPTIONS
+                )
+            else:
+                for piece_path, max_line in zip(piece_paths, piece_max_lines):
+                    part_path = piece_path.with_suffix(".part")
+                    source = _read_json_source(piece_path, max_line)
+                    connection.execute(
+                        f"COPY (SELECT * FROM {source}) "
+                        f"TO {_sql_string(str(part_path))} "
+                        + ARCHIVE_PARQUET_COPY_OPTIONS
+                    )
+                    part_paths.append(part_path)
+                    piece_path.unlink(missing_ok=True)
+                # Deliberately NOT a DuckDB COPY: any SQL scan streams fixed
+                # 2048-row chunks whose memory scales with row width, so combining
+                # a whale day re-inflates the working set the pieces just bounded
+                # (observed in-cluster: the combine OOMed a 1 GiB bound after every
+                # piece converted cleanly). Row-group-wise concatenation decodes at
+                # most one ROW_GROUP_SIZE_BYTES-bounded group at a time.
+                _combine_parquet_parts(part_paths, target)
         return run_count
     finally:
-        rows_path.unlink(missing_ok=True)
+        if piece is not None:
+            piece.close()
+        for piece_path in piece_paths:
+            piece_path.unlink(missing_ok=True)
+        for part_path in part_paths:
+            part_path.unlink(missing_ok=True)
 
 
 def _write_bulk_parquet(
@@ -207,6 +416,118 @@ def _write_bulk_parquet(
     return snapshot.export_id, snapshot.run_count
 
 
+def _open_parquet_source(uri: str) -> Any:
+    """ParquetFile over a local path or s3:// URI through pyarrow filesystems."""
+    import pyarrow.fs
+    import pyarrow.parquet
+
+    if uri.startswith("s3://"):
+        filesystem, path = pyarrow.fs.FileSystem.from_uri(uri)
+        return pyarrow.parquet.ParquetFile(filesystem.open_input_file(path))
+    path = uri[len("file://") :] if uri.startswith("file://") else uri
+    return pyarrow.parquet.ParquetFile(path)
+
+
+def _payload_columns_are_text(schema: Any) -> bool:
+    import pyarrow
+
+    for field in schema:
+        if field.name not in ARCHIVE_JSON_COLUMNS:
+            continue
+        field_type = field.type
+        if isinstance(field_type, pyarrow.BaseExtensionType):
+            field_type = field_type.storage_type
+        if not (
+            pyarrow.types.is_string(field_type)
+            or pyarrow.types.is_large_string(field_type)
+            or pyarrow.types.is_null(field_type)
+        ):
+            return False
+    return True
+
+
+def _conform_table(table: Any, unified: Any) -> Any:
+    """Project onto the unified schema, adding null columns a source never had."""
+    import pyarrow
+
+    arrays = []
+    for field in unified:
+        if field.name in table.schema.names:
+            arrays.append(_storage_column(table.column(field.name), field.type))
+        else:
+            arrays.append(pyarrow.nulls(table.num_rows, type=field.type))
+    return pyarrow.table(arrays, schema=unified)
+
+
+def _canonicalize_streaming(
+    source_files: list[Any], source_uris: list[str], target: Path
+) -> int:
+    """
+    Union-and-dedupe one project-day row-group-by-row-group.
+
+    The SQL union+window canonicalization streams fixed 2048-row chunks whose
+    memory scales with row width, so whale days OOMed a 1 GiB bound after raw
+    conversion was already piece-bounded (in-cluster stack: _canonicalize). The
+    dedup decision only needs run IDs: the highest-rank snapshot (reconciliation)
+    is copied through, lower ranks drop rows whose IDs it already covers, and the
+    working set is one decoded row group plus one day of IDs.
+    """
+    import pyarrow
+    import pyarrow.compute
+    import pyarrow.parquet
+
+    ids_per_source: list[list[str]] = []
+    for source_file, uri in zip(source_files, source_uris):
+        ids: list[str] = []
+        for group_index in range(source_file.num_row_groups):
+            column = source_file.read_row_group(group_index, columns=["id"])
+            ids.extend(
+                text
+                for text in (
+                    _uuid_text(value) for value in column.column("id").to_pylist()
+                )
+                if text is not None
+            )
+        if len(ids) != len(set(ids)):
+            raise ValueError(f"Snapshot contains duplicate run IDs: {uri}")
+        ids_per_source.append(ids)
+
+    winner_index = len(source_files) - 1
+    winner_ids = (
+        pyarrow.array(sorted(set(ids_per_source[winner_index])))
+        if len(source_files) > 1
+        else None
+    )
+    unified = pyarrow.unify_schemas(
+        [_storage_schema(source.schema_arrow) for source in source_files],
+        promote_options="permissive",
+    )
+    written = 0
+    writer = pyarrow.parquet.ParquetWriter(str(target), unified, compression="zstd")
+    try:
+        for index, source_file in enumerate(source_files):
+            for group_index in range(source_file.num_row_groups):
+                table = _storage_table(source_file.read_row_group(group_index))
+                if winner_ids is not None and index != winner_index:
+                    # pyarrow's bundled stubs omit several pyarrow.compute kernels.
+                    contained = pyarrow.compute.is_in(  # pyright: ignore[reportAttributeAccessIssue]
+                        table.column("id"), value_set=winner_ids
+                    )
+                    keep = pyarrow.compute.invert(  # pyright: ignore[reportAttributeAccessIssue]
+                        contained
+                    )
+                    table = table.filter(pyarrow.compute.fill_null(keep, True))
+                if table.num_rows:
+                    writer.write_table(_conform_table(table, unified))
+                    written += table.num_rows
+    finally:
+        writer.close()
+    metadata_rows = pyarrow.parquet.ParquetFile(str(target)).metadata.num_rows
+    if metadata_rows != written:
+        raise ValueError("Canonical row count mismatch after write")
+    return written
+
+
 def _canonicalize(store: ArchiveStore, manifest: ArchiveManifest, target: Path) -> int:
     sources: list[tuple[str, int]] = []
     if manifest.primary is not None:
@@ -216,6 +537,26 @@ def _canonicalize(store: ArchiveStore, manifest: ArchiveManifest, target: Path) 
     if not sources:
         raise ValueError("Cannot canonicalize a manifest without snapshots")
 
+    import contextlib
+
+    with contextlib.ExitStack() as stack:
+        source_files = []
+        for uri, _rank in sources:
+            source_files.append(stack.enter_context(_open_parquet_source(uri)))
+        if all(
+            _payload_columns_are_text(source.schema_arrow) for source in source_files
+        ):
+            return _canonicalize_streaming(
+                source_files, [uri for uri, _ in sources], target
+            )
+    # Legacy raw generations carry inferred STRUCT/LIST payload columns that need
+    # SQL normalization; they predate byte-bounded staging and are rare
+    # (re-canonicalizing an already-sealed day), so the memory-heavy path is kept
+    # only for them.
+    return _canonicalize_duckdb(sources, target)
+
+
+def _canonicalize_duckdb(sources: list[tuple[str, int]], target: Path) -> int:
     with archive_duckdb_connection(target.parent) as connection:
         configure_duckdb_s3(connection, [uri for uri, _ in sources])
         selects: list[str] = []

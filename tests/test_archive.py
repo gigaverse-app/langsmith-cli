@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+import json
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -258,3 +259,241 @@ def test_reconciliation_deduplicates_and_is_idempotent(
     )
     assert count_result.exit_code == 0, count_result.output
     assert count_result.output.strip() == "2"
+
+
+def test_runs_snapshot_stores_payloads_as_text_not_inferred_structs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    read_json_auto STRUCT inference materializes trace payloads as typed nested
+    columns, and its memory scales with payload complexity: a real project-day
+    OOMed a 2.5 GiB DuckDB bound inside _write_runs_parquet before canonicalization
+    ever ran. The CLI serializes the JSONL itself, so nested payload fields must be
+    pre-serialized JSON text — the same VARCHAR shape Bulk Export v2 produces,
+    which canonicalization already unifies. Snapshot memory then scales with row
+    size, not payload nesting depth.
+    """
+    import duckdb
+
+    archive_uri = str(tmp_path / "archive")
+    monkeypatch.setenv("LANGSMITH_ARCHIVE_URI", archive_uri)
+    store = create_store(archive_uri)
+    nested_run = create_run(
+        inputs={"deep": {"x": [1, 2, {"y": "z"}]}},
+        outputs={"answer": {"content": "ok"}},
+        tags=["t1", "t2"],
+    )
+    manifest = sync_project_day(
+        FakeRunsClient([nested_run]),
+        store,
+        project_id="f47ac10b-58cc-4372-a567-0e02b2c3d479",
+        project_name="dev/nested",
+        trace_date=date(2024, 7, 3),
+        phase=ArchivePhase.PRIMARY,
+    )
+    assert manifest.primary is not None
+    raw_path = Path(store.base_uri) / manifest.primary.raw_key
+    connection = duckdb.connect()
+    try:
+        described = {
+            str(row[0]): str(row[1])
+            for row in connection.execute(
+                f"DESCRIBE SELECT * FROM read_parquet('{raw_path.as_posix()}')"
+            ).fetchall()
+        }
+    finally:
+        connection.close()
+    for column in ("inputs", "outputs", "tags"):
+        assert "STRUCT" not in described[column], (column, described[column])
+    # Semantic preservation: canonical readers still see the full nested value.
+    archived = query_archive_runs(ArchiveRunQuery(project="dev/nested", limit=0))
+    assert archived[0].inputs == {"deep": {"x": [1, 2, {"y": "z"}]}}
+    assert archived[0].tags == ["t1", "t2"]
+
+
+def test_oversized_days_are_staged_and_converted_in_bounded_pieces(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    The JSON reader's reconstruction buffers and string chunks scale with the file
+    it scans, so converting one whole project-day at once OOMed real days even at a
+    2 GiB bound. Staging must split into byte-bounded pieces converted one at a
+    time; a day of any size then converts inside a fixed working set. This forces
+    every run into its own piece and proves the multi-piece path publishes the same
+    canonical contract: all rows, unique IDs, values intact.
+    """
+    from langsmith_cli.archive import sync as sync_module
+
+    monkeypatch.setattr(sync_module, "STAGING_PIECE_MAX_BYTES", 1)
+    archive_uri = str(tmp_path / "archive")
+    monkeypatch.setenv("LANGSMITH_ARCHIVE_URI", archive_uri)
+    runs = [
+        create_run(
+            id_str=f"12345678-1234-5678-1234-56781234567{index}",
+            inputs={"deep": {"index": index}},
+            outputs={"answer": f"value-{index}"},
+            # One piece carries a real error while the others are all-null, so the
+            # per-piece inferred types disagree (JSON extension vs string) — the
+            # exact mismatch the combine's schema unification must absorb.
+            error="boom" if index == 1 else None,
+        )
+        for index in range(3)
+    ]
+    manifest = sync_project_day(
+        FakeRunsClient(runs),
+        create_store(archive_uri),
+        project_id="f47ac10b-58cc-4372-a567-0e02b2c3d479",
+        project_name="dev/pieces",
+        trace_date=date(2024, 7, 3),
+        phase=ArchivePhase.PRIMARY,
+    )
+    assert manifest.canonical_run_count == 3
+    archived = query_archive_runs(ArchiveRunQuery(project="dev/pieces", limit=0))
+    assert {(run.outputs or {}).get("answer") for run in archived} == {
+        "value-0",
+        "value-1",
+        "value-2",
+    }
+    assert {str(run.inputs["deep"]["index"]) for run in archived} == {"0", "1", "2"}
+    # No staging litter survives a successful conversion.
+    day_directory = Path(archive_uri)
+    leftovers = [p for p in day_directory.rglob("*") if p.suffix in {".jsonl", ".part"}]
+    assert leftovers == []
+
+
+def test_streaming_dedup_holds_across_row_groups_and_snapshots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Dedup tests elsewhere use single-row-group days; this forces every run into its
+    own piece (hence its own row group in raw) and proves reconciliation precedence
+    holds across group boundaries: shared IDs take the reconciliation value,
+    primary-only rows survive, late reconciliation-only rows are added.
+    """
+    from langsmith_cli.archive import sync as sync_module
+
+    monkeypatch.setattr(sync_module, "STAGING_PIECE_MAX_BYTES", 1)
+    archive_uri = str(tmp_path / "archive")
+    monkeypatch.setenv("LANGSMITH_ARCHIVE_URI", archive_uri)
+    store = create_store(archive_uri)
+
+    def _runs(ids: list[str], version: str) -> list[Run]:
+        return [
+            create_run(
+                id_str=f"12345678-1234-5678-1234-56781234567{suffix}",
+                outputs={"version": version},
+            )
+            for suffix in ids
+        ]
+
+    sync_project_day(
+        FakeRunsClient(_runs(["0", "1", "2"], "primary")),
+        store,
+        phase=ArchivePhase.PRIMARY,
+        project_id="f47ac10b-58cc-4372-a567-0e02b2c3d479",
+        project_name="dev/rowgroups",
+        trace_date=date(2024, 7, 3),
+    )
+    manifest = sync_project_day(
+        FakeRunsClient(_runs(["1", "2", "3"], "reconciliation")),
+        store,
+        phase=ArchivePhase.RECONCILIATION,
+        project_id="f47ac10b-58cc-4372-a567-0e02b2c3d479",
+        project_name="dev/rowgroups",
+        trace_date=date(2024, 7, 3),
+    )
+    assert manifest.canonical_run_count == 4
+    archived = query_archive_runs(ArchiveRunQuery(project="dev/rowgroups", limit=0))
+    versions = {str(run.id)[-1]: (run.outputs or {})["version"] for run in archived}
+    assert versions == {
+        "0": "primary",
+        "1": "reconciliation",
+        "2": "reconciliation",
+        "3": "reconciliation",
+    }
+
+
+def test_legacy_struct_raw_still_canonicalizes_through_the_sql_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Raw generations written before byte-bounded staging carry inferred STRUCT
+    payload columns; they self-expire with the raw/ lifecycle, but until then an
+    unsealed day can pair a legacy-primary with a new-format reconciliation. The
+    canonicalize dispatcher must detect the non-text payload and route the SQL
+    normalization path, producing the same JSON-text canonical contract.
+    """
+    from langsmith_cli.archive import sync as sync_module
+
+    archive_uri = str(tmp_path / "archive")
+    monkeypatch.setenv("LANGSMITH_ARCHIVE_URI", archive_uri)
+    store = create_store(archive_uri)
+
+    def _legacy_serialize(run: Run) -> bytes:
+        payload = run.model_dump(mode="python")
+        line = json.dumps(
+            payload, ensure_ascii=False, default=sync_module._archive_json_default
+        )
+        return line.encode("utf-8") + b"\n"
+
+    with monkeypatch.context() as legacy:
+        legacy.setattr(sync_module, "_serialize_run_line", _legacy_serialize)
+        sync_project_day(
+            FakeRunsClient([create_run(inputs={"deep": {"legacy": True}})]),
+            store,
+            phase=ArchivePhase.PRIMARY,
+            project_id="f47ac10b-58cc-4372-a567-0e02b2c3d479",
+            project_name="dev/legacy",
+            trace_date=date(2024, 7, 3),
+        )
+    manifest = sync_project_day(
+        FakeRunsClient(
+            [
+                create_run(inputs={"deep": {"legacy": True}}),
+                create_run(
+                    id_str="12345678-1234-5678-1234-567812345679",
+                    inputs={"late": True},
+                ),
+            ]
+        ),
+        store,
+        phase=ArchivePhase.RECONCILIATION,
+        project_id="f47ac10b-58cc-4372-a567-0e02b2c3d479",
+        project_name="dev/legacy",
+        trace_date=date(2024, 7, 3),
+    )
+    assert manifest.canonical_run_count == 2
+    archived = query_archive_runs(ArchiveRunQuery(project="dev/legacy", limit=0))
+    assert {json.dumps(run.inputs, sort_keys=True) for run in archived} == {
+        json.dumps({"deep": {"legacy": True}}, sort_keys=True),
+        json.dumps({"late": True}, sort_keys=True),
+    }
+
+
+def test_empty_primary_with_late_reconciliation_seals_the_late_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A day empty at D+2 whose runs only appear by D+12 must still seal them."""
+    archive_uri = str(tmp_path / "archive")
+    monkeypatch.setenv("LANGSMITH_ARCHIVE_URI", archive_uri)
+    store = create_store(archive_uri)
+    sync_project_day(
+        FakeRunsClient([]),
+        store,
+        phase=ArchivePhase.PRIMARY,
+        project_id="f47ac10b-58cc-4372-a567-0e02b2c3d479",
+        project_name="dev/late-day",
+        trace_date=date(2024, 7, 3),
+    )
+    manifest = sync_project_day(
+        FakeRunsClient([create_run(outputs={"late": True})]),
+        store,
+        phase=ArchivePhase.RECONCILIATION,
+        project_id="f47ac10b-58cc-4372-a567-0e02b2c3d479",
+        project_name="dev/late-day",
+        trace_date=date(2024, 7, 3),
+    )
+    assert manifest.sealed is True
+    assert manifest.canonical_run_count == 1
+    archived = query_archive_runs(ArchiveRunQuery(project="dev/late-day", limit=0))
+    assert (archived[0].outputs or {})["late"] is True
