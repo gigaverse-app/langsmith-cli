@@ -301,6 +301,9 @@ class LangSmithCLIGroup(click.Group):
 
             else:
                 # Non-LangSmith error (Click exceptions, Python exceptions, etc.)
+                from langsmith_cli.dataset_replica.repository import (
+                    DatasetReplicaError,
+                )
                 from langsmith_cli.utils import CLIFetchError
 
                 if json_mode:
@@ -323,6 +326,12 @@ class LangSmithCLIGroup(click.Group):
                             "message": e.format_message(),
                         }
                         exit_code = e.exit_code
+                    elif isinstance(e, DatasetReplicaError):
+                        error_data = {
+                            "error": type(e).__name__,
+                            "message": str(e),
+                        }
+                        exit_code = 1
                     else:
                         error_data = {
                             "error": type(e).__name__,
@@ -333,6 +342,8 @@ class LangSmithCLIGroup(click.Group):
                     sys.exit(exit_code)
                 else:
                     # In human mode, re-raise for Click's default formatting
+                    if isinstance(e, DatasetReplicaError):
+                        raise click.ClickException(str(e)) from e
                     raise
         finally:
             try:

@@ -246,6 +246,18 @@ def test_datasets_get_json(runner):
         assert "id" in data
 
 
+def test_datasets_get_cloud_name_uses_the_same_identity_facade(runner):
+    """INVARIANT: cloud and replica dataset get both accept ID or name."""
+    with patch("langsmith.Client") as client_class:
+        client = client_class.return_value
+        client.read_dataset.return_value = create_dataset(name="my-dataset")
+
+        result = runner.invoke(cli, ["--json", "datasets", "get", "my-dataset"])
+
+    assert result.exit_code == 0
+    client.read_dataset.assert_called_once_with(dataset_name="my-dataset")
+
+
 def test_datasets_get_with_fields(runner):
     """INVARIANT: --fields should limit returned fields."""
     with patch("langsmith.Client") as MockClient:

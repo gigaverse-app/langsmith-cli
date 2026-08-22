@@ -285,6 +285,10 @@ langsmith-cli runs watch --project production
 # Export examples to JSONL (using --output for reliable file writing)
 langsmith-cli examples list --dataset my-dataset --output examples.jsonl
 
+# Freeze an exact dataset version locally, then work offline through the same facade
+langsmith-cli --json datasets pull my-dataset --to local
+langsmith-cli --json examples list --dataset my-dataset --source local
+
 # Upload to new dataset
 langsmith-cli datasets push examples.jsonl --dataset production-eval
 ```

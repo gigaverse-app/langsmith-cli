@@ -33,8 +33,14 @@ if run.status == RunStatus.ERROR:
 
 The CLI must start instantly.
 
-* **RULE:** NO top-level imports of heavy libraries (`langsmith`, `pandas`, `pydantic`, `rich`).
-* **RULE:** Imports must be placed **inside** the command function or a dedicated getter function.
+* **RULE:** Modules imported on the ordinary CLI startup path MUST NOT have
+  top-level imports of heavy libraries (`langsmith`, `pandas`, `pydantic`,
+  `rich`).
+* **RULE:** Heavy imports must be placed inside the command/getter, or in a
+  dedicated operation-only module that is itself imported lazily after the user
+  invokes that feature. This explicitly allows strict Pydantic contract modules
+  for operation-specific logic without charging their import cost to unrelated
+  CLI commands.
 
 **❌ Bad (Eager):**
 

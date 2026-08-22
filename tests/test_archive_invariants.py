@@ -7,7 +7,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from io import BytesIO
 import json
 from pathlib import Path
-from threading import Barrier, Thread
+from threading import Barrier, Event, Thread
 from typing import Any, Iterator
 
 import pytest
@@ -368,6 +368,38 @@ def test_local_store_lists_backend_neutral_posix_object_keys(tmp_path: Path) -> 
     assert store.list_keys("projects") == ["projects/project_id=one.json"]
 
 
+def test_local_object_replacement_never_exposes_staged_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """INVARIANT: readers see the old object until the complete replacement commits."""
+    import os
+
+    store = create_store(str(tmp_path / "archive"))
+    store.put_bytes("datasets/object", b"old-complete-object")
+    replace_entered = Event()
+    allow_replace = Event()
+    real_replace = os.replace
+
+    def controlled_replace(source: str | Path, destination: str | Path) -> None:
+        replace_entered.set()
+        assert allow_replace.wait(timeout=2)
+        real_replace(source, destination)
+
+    monkeypatch.setattr(os, "replace", controlled_replace)
+    writer = Thread(
+        target=store.put_bytes,
+        args=("datasets/object", b"new-complete-object"),
+    )
+    writer.start()
+    assert replace_entered.wait(timeout=2)
+    assert store.get_bytes("datasets/object") == b"old-complete-object"
+    allow_replace.set()
+    writer.join(timeout=2)
+
+    assert writer.is_alive() is False
+    assert store.get_bytes("datasets/object") == b"new-complete-object"
+
+
 def test_windows_drive_paths_are_not_uri_schemes() -> None:
     assert _is_windows_drive_path(r"C:\archive\traces") is True
     assert _is_windows_drive_path("s3://bucket/traces") is False
@@ -396,6 +428,52 @@ def test_s3_conditional_publication_uses_etag_preconditions(
     assert client.calls[0]["IfNoneMatch"] == "*"
     assert client.calls[1]["IfMatch"] == '"etag"'
     assert client.calls[0]["Key"] == "langsmith/manifests/day.json"
+
+
+def test_s3_binary_methods_use_the_same_normalized_object_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """INVARIANT: Parquet/blob methods preserve exact bytes and prefixed keys."""
+    import boto3
+
+    class BinaryS3Client:
+        def __init__(self) -> None:
+            self.objects: dict[tuple[str, str], bytes] = {}
+
+        def upload_file(self, source: str, bucket: str, key: str) -> None:
+            self.objects[(bucket, key)] = Path(source).read_bytes()
+
+        def download_file(self, bucket: str, key: str, destination: str) -> None:
+            Path(destination).write_bytes(self.objects[(bucket, key)])
+
+        def put_object(
+            self, *, Bucket: str, Key: str, Body: bytes, **_: object
+        ) -> None:
+            self.objects[(Bucket, Key)] = Body
+
+        def get_object(self, *, Bucket: str, Key: str) -> dict[str, object]:
+            return {"Body": BytesIO(self.objects[(Bucket, Key)])}
+
+    client = BinaryS3Client()
+    monkeypatch.setattr(boto3, "client", lambda service: client)
+    store = S3ArchiveStore(
+        bucket="archive-bucket",
+        prefix="langsmith",
+        base_uri="s3://archive-bucket/langsmith",
+    )
+    source = tmp_path / "source.parquet"
+    source.write_bytes(b"parquet-bytes")
+    destination = tmp_path / "nested" / "download.parquet"
+
+    store.put_file("datasets/object.parquet", source)
+    store.put_bytes("datasets/blob", b"attachment-bytes")
+    store.get_file("datasets/object.parquet", destination)
+
+    assert destination.read_bytes() == b"parquet-bytes"
+    assert store.get_bytes("datasets/blob") == b"attachment-bytes"
+    assert client.objects[("archive-bucket", "langsmith/datasets/blob")] == (
+        b"attachment-bytes"
+    )
 
 
 def test_s3_stale_write_is_a_typed_concurrency_error(
@@ -486,6 +564,10 @@ def test_s3_store_supports_complete_object_contract(
 
         def upload_file(self, source: str, bucket: str, key: str) -> None:
             self.upload = (source, bucket, key)
+            self.objects[key] = Path(source).read_bytes()
+
+        def download_file(self, bucket: str, key: str, destination: str) -> None:
+            Path(destination).write_bytes(self.objects[key])
 
         def put_object(self, **kwargs: object) -> None:
             body = kwargs["Body"]
@@ -514,7 +596,10 @@ def test_s3_store_supports_complete_object_contract(
     source.write_bytes(b"PAR1")
 
     store.put_file("raw/run.parquet", source)
+    store.put_bytes("blobs/attachment", b"attachment")
     store.put_text("projects/project.json", "{}")
+    destination = tmp_path / "downloaded.parquet"
+    store.get_file("raw/run.parquet", destination)
 
     assert client.upload == (
         str(source),
@@ -522,6 +607,8 @@ def test_s3_store_supports_complete_object_contract(
         "langsmith/raw/run.parquet",
     )
     assert store.get_text("projects/project.json") == "{}"
+    assert store.get_bytes("blobs/attachment") == b"attachment"
+    assert destination.read_bytes() == b"PAR1"
     assert store.exists("projects/project.json") is True
     assert store.exists("projects/missing.json") is False
     assert store.object_uri("raw/run.parquet") == (

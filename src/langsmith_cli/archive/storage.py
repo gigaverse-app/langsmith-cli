@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 from pathlib import PurePosixPath
 import tempfile
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 from urllib.parse import urlparse
 
 
@@ -20,7 +20,10 @@ class ArchiveStore(Protocol):
     def base_uri(self) -> str: ...
 
     def put_file(self, key: str, source: Path) -> None: ...
+    def put_bytes(self, key: str, content: bytes) -> None: ...
     def put_text(self, key: str, content: str) -> None: ...
+    def get_file(self, key: str, destination: Path) -> None: ...
+    def get_bytes(self, key: str) -> bytes: ...
     def get_text(self, key: str) -> str: ...
     def get_text_with_version(self, key: str) -> TextObject: ...
     def put_text_if_version(
@@ -29,6 +32,10 @@ class ArchiveStore(Protocol):
     def exists(self, key: str) -> bool: ...
     def list_keys(self, prefix: str) -> list[str]: ...
     def object_uri(self, key: str) -> str: ...
+
+
+class BinaryWriter(Protocol):
+    def write(self, content: bytes, /) -> int: ...
 
 
 class ConcurrentArchiveWriteError(RuntimeError):
@@ -51,18 +58,38 @@ class LocalArchiveStore:
 
         _validate_store_key(key)
         target = self.root / key
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, target)
+
+        def copy_source(destination: BinaryWriter) -> None:
+            with source.open("rb") as input_file:
+                shutil.copyfileobj(input_file, destination)
+
+        _atomic_local_write(target, copy_source)
+
+    def put_bytes(self, key: str, content: bytes) -> None:
+        _validate_store_key(key)
+        target = self.root / key
+        _atomic_local_write(target, lambda destination: destination.write(content))
 
     def put_text(self, key: str, content: str) -> None:
         _validate_store_key(key)
         target = self.root / key
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
+        encoded = content.encode("utf-8")
+        _atomic_local_write(target, lambda destination: destination.write(encoded))
 
     def get_text(self, key: str) -> str:
         _validate_store_key(key)
         return (self.root / key).read_text(encoding="utf-8")
+
+    def get_file(self, key: str, destination: Path) -> None:
+        import shutil
+
+        _validate_store_key(key)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(self.root / key, destination)
+
+    def get_bytes(self, key: str) -> bytes:
+        _validate_store_key(key)
+        return (self.root / key).read_bytes()
 
     def get_text_with_version(self, key: str) -> TextObject:
         content = self.get_text(key)
@@ -89,24 +116,8 @@ class LocalArchiveStore:
                 raise ConcurrentArchiveWriteError(
                     f"Archive metadata changed concurrently: {key}"
                 )
-            temporary_path: Path | None = None
-            try:
-                with tempfile.NamedTemporaryFile(
-                    mode="w",
-                    encoding="utf-8",
-                    dir=target.parent,
-                    prefix=f".{target.name}.",
-                    suffix=".tmp",
-                    delete=False,
-                ) as temporary:
-                    temporary.write(content)
-                    temporary.flush()
-                    os.fsync(temporary.fileno())
-                    temporary_path = Path(temporary.name)
-                os.replace(temporary_path, target)
-            finally:
-                if temporary_path is not None and temporary_path.exists():
-                    temporary_path.unlink()
+            encoded = content.encode("utf-8")
+            _atomic_local_write(target, lambda destination: destination.write(encoded))
 
     def exists(self, key: str) -> bool:
         _validate_store_key(key)
@@ -150,6 +161,14 @@ class S3ArchiveStore:
     def put_file(self, key: str, source: Path) -> None:
         self.client.upload_file(str(source), self.bucket, self._full_key(key))
 
+    def put_bytes(self, key: str, content: bytes) -> None:
+        self.client.put_object(
+            Bucket=self.bucket,
+            Key=self._full_key(key),
+            Body=content,
+            ContentType="application/octet-stream",
+        )
+
     def put_text(self, key: str, content: str) -> None:
         self.client.put_object(
             Bucket=self.bucket,
@@ -161,6 +180,14 @@ class S3ArchiveStore:
     def get_text(self, key: str) -> str:
         response = self.client.get_object(Bucket=self.bucket, Key=self._full_key(key))
         return response["Body"].read().decode("utf-8")
+
+    def get_file(self, key: str, destination: Path) -> None:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        self.client.download_file(self.bucket, self._full_key(key), str(destination))
+
+    def get_bytes(self, key: str) -> bytes:
+        response = self.client.get_object(Bucket=self.bucket, Key=self._full_key(key))
+        return response["Body"].read()
 
     def get_text_with_version(self, key: str) -> TextObject:
         response = self.client.get_object(Bucket=self.bucket, Key=self._full_key(key))
@@ -280,6 +307,32 @@ def _content_version(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
+def _atomic_local_write(target: Path, writer: Callable[[BinaryWriter], object]) -> None:
+    """Replace one local object atomically after its complete bytes are durable.
+
+    INVARIANT: a reader sees either the previous complete object or the next
+    complete object. It never observes the temporary bytes being streamed.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w+b",
+            dir=target.parent,
+            prefix=f".{target.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary:
+            writer(temporary)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+            temporary_path = Path(temporary.name)
+        os.replace(temporary_path, target)
+    finally:
+        if temporary_path is not None and temporary_path.exists():
+            temporary_path.unlink()
+
+
 @contextmanager
 def _exclusive_file_lock(path: Path) -> Iterator[None]:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -292,10 +345,10 @@ def _exclusive_file_lock(path: Path) -> Iterator[None]:
             import msvcrt
 
             try:
-                msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+                msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK, 1)
             except OSError as exc:
                 raise ConcurrentArchiveWriteError(
-                    f"Archive metadata is being published concurrently: {path.name}"
+                    f"Archive metadata lock failed: {path.name}"
                 ) from exc
             try:
                 yield
@@ -306,12 +359,10 @@ def _exclusive_file_lock(path: Path) -> Iterator[None]:
 
         import fcntl
 
-        try:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            raise ConcurrentArchiveWriteError(
-                f"Archive metadata is being published concurrently: {path.name}"
-            ) from exc
+        # Wait for the tiny critical section instead of making callers spin and
+        # potentially starve the lock holder. Freshness is still enforced by the
+        # content-version comparison performed after this lock is acquired.
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         try:
             yield
         finally:

@@ -4,12 +4,20 @@ import os
 from typing import TYPE_CHECKING, Any, TypedDict
 
 import click
+from langsmith_cli.dataset_replica.cli import (
+    replica_list_pagination_options,
+    replica_repository,
+    replica_source_options,
+)
+from langsmith_cli.dataset_replica.models import ReplicaDestination, ReplicaSource
+from langsmith_cli.dataset_resolution import (
+    DatasetResolutionError,
+    resolve_dataset as resolve_dataset_strict,
+)
 from langsmith_cli.utils import (
     ConsoleProtocol,
     LazyConsole,
     add_name_filter_options,
-    apply_exclude_filter,
-    apply_name_filters,
     configure_logger_streams,
     confirm_option,
     count_option,
@@ -18,9 +26,9 @@ from langsmith_cli.utils import (
     fields_option,
     filter_fields,
     get_or_create_client,
-    resolve_by_name_or_id,
+    is_json_context,
+    json_dumps,
     sort_by_option,
-    sort_items,
     parse_fields_option,
     output_option,
     output_single_item,
@@ -36,6 +44,14 @@ if TYPE_CHECKING:
     from langsmith.schemas import Dataset
 
 console = LazyConsole()
+
+
+def resolve_dataset(client: Client, name_or_id: str) -> Dataset:
+    """Translate pure Dataset identity failures at the Click view boundary."""
+    try:
+        return resolve_dataset_strict(client, name_or_id)
+    except DatasetResolutionError as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 class DatasetPushRow(TypedDict):
@@ -78,9 +94,14 @@ def datasets():
 
 
 @datasets.command("list")
+@replica_source_options()
 @click.option("--dataset-ids", help="Specific dataset IDs (comma-separated).")
-@click.option("--limit", default=20, help="Limit number of datasets (default 20).")
-@click.option("--data-type", help="Filter by dataset type (kv, chat, llm).")
+@replica_list_pagination_options(item_name="datasets")
+@click.option(
+    "--data-type",
+    type=click.Choice(["kv", "chat", "llm"]),
+    help="Filter by dataset type (kv, chat, llm).",
+)
 @click.option("--name", "dataset_name", help="Exact dataset name match.")
 @click.option("--name-contains", help="Dataset name substring search.")
 @click.option("--metadata", help="Filter by metadata (JSON string).")
@@ -99,6 +120,9 @@ def datasets():
 @click.pass_context
 def list_datasets(
     ctx,
+    source,
+    archive_uri,
+    local_dir,
     dataset_ids,
     limit,
     data_type,
@@ -115,6 +139,7 @@ def list_datasets(
     output,
 ):
     """List all available datasets."""
+    source = ReplicaSource(source)
     logger = ctx.obj["logger"]
     configure_logger_streams(
         ctx, logger, output=output, output_format=output_format, fields=fields
@@ -125,50 +150,46 @@ def list_datasets(
         f"dataset_name={dataset_name}, name_contains={name_contains}"
     )
 
-    client = get_or_create_client(ctx)
-
     # Parse comma-separated dataset IDs
     dataset_ids_list = parse_comma_separated_list(dataset_ids)
 
     # Parse metadata JSON
     metadata_dict = parse_json_string(metadata, "metadata")
 
-    # Build kwargs for list_datasets (type-safe approach)
-    list_kwargs = {
-        "limit": limit,
-        "data_type": data_type,
-        "dataset_name": dataset_name,
-        "dataset_name_contains": name_contains,
-        "metadata": metadata_dict,
-    }
-    if dataset_ids_list is not None:
-        list_kwargs["dataset_ids"] = dataset_ids_list
+    from langsmith_cli.dataset_replica.query import DatasetListQuery
 
-    datasets_gen = client.list_datasets(**list_kwargs)
-    datasets_list = list(datasets_gen)
-
-    # Client-side name pattern/regex filtering
-    datasets_list = apply_name_filters(
-        datasets_list,
-        lambda d: d.name,
+    query = DatasetListQuery.from_options(
+        dataset_ids=dataset_ids_list,
+        limit=limit,
+        data_type=data_type,
+        dataset_name=dataset_name,
+        name_contains=name_contains,
+        metadata=metadata_dict,
         name_pattern=name_pattern,
         name_regex=name_regex,
+        sort_by=sort_by,
+        exclude=exclude,
     )
 
-    # Client-side exclude filtering
-    datasets_list = apply_exclude_filter(datasets_list, exclude, lambda d: d.name)
-
-    # Client-side sorting
-    if sort_by:
-        datasets_list = sort_items(
-            datasets_list,
-            sort_by,
-            {
-                "name": lambda d: d.name,
-                "created_at": lambda d: d.created_at,
-                "example_count": lambda d: d.example_count,
-            },
+    if source is ReplicaSource.CLOUD:
+        client = get_or_create_client(ctx)
+        datasets_list = query.apply_to_cloud_response(
+            client.list_datasets(
+                dataset_ids=(
+                    list(query.dataset_ids) if query.dataset_ids is not None else None
+                ),
+                limit=query.cloud_limit,
+                data_type=(
+                    query.data_type.value if query.data_type is not None else None
+                ),
+                dataset_name=query.dataset_name,
+                dataset_name_contains=query.name_contains,
+                metadata=query.metadata,
+            )
         )
+    else:
+        repository = replica_repository(source, archive_uri, local_dir)
+        datasets_list = query.apply_to_replica(repository.list_datasets())
 
     # Define table builder function
     def build_datasets_table(datasets):
@@ -199,18 +220,30 @@ def list_datasets(
 
 @datasets.command("get")
 @click.argument("dataset_id")
+@replica_source_options()
+@click.option("--as-of", default="latest", show_default=True)
 @fields_option()
 @output_option()
 @click.pass_context
-def get_dataset(ctx, dataset_id, fields, output):
+def get_dataset(ctx, dataset_id, source, archive_uri, local_dir, as_of, fields, output):
     """Fetch details of a single dataset."""
+    source = ReplicaSource(source)
     logger = ctx.obj["logger"]
     configure_logger_streams(ctx, logger, output=output, fields=fields)
 
     logger.debug(f"Fetching dataset: dataset_id={dataset_id}")
 
-    client = get_or_create_client(ctx)
-    dataset = client.read_dataset(dataset_id=dataset_id)
+    if source is ReplicaSource.CLOUD:
+        if as_of != "latest":
+            raise click.ClickException(
+                "--as-of is only supported for --source archive or local on "
+                "datasets get; cloud Dataset metadata has no versioned read API"
+            )
+        client = get_or_create_client(ctx)
+        dataset = resolve_dataset(client, dataset_id)
+    else:
+        repository = replica_repository(source, archive_uri, local_dir)
+        dataset = repository.read_dataset(dataset_id, as_of)
 
     data = filter_fields(dataset, fields)
 
@@ -326,19 +359,6 @@ def push_dataset(ctx, file_path, dataset):
     )
 
 
-def resolve_dataset(
-    client: Client,
-    name_or_id: str,
-) -> Dataset:
-    """Resolve a dataset by name or UUID, with smart UUID auto-detection."""
-    return resolve_by_name_or_id(
-        name_or_id,
-        read_by_name=lambda n: client.read_dataset(dataset_name=n),
-        read_by_id=lambda i: client.read_dataset(dataset_id=i),
-        entity_name="Dataset",
-    )
-
-
 @datasets.command("delete")
 @click.argument("name_or_id")
 @confirm_option()
@@ -365,4 +385,149 @@ def delete_dataset(ctx, name_or_id, confirm):
         logger,
         payload={"status": "success", "name": dataset.name},
         success_message=f"Deleted dataset '{dataset.name}'",
+    )
+
+
+@datasets.command("versions")
+@click.argument("dataset")
+@replica_source_options()
+@fields_option()
+@output_option()
+@click.pass_context
+def list_dataset_versions(ctx, dataset, source, archive_uri, local_dir, fields, output):
+    """List exact versions available from one dataset source."""
+    source = ReplicaSource(source)
+    logger = ctx.obj["logger"]
+    configure_logger_streams(ctx, logger, output=output, fields=fields)
+    if source is ReplicaSource.CLOUD:
+        client = get_or_create_client(ctx)
+        resolved = resolve_dataset(client, dataset)
+        versions = list(client.list_dataset_versions(dataset_id=resolved.id))
+    else:
+        repository = replica_repository(source, archive_uri, local_dir)
+        versions = repository.list_versions(dataset)
+
+    def build_versions_table(items):
+        from rich.table import Table
+
+        table = Table(title=f"Dataset versions: {dataset}")
+        table.add_column("As of", style="cyan")
+        table.add_column("Tags")
+        for item in items:
+            table.add_row(item.as_of.isoformat(), ", ".join(item.tags or []))
+        return table
+
+    render_output(
+        versions,
+        build_versions_table,
+        ctx,
+        include_fields=parse_fields_option(fields),
+        empty_message="No dataset versions found",
+        output_path=output,
+    )
+
+
+@datasets.command("status")
+@replica_source_options(include_cloud=False, default=ReplicaSource.LOCAL)
+@output_option()
+@click.pass_context
+def dataset_replica_status(ctx, source, archive_uri, local_dir, output):
+    """Show datasets and exact versions present in a replica source."""
+    source = ReplicaSource(source)
+    logger = ctx.obj["logger"]
+    configure_logger_streams(ctx, logger, output=output)
+    repository = replica_repository(source, archive_uri, local_dir)
+    payload = [
+        {
+            "dataset_id": item.dataset_id,
+            "dataset_name": item.dataset_name,
+            "latest_as_of": item.latest_as_of.isoformat(),
+            "versions": item.versions,
+            "source": source.value,
+            "source_uri": item.source_uri,
+        }
+        for item in repository.statuses()
+    ]
+
+    def build_status_table(items):
+        from rich.table import Table
+
+        table = Table(title=f"Dataset replica: {source.value}")
+        table.add_column("Dataset", style="cyan")
+        table.add_column("ID", style="dim")
+        table.add_column("Versions", justify="right")
+        table.add_column("Latest")
+        for item in items:
+            table.add_row(
+                item["dataset_name"],
+                item["dataset_id"],
+                str(item["versions"]),
+                item["latest_as_of"],
+            )
+        return table
+
+    render_output(
+        payload,
+        build_status_table,
+        ctx,
+        empty_message="No replicated datasets found",
+        output_path=output,
+    )
+
+
+@datasets.command("pull")
+@click.argument("dataset")
+@replica_source_options()
+@click.option(
+    "--to",
+    "destination",
+    type=click.Choice([item.value for item in ReplicaDestination]),
+    required=True,
+)
+@click.option("--as-of", default="latest", show_default=True)
+@click.option("--all-versions", is_flag=True)
+@click.pass_context
+def pull_dataset_command(
+    ctx,
+    dataset,
+    source,
+    destination,
+    as_of,
+    all_versions,
+    archive_uri,
+    local_dir,
+):
+    """Replicate exact, read-only dataset versions between sources."""
+    from langsmith_cli.dataset_replica.service import (
+        pull_dataset,
+        write_result_payload,
+    )
+    from langsmith_cli.dataset_replica.repository import DatasetReplicaError
+
+    source = ReplicaSource(source)
+    destination = ReplicaDestination(destination)
+    logger = ctx.obj["logger"]
+    configure_logger_streams(ctx, logger)
+    client = get_or_create_client(ctx) if source is ReplicaSource.CLOUD else None
+    try:
+        results = pull_dataset(
+            client=client,
+            dataset_name_or_id=dataset,
+            source=source,
+            destination=destination,
+            as_of=as_of,
+            all_versions=all_versions,
+            archive_uri=archive_uri,
+            local_directory=local_dir,
+        )
+    except (DatasetReplicaError, ValueError, OSError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    payload = [write_result_payload(result) for result in results]
+    if is_json_context(ctx):
+        click.echo(json_dumps(payload))
+        return
+    created = sum(not result.already_present for result in results)
+    logger.success(
+        f"Replicated {len(results)} version(s) of '{dataset}' "
+        f"to {destination.value} ({created} new)"
     )

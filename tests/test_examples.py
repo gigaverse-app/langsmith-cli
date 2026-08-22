@@ -8,10 +8,21 @@ All test data is created using real LangSmith Pydantic model instances from
 langsmith.schemas, ensuring compatibility with the actual SDK.
 """
 
-from langsmith_cli.main import cli
-from unittest.mock import patch
+from datetime import datetime, timezone
 import json
+from unittest.mock import patch
+
 from conftest import create_example, create_run, strip_ansi
+from langsmith_cli.main import cli
+
+
+def test_examples_list_help_uses_a_valid_sort_example(runner):
+    """INVARIANT: shared option help never recommends an invalid field."""
+    result = runner.invoke(cli, ["examples", "list", "--help"])
+
+    assert result.exit_code == 0
+    assert "'-created_at'" in result.output
+    assert "'-name'" not in result.output
 
 
 def test_examples_list(runner):
@@ -417,7 +428,7 @@ def test_examples_get_with_output(runner, tmp_path):
 
 
 def test_examples_get_with_as_of(runner):
-    """INVARIANT: --as-of should be passed to the SDK."""
+    """INVARIANT: cloud --as-of is parsed to the SDK's datetime contract."""
     with patch("langsmith.Client") as MockClient:
         mock_client = MockClient.return_value
 
@@ -440,8 +451,28 @@ def test_examples_get_with_as_of(runner):
         )
         assert result.exit_code == 0
         mock_client.read_example.assert_called_once_with(
-            "3442bd7c-27a2-437b-a38c-f278e455d87b", as_of="2024-01-01T00:00:00Z"
+            "3442bd7c-27a2-437b-a38c-f278e455d87b",
+            as_of=datetime(2024, 1, 1, tzinfo=timezone.utc),
         )
+
+
+def test_examples_get_rejects_cloud_version_tag_without_dataset_context(runner):
+    """INVARIANT: a tag is never passed to an SDK parameter requiring datetime."""
+    with patch("langsmith.Client") as client_class:
+        result = runner.invoke(
+            cli,
+            [
+                "examples",
+                "get",
+                "3442bd7c-27a2-437b-a38c-f278e455d87b",
+                "--as-of",
+                "production",
+            ],
+        )
+        client_class.assert_not_called()
+
+    assert result.exit_code == 1
+    assert "ISO timestamp" in result.output
 
 
 def test_examples_create(runner):

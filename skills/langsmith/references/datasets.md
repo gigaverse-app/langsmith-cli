@@ -9,7 +9,11 @@ langsmith-cli --json datasets list [OPTIONS]
 ```
 
 **Options:**
-- `--limit INTEGER` - Maximum results (default: 20)
+- `--source [cloud|archive|local]` - Read from one backend (default: `cloud`)
+- `--archive-uri TEXT` - Archive root; defaults to `LANGSMITH_ARCHIVE_URI`
+- `--local-dir DIRECTORY` - Override the platform-local dataset cache
+- `--limit INTEGER` - Maximum results after filtering and sorting (default: 20;
+  must be at least 1)
 - `--name TEXT` - Filter by exact dataset name
 - `--name-contains TEXT` - Filter by name substring
 - `--dataset-ids TEXT` - Comma-separated list of dataset UUIDs
@@ -47,13 +51,20 @@ langsmith-cli --json datasets list --data-type llm
 Get dataset details.
 
 ```bash
-langsmith-cli --json datasets get <dataset-id> [OPTIONS]
+langsmith-cli --json datasets get <dataset-id-or-name> [OPTIONS]
 ```
 
 **Arguments:**
-- `dataset-id` (required) - Dataset UUID
+- `dataset-id-or-name` (required) - Dataset UUID, or a unique replica name
 
 **Options:**
+- `--source [cloud|archive|local]` - Read from one backend (default: `cloud`)
+- `--as-of TEXT` - Archive/local version tag or ISO timestamp (default: `latest`);
+  this validates replica version availability but returns the current mutable
+  Dataset catalog envelope; cloud Dataset metadata has no versioned read API, so
+  non-latest cloud values fail
+- `--archive-uri TEXT` - Archive root; defaults to `LANGSMITH_ARCHIVE_URI`
+- `--local-dir DIRECTORY` - Override the platform-local dataset cache
 - `--fields TEXT` - Comma-separated field names to include
 - `--output TEXT` - Write output to file (JSON format)
 
@@ -63,6 +74,68 @@ langsmith-cli --json datasets get <dataset-id> [OPTIONS]
 ```bash
 langsmith-cli --json datasets get "ae99b6fa-a6db-4f1c-8868-bc6764f4c29e"
 ```
+
+### `datasets pull`
+
+Copy exact, read-only dataset versions between backends. Cloud is the mutation
+authority; archive and local replicas preserve the current strict Pydantic `Dataset`
+catalog envelope plus exact `Example`/`DatasetVersion` state. Immutable Examples use
+Parquet and attachment bytes are stored separately.
+
+```bash
+langsmith-cli --json datasets pull <dataset-id-or-name> --to local [OPTIONS]
+```
+
+**Options:**
+- `--source [cloud|archive|local]` - Source backend (default: `cloud`)
+- `--to [archive|local]` - Destination backend (required)
+- `--as-of TEXT` - Exact version tag or ISO timestamp (default: `latest`)
+- `--all-versions` - Replicate every version, oldest first
+- `--archive-uri TEXT` - Archive root; defaults to `LANGSMITH_ARCHIVE_URI`
+- `--local-dir DIRECTORY` - Override the platform-local dataset cache
+
+```bash
+# Freeze the latest cloud version for offline intermediate work
+langsmith-cli --json datasets pull my-evals --to local
+
+# Publish all cloud versions into the durable archive
+langsmith-cli --json datasets pull my-evals --to archive --all-versions
+
+# Hydrate local work from an archive without contacting LangSmith
+langsmith-cli --json datasets pull my-evals --source archive --to local
+```
+
+Repeated pulls of the same exact version are idempotent when canonical
+Example/attachment content matches; Dataset metadata refreshes independently in the
+mutable head. Divergent version content at the same canonical UTC timestamp fails.
+Parquet, attachments, and exact manifest bytes are digest-verified, while a
+compare-and-swap head safely merges concurrent versions and keeps each movable tag
+unique. Use
+`--archive-uri` when the command needs the archive; local data defaults to the OS
+cache directory.
+
+`--all-versions` cannot be combined with a non-default `--as-of` selection. Source
+and destination must also resolve to different physical repositories; changing only
+the source label does not make one directory a valid transfer pair.
+
+### `datasets versions`
+
+```bash
+langsmith-cli --json datasets versions <dataset-id-or-name> \
+  --source [cloud|archive|local]
+```
+
+Lists exact timestamps and tags available in the selected backend. Archive/local
+versions are immutable replica snapshots.
+
+### `datasets status`
+
+```bash
+langsmith-cli --json datasets status --source [archive|local]
+```
+
+Lists replicated dataset identities, latest timestamps, version counts, and the
+resolved storage URI.
 
 ### `datasets create`
 

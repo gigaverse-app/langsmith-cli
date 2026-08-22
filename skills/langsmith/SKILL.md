@@ -113,7 +113,10 @@ langsmith-cli --json runs get <id> --fields inputs,outputs,error
 | Count runs | `langsmith-cli --json runs list --project <name> --count` |
 | Run stats | `langsmith-cli --json runs stats --project <name>` |
 | Stratified run sample | `langsmith-cli --json runs sample --project <name> --stratify-by tag:<key> --values a,b --fields id,name,stratum` |
-| List datasets | `langsmith-cli --json datasets list --fields id,name` |
+| List cloud datasets | `langsmith-cli --json datasets list --source cloud --fields id,name` |
+| Pull dataset locally | `langsmith-cli --json datasets pull <name-or-id> --to local` |
+| List local datasets | `langsmith-cli --json datasets list --source local --fields id,name` |
+| List dataset versions | `langsmith-cli --json datasets versions <name-or-id> --source local` |
 | List prompts | `langsmith-cli --json prompts list --fields repo_handle,description` |
 | List feedback for a run | `langsmith-cli --json feedback list --run-id <run-id> --fields id,key,score` |
 | Create feedback | `langsmith-cli --json feedback create <run-id> --key correctness --score 0.9` |
@@ -121,6 +124,11 @@ langsmith-cli --json runs get <id> --fields inputs,outputs,error
 | Get annotation queue | `langsmith-cli --json annotation-queues get <queue-id>` |
 | View experiment results | `langsmith-cli --json experiments results <experiment-name>` |
 | Open run in browser | Construct URL manually — see **LangSmith URLs** section below |
+
+Dataset/example list bounds are strict and source-independent: `--limit` must be
+positive, `--offset` must be non-negative, and filtering/sorting happens before the
+page is selected. Do not combine `datasets pull --all-versions` with a non-default
+`--as-of`.
 
 ---
 
