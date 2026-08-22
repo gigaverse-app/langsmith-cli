@@ -486,6 +486,10 @@ def test_s3_store_supports_complete_object_contract(
 
         def upload_file(self, source: str, bucket: str, key: str) -> None:
             self.upload = (source, bucket, key)
+            self.objects[key] = Path(source).read_bytes()
+
+        def download_file(self, bucket: str, key: str, destination: str) -> None:
+            Path(destination).write_bytes(self.objects[key])
 
         def put_object(self, **kwargs: object) -> None:
             body = kwargs["Body"]
@@ -514,7 +518,10 @@ def test_s3_store_supports_complete_object_contract(
     source.write_bytes(b"PAR1")
 
     store.put_file("raw/run.parquet", source)
+    store.put_bytes("blobs/attachment", b"attachment")
     store.put_text("projects/project.json", "{}")
+    destination = tmp_path / "downloaded.parquet"
+    store.get_file("raw/run.parquet", destination)
 
     assert client.upload == (
         str(source),
@@ -522,6 +529,8 @@ def test_s3_store_supports_complete_object_contract(
         "langsmith/raw/run.parquet",
     )
     assert store.get_text("projects/project.json") == "{}"
+    assert store.get_bytes("blobs/attachment") == b"attachment"
+    assert destination.read_bytes() == b"PAR1"
     assert store.exists("projects/project.json") is True
     assert store.exists("projects/missing.json") is False
     assert store.object_uri("raw/run.parquet") == (

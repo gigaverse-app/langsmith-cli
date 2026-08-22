@@ -20,7 +20,10 @@ class ArchiveStore(Protocol):
     def base_uri(self) -> str: ...
 
     def put_file(self, key: str, source: Path) -> None: ...
+    def put_bytes(self, key: str, content: bytes) -> None: ...
     def put_text(self, key: str, content: str) -> None: ...
+    def get_file(self, key: str, destination: Path) -> None: ...
+    def get_bytes(self, key: str) -> bytes: ...
     def get_text(self, key: str) -> str: ...
     def get_text_with_version(self, key: str) -> TextObject: ...
     def put_text_if_version(
@@ -54,6 +57,12 @@ class LocalArchiveStore:
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, target)
 
+    def put_bytes(self, key: str, content: bytes) -> None:
+        _validate_store_key(key)
+        target = self.root / key
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+
     def put_text(self, key: str, content: str) -> None:
         _validate_store_key(key)
         target = self.root / key
@@ -63,6 +72,17 @@ class LocalArchiveStore:
     def get_text(self, key: str) -> str:
         _validate_store_key(key)
         return (self.root / key).read_text(encoding="utf-8")
+
+    def get_file(self, key: str, destination: Path) -> None:
+        import shutil
+
+        _validate_store_key(key)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(self.root / key, destination)
+
+    def get_bytes(self, key: str) -> bytes:
+        _validate_store_key(key)
+        return (self.root / key).read_bytes()
 
     def get_text_with_version(self, key: str) -> TextObject:
         content = self.get_text(key)
@@ -150,6 +170,14 @@ class S3ArchiveStore:
     def put_file(self, key: str, source: Path) -> None:
         self.client.upload_file(str(source), self.bucket, self._full_key(key))
 
+    def put_bytes(self, key: str, content: bytes) -> None:
+        self.client.put_object(
+            Bucket=self.bucket,
+            Key=self._full_key(key),
+            Body=content,
+            ContentType="application/octet-stream",
+        )
+
     def put_text(self, key: str, content: str) -> None:
         self.client.put_object(
             Bucket=self.bucket,
@@ -161,6 +189,14 @@ class S3ArchiveStore:
     def get_text(self, key: str) -> str:
         response = self.client.get_object(Bucket=self.bucket, Key=self._full_key(key))
         return response["Body"].read().decode("utf-8")
+
+    def get_file(self, key: str, destination: Path) -> None:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        self.client.download_file(self.bucket, self._full_key(key), str(destination))
+
+    def get_bytes(self, key: str) -> bytes:
+        response = self.client.get_object(Bucket=self.bucket, Key=self._full_key(key))
+        return response["Body"].read()
 
     def get_text_with_version(self, key: str) -> TextObject:
         response = self.client.get_object(Bucket=self.bucket, Key=self._full_key(key))

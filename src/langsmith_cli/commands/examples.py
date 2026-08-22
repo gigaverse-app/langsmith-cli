@@ -1,4 +1,5 @@
 import click
+from langsmith_cli.dataset_replica.models import ReplicaSource
 from langsmith_cli.utils import (
     ConsoleProtocol,
     LazyConsole,
@@ -43,6 +44,14 @@ def examples():
 
 
 @examples.command("list")
+@click.option(
+    "--source",
+    type=click.Choice([item.value for item in ReplicaSource]),
+    default=ReplicaSource.CLOUD.value,
+    show_default=True,
+)
+@click.option("--archive-uri", envvar="LANGSMITH_ARCHIVE_URI")
+@click.option("--local-dir", type=click.Path(file_okay=False))
 @click.option("--dataset", help="Dataset ID or Name.")
 @click.option("--example-ids", help="Specific example IDs (comma-separated).")
 @click.option("--limit", default=20, help="Limit number of examples (default 20).")
@@ -75,6 +84,9 @@ def examples():
 @click.pass_context
 def list_examples(
     ctx,
+    source,
+    archive_uri,
+    local_dir,
     dataset,
     example_ids,
     limit,
@@ -93,6 +105,7 @@ def list_examples(
     output,
 ):
     """List examples for a dataset."""
+    source = ReplicaSource(source)
     logger = ctx.obj["logger"]
     configure_logger_streams(
         ctx, logger, output=output, output_format=output_format, fields=fields
@@ -103,27 +116,70 @@ def list_examples(
         f"offset={offset}, filter={filter_}"
     )
 
-    client = get_or_create_client(ctx)
-
     # Parse comma-separated values
     example_ids_list = parse_comma_separated_list(example_ids)
     splits_list = parse_comma_separated_list(splits)
     metadata_dict = parse_json_string(metadata, "metadata")
 
-    # list_examples takes dataset_name and limit
-    examples_gen = client.list_examples(
-        dataset_name=dataset,
-        example_ids=example_ids_list,
-        limit=limit,
-        offset=offset,
-        filter=filter_,
-        metadata=metadata_dict,
-        splits=splits_list,
-        inline_s3_urls=inline_s3_urls,
-        include_attachments=include_attachments,
-        as_of=as_of,
-    )
-    examples_list = list(examples_gen)
+    if source is ReplicaSource.CLOUD:
+        client = get_or_create_client(ctx)
+        examples_list = list(
+            client.list_examples(
+                dataset_name=dataset,
+                example_ids=example_ids_list,
+                limit=limit,
+                offset=offset,
+                filter=filter_,
+                metadata=metadata_dict,
+                splits=splits_list,
+                inline_s3_urls=inline_s3_urls,
+                include_attachments=include_attachments,
+                as_of=as_of,
+            )
+        )
+    else:
+        if filter_ is not None:
+            raise click.ClickException(
+                "--filter is currently available only for --source cloud"
+            )
+        repository = _replica_repository(source, archive_uri, local_dir)
+        dataset_refs = (
+            [dataset]
+            if dataset is not None
+            else [str(item.id) for item in repository.list_datasets()]
+        )
+        examples_list = []
+        for dataset_ref in dataset_refs:
+            examples_list.extend(
+                repository.read_examples(
+                    dataset_ref,
+                    as_of=as_of,
+                    include_attachments=bool(include_attachments),
+                )
+            )
+        if example_ids_list is not None:
+            selected_ids = set(example_ids_list)
+            examples_list = [e for e in examples_list if str(e.id) in selected_ids]
+        if metadata_dict is not None:
+            examples_list = [
+                e
+                for e in examples_list
+                if e.metadata is not None
+                and all(
+                    key in e.metadata and e.metadata[key] == value
+                    for key, value in metadata_dict.items()
+                )
+            ]
+        if splits_list is not None:
+            selected_splits = set(splits_list)
+            examples_list = [
+                e
+                for e in examples_list
+                if e.metadata is not None
+                and "dataset_split" in e.metadata
+                and bool(selected_splits.intersection(e.metadata["dataset_split"]))
+            ]
+        examples_list = examples_list[offset : offset + limit]
 
     # Client-side exclude filtering (filter by ID string representation)
     examples_list = apply_exclude_filter(examples_list, exclude, lambda e: str(e.id))
@@ -176,18 +232,46 @@ def list_examples(
 @examples.command("get")
 @click.argument("example_id")
 @click.option("--as-of", help="Dataset version tag or ISO timestamp.")
+@click.option(
+    "--source",
+    type=click.Choice([item.value for item in ReplicaSource]),
+    default=ReplicaSource.CLOUD.value,
+    show_default=True,
+)
+@click.option("--archive-uri", envvar="LANGSMITH_ARCHIVE_URI")
+@click.option("--local-dir", type=click.Path(file_okay=False))
+@click.option("--include-attachments", is_flag=True)
 @fields_option()
 @output_option()
 @click.pass_context
-def get_example(ctx, example_id, as_of, fields, output):
+def get_example(
+    ctx,
+    example_id,
+    as_of,
+    source,
+    archive_uri,
+    local_dir,
+    include_attachments,
+    fields,
+    output,
+):
     """Fetch details of a single example."""
+    source = ReplicaSource(source)
     logger = ctx.obj["logger"]
     configure_logger_streams(ctx, logger, output=output, fields=fields)
 
     logger.debug(f"Fetching example: example_id={example_id}, as_of={as_of}")
 
-    client = get_or_create_client(ctx)
-    example = client.read_example(example_id, as_of=as_of)
+    if source is ReplicaSource.CLOUD:
+        client = get_or_create_client(ctx)
+        example = client.read_example(example_id, as_of=as_of)
+    else:
+        repository = _replica_repository(source, archive_uri, local_dir)
+        example = repository.read_example(
+            example_id,
+            as_of=as_of,
+            include_attachments=include_attachments,
+        )
 
     data = filter_fields(example, fields)
 
@@ -205,6 +289,22 @@ def get_example(ctx, example_id, as_of, fields, output):
     output_single_item(
         ctx, data, console, output=output, render_fn=render_example_details
     )
+
+
+def _replica_repository(source, archive_uri, local_dir):
+    from langsmith_cli.dataset_replica.repository import DatasetReplicaError
+    from langsmith_cli.dataset_replica.service import repository_for
+
+    try:
+        return repository_for(
+            source, archive_uri=archive_uri, local_directory=local_dir
+        )
+    except KeyError as exc:
+        raise click.ClickException(
+            "Archive reads require --archive-uri or LANGSMITH_ARCHIVE_URI"
+        ) from exc
+    except (DatasetReplicaError, ValueError, OSError) as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 @examples.command("create")

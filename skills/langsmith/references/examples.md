@@ -9,6 +9,9 @@ langsmith-cli --json examples list [OPTIONS]
 ```
 
 **Options:**
+- `--source [cloud|archive|local]` - Read from one backend (default: `cloud`)
+- `--archive-uri TEXT` - Archive root; defaults to `LANGSMITH_ARCHIVE_URI`
+- `--local-dir DIRECTORY` - Override the platform-local dataset cache
 - `--dataset TEXT` (required) - Dataset name or UUID
 - `--limit INTEGER` - Maximum results (default: 20)
 - `--offset INTEGER` - Skip N examples (default: 0)
@@ -50,7 +53,14 @@ langsmith-cli --json examples list \
 
 # Paginated access
 langsmith-cli --json examples list --dataset "my-dataset" --offset 100 --limit 50
+
+# Offline read from an exact local replica
+langsmith-cli --json examples list --dataset "my-dataset" --source local \
+  --as-of baseline
 ```
+
+`--filter` is cloud-only in the initial replica implementation. ID, metadata,
+split, pagination, field selection, and sorting filters work for replica sources.
 
 ### `examples get`
 
@@ -65,6 +75,10 @@ langsmith-cli --json examples get <example-id> [OPTIONS]
 
 **Options:**
 - `--as-of TEXT` - Version tag or ISO timestamp
+- `--source [cloud|archive|local]` - Read from one backend (default: `cloud`)
+- `--archive-uri TEXT` - Archive root; defaults to `LANGSMITH_ARCHIVE_URI`
+- `--local-dir DIRECTORY` - Override the platform-local dataset cache
+- `--include-attachments` - Rehydrate replica attachment readers from durable blobs
 - `--fields TEXT` - Comma-separated field names to include
 - `--output TEXT` - Write output to file (JSON format)
 
