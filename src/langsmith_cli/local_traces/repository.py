@@ -12,7 +12,7 @@ import tempfile
 from typing import TYPE_CHECKING
 
 from langsmith_cli.archive.duckdb import archive_duckdb_connection
-from langsmith_cli.archive.query import _validated_archive_run, _where_clause
+from langsmith_cli.archive.parquet import parquet_where_clause, validated_parquet_run
 from langsmith_cli.archive.storage import (
     ConcurrentArchiveWriteError,
     LocalArchiveStore,
@@ -22,6 +22,8 @@ from langsmith_cli.local_traces.models import (
     TraceCacheWriteResult,
     TraceCatalog,
     TraceFragment,
+    TraceEvictResult,
+    TraceProjectSummary,
     TracePullRecord,
     TracePullRequest,
 )
@@ -146,6 +148,103 @@ class LocalTraceRepository:
             )
         return run, children
 
+    def list_projects(self) -> list[TraceProjectSummary]:
+        catalog = self.read_catalog()
+        projects = sorted(
+            {
+                (fragment.project_id, fragment.project_name)
+                for fragment in catalog.fragments
+            },
+            key=lambda identity: identity[1],
+        )
+        summaries: list[TraceProjectSummary] = []
+        for project_id, project_name in projects:
+            project_fragments = [
+                fragment
+                for fragment in catalog.fragments
+                if fragment.project_id == project_id
+                and fragment.project_name == project_name
+            ]
+            runs = self._query_catalog(
+                catalog, RunQuery(project_id=project_id, limit=None)
+            )
+            start_times = [run.start_time for run in runs]
+            summaries.append(
+                TraceProjectSummary(
+                    project_id=project_id,
+                    project_name=project_name,
+                    run_count=len(runs),
+                    fragment_count=len(project_fragments),
+                    oldest_run_start_time=min(start_times) if start_times else None,
+                    newest_run_start_time=max(start_times) if start_times else None,
+                    last_updated=max(
+                        fragment.observed_at for fragment in project_fragments
+                    ),
+                    origins=tuple(
+                        sorted(
+                            {fragment.origin for fragment in project_fragments},
+                            key=lambda origin: origin.value,
+                        )
+                    ),
+                )
+            )
+        return summaries
+
+    def evict(self, project_name: str | None = None) -> TraceEvictResult:
+        """Atomically remove logical reachability without racing active readers.
+
+        Immutable fragment objects are deliberately left for later garbage
+        collection. Deleting bytes after releasing the catalog CAS lock could race
+        a concurrent writer that re-published the same content-addressed fragment.
+        """
+        for _attempt in range(MAX_CATALOG_PUBLICATION_ATTEMPTS):
+            catalog, expected_version = self._read_catalog_snapshot()
+            before_count = self._count_catalog(catalog, RunQuery(limit=None))
+            if project_name is None:
+                retained_fragments: tuple[TraceFragment, ...] = ()
+                retained_pulls: tuple[TracePullRecord, ...] = ()
+            else:
+                retained_fragments = tuple(
+                    fragment
+                    for fragment in catalog.fragments
+                    if fragment.project_name != project_name
+                )
+                retained_pulls = tuple(
+                    pull
+                    for pull in catalog.pulls
+                    if pull.request.project_name != project_name
+                )
+            candidate = TraceCatalog(
+                fragments=retained_fragments,
+                pulls=retained_pulls,
+            )
+            if candidate == catalog:
+                return TraceEvictResult(
+                    removed_run_count=0,
+                    removed_fragment_count=0,
+                    remaining_run_count=before_count,
+                    remaining_fragment_count=len(catalog.fragments),
+                )
+            try:
+                self._store.put_text_if_version(
+                    CATALOG_KEY,
+                    candidate.model_dump_json(indent=2),
+                    expected_version,
+                )
+            except ConcurrentArchiveWriteError:
+                continue
+            remaining_count = self._count_catalog(candidate, RunQuery(limit=None))
+            return TraceEvictResult(
+                removed_run_count=before_count - remaining_count,
+                removed_fragment_count=len(catalog.fragments)
+                - len(candidate.fragments),
+                remaining_run_count=remaining_count,
+                remaining_fragment_count=len(candidate.fragments),
+            )
+        raise ConcurrentArchiveWriteError(
+            "Local trace catalog changed during every eviction attempt"
+        )
+
     def _publish_fragment(
         self,
         request: TracePullRequest,
@@ -230,13 +329,15 @@ class LocalTraceRepository:
         if not fragments:
             return []
         paths = [self._approved_fragment_path(fragment) for fragment in fragments]
-        where, where_parameters = _where_clause(query)
+        where, where_parameters = parquet_where_clause(query)
         limit_sql = "" if query.limit is None or query.limit == 0 else " LIMIT ?"
         parameters: list[object] = [paths, *where_parameters]
         if limit_sql:
             parameters.append(query.limit)
 
-        with archive_duckdb_connection() as connection:
+        with archive_duckdb_connection(
+            allowed_paths=[Path(path) for path in paths]
+        ) as connection:
             connection.execute(
                 "CREATE TEMP TABLE local_fragment_metadata("
                 "path VARCHAR PRIMARY KEY, observed_at TIMESTAMPTZ, digest VARCHAR)"
@@ -263,7 +364,7 @@ class LocalTraceRepository:
             )
             columns = [description[0] for description in cursor.description]
             return [
-                _validated_archive_run(dict(zip(columns, row, strict=True)))
+                validated_parquet_run(dict(zip(columns, row, strict=True)))
                 for row in cursor.fetchall()
             ]
 

@@ -4,7 +4,13 @@ import json
 
 import click
 
-from langsmith_cli.commands.runs._group import _make_fetch_runs, console, runs
+from langsmith_cli.commands.runs._group import (
+    _make_fetch_runs,
+    console,
+    resolve_trace_source_cli,
+    runs,
+    trace_source_options,
+)
 from langsmith_cli.utils import (
     add_grep_options,
     add_metadata_filter_options,
@@ -294,17 +300,7 @@ def _list_parquet_runs(
 
 @runs.command("list")
 @add_project_filter_options
-@click.option(
-    "--source",
-    type=click.Choice(["cloud", "archive", "local"]),
-    default=None,
-    help="Trace source to query (default: cloud).",
-)
-@click.option(
-    "--archive",
-    is_flag=True,
-    help="Query canonical Parquet from the configured archive instead of LangSmith.",
-)
+@trace_source_options
 @click.option("--limit", default=20, help="Max runs to fetch (per project).")
 @click.option(
     "--status", type=click.Choice(["success", "error"]), help="Filter by status."
@@ -504,12 +500,7 @@ def list_runs(
         fields=fields,
     )
 
-    from langsmith_cli.local_traces.service import resolve_trace_source
-
-    try:
-        selected_source = resolve_trace_source(source, archive)
-    except ValueError as exc:
-        raise click.ClickException(str(exc)) from exc
+    selected_source = resolve_trace_source_cli(source, archive)
 
     if selected_source.value != "cloud":
         return _list_parquet_runs(

@@ -1,8 +1,13 @@
 """Runs command group and shared helpers."""
 
-from typing import Any
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any, Callable
 
 import click
+
+if TYPE_CHECKING:
+    from langsmith_cli.local_traces.models import TraceSource
 
 
 class LazyConsole:
@@ -29,6 +34,31 @@ console = LazyConsole()
 def runs():
     """Inspect and filter application traces."""
     pass
+
+
+def trace_source_options(function: Callable[..., Any]) -> Callable[..., Any]:
+    """Apply the uniform source selector and the legacy archive alias."""
+    function = click.option(
+        "--archive",
+        is_flag=True,
+        help="Compatibility alias for --source archive.",
+    )(function)
+    return click.option(
+        "--source",
+        type=click.Choice(["cloud", "archive", "local"]),
+        default=None,
+        help="Trace source to query (default: cloud).",
+    )(function)
+
+
+def resolve_trace_source_cli(source: str | None, archive: bool) -> TraceSource:
+    """Resolve CLI source flags and render conflicts as uniform Click errors."""
+    from langsmith_cli.local_traces.service import resolve_trace_source
+
+    try:
+        return resolve_trace_source(source, archive)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 # LangSmith API rejects limit > 100 in /runs/query requests.

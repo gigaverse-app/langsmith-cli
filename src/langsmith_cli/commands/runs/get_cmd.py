@@ -8,7 +8,12 @@ import json
 
 import click
 
-from langsmith_cli.commands.runs._group import runs, console
+from langsmith_cli.commands.runs._group import (
+    console,
+    resolve_trace_source_cli,
+    runs,
+    trace_source_options,
+)
 from langsmith_cli.utils import (
     add_project_filter_options,
     build_runs_list_filter,
@@ -32,17 +37,7 @@ if TYPE_CHECKING:
 
 @runs.command("get")
 @click.argument("run_id")
-@click.option(
-    "--source",
-    type=click.Choice(["cloud", "archive", "local"]),
-    default=None,
-    help="Trace source to query (default: cloud).",
-)
-@click.option(
-    "--archive",
-    is_flag=True,
-    help="Read canonical Parquet from the configured archive.",
-)
+@trace_source_options
 @click.option(
     "--project",
     help="Exact project name used to prune archive partitions.",
@@ -102,12 +97,8 @@ def get_run(
         langsmith-cli --json runs get <id> --follow-children --fields id,name,inputs,outputs
     """
     from langsmith_cli.local_traces.models import TraceSource
-    from langsmith_cli.local_traces.service import resolve_trace_source
 
-    try:
-        selected_source = resolve_trace_source(source, archive)
-    except ValueError as exc:
-        raise click.ClickException(str(exc)) from exc
+    selected_source = resolve_trace_source_cli(source, archive)
 
     if selected_source is not TraceSource.CLOUD:
         from langsmith_cli.time_parsing import parse_time_range
@@ -175,17 +166,7 @@ def get_run(
 
 @runs.command("get-latest")
 @add_project_filter_options
-@click.option(
-    "--source",
-    type=click.Choice(["cloud", "archive", "local"]),
-    default=None,
-    help="Trace source to query (default: cloud).",
-)
-@click.option(
-    "--archive",
-    is_flag=True,
-    help="Read canonical Parquet from the configured archive.",
-)
+@trace_source_options
 @click.option(
     "--status", type=click.Choice(["success", "error"]), help="Filter by status."
 )
@@ -270,12 +251,8 @@ def get_latest_run(
         langsmith-cli --json runs get-latest --project my-project --slow --recent --fields name,latency
     """
     from langsmith_cli.local_traces.models import TraceSource
-    from langsmith_cli.local_traces.service import resolve_trace_source
 
-    try:
-        selected_source = resolve_trace_source(source, archive)
-    except ValueError as exc:
-        raise click.ClickException(str(exc)) from exc
+    selected_source = resolve_trace_source_cli(source, archive)
 
     if selected_source is not TraceSource.CLOUD:
         from datetime import datetime, time, timedelta, timezone
@@ -311,7 +288,7 @@ def get_latest_run(
             limit=1,
             error=error_filter,
             run_type=run_type,
-            is_root=roots,
+            is_root=True if roots else None,
             tags=tuple(tag),
             text=model,
             text_fields=("extra",),
@@ -325,8 +302,13 @@ def get_latest_run(
 
             source_runs = local_trace_repository().query(query_contract)
         if not source_runs:
+            source_label = (
+                "archived"
+                if selected_source is TraceSource.ARCHIVE
+                else selected_source.value
+            )
             raise click.ClickException(
-                f"No {selected_source.value} runs found matching the filters"
+                f"No {source_label} runs found matching the filters"
             )
         data = filter_fields(source_runs[0], fields)
 

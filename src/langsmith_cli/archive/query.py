@@ -4,14 +4,18 @@ from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta, timezone
 from fnmatch import fnmatchcase
-import json
 import re
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from langsmith_cli.archive.config import load_archive_config
 from langsmith_cli.archive.duckdb import (
     archive_duckdb_connection,
     configure_duckdb_s3,
+)
+from langsmith_cli.archive.parquet import (
+    normalize_run_payload,
+    parquet_where_clause as _where_clause,
+    validated_parquet_run as _validated_archive_run,
 )
 from langsmith_cli.archive.repository import (
     list_project_records,
@@ -19,10 +23,6 @@ from langsmith_cli.archive.repository import (
     read_manifests,
 )
 from langsmith_cli.archive.storage import create_store
-from langsmith_cli.archive.sync import (
-    ARCHIVE_JSON_LIST_COLUMNS,
-    ARCHIVE_JSON_OBJECT_COLUMNS,
-)
 from langsmith_cli.time_parsing import ensure_aware_datetime
 from langsmith_cli.trace_query import RunQuery
 
@@ -33,6 +33,9 @@ if TYPE_CHECKING:
 # Compatibility name for the public archive API. Archive and local now consume the
 # exact same Pydantic query contract instead of maintaining near-identical models.
 ArchiveRunQuery = RunQuery
+# Private test/import compatibility while canonical implementation lives in
+# archive.parquet for reuse by the local backend.
+_normalize_run_payload = normalize_run_payload
 
 
 def _project_matches(
@@ -147,145 +150,6 @@ def _date_partition_overlaps(
     )
 
 
-def _normalize_event_time(value: object) -> object:
-    """Return one event time as zoned UTC, preserving unparseable values."""
-    event_time = value
-    if isinstance(event_time, str):
-        try:
-            event_time = datetime.fromisoformat(event_time.replace("Z", "+00:00"))
-        except ValueError:
-            return value
-    if not isinstance(event_time, datetime):
-        return value
-    if event_time.tzinfo is None:
-        event_time = event_time.replace(tzinfo=timezone.utc)
-    return event_time.astimezone(timezone.utc).isoformat()
-
-
-def _normalize_run_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Normalize provider-specific Parquet values to the LangSmith Run contract."""
-    for field in (
-        "id",
-        "trace_id",
-        "parent_run_id",
-        "session_id",
-        "reference_example_id",
-    ):
-        if field not in payload:
-            continue
-        value = payload[field]
-        if isinstance(value, str) and value.startswith('"'):
-            decoded = json.loads(value)
-            if not isinstance(decoded, str):
-                raise ValueError(f"Archived UUID field is not a string: {field}")
-            payload[field] = decoded
-    expected_json_types = {
-        **dict.fromkeys(ARCHIVE_JSON_OBJECT_COLUMNS, dict),
-        **dict.fromkeys(ARCHIVE_JSON_LIST_COLUMNS, list),
-    }
-    for field, expected_type in expected_json_types.items():
-        value = payload[field] if field in payload else None
-        if not isinstance(value, str):
-            continue
-        decoded = json.loads(value)
-        if decoded is not None and not isinstance(decoded, expected_type):
-            raise ValueError(f"Archived JSON field has an invalid type: {field}")
-        payload[field] = decoded
-    # Bulk v2 preserves LangChain's reserved ``inputs.input`` value with one
-    # extra JSON layer. Decode that provider representation without stripping
-    # nulls: explicit nested nulls are part of the live CLI output contract.
-    inputs = payload.get("inputs")
-    if isinstance(inputs, dict) and isinstance(inputs.get("input"), str):
-        try:
-            inputs["input"] = json.loads(inputs["input"])
-        except json.JSONDecodeError:
-            pass
-    events = payload.get("events")
-    if isinstance(events, list):
-        for event in events:
-            if not isinstance(event, dict) or "time" not in event:
-                continue
-            event["time"] = _normalize_event_time(event["time"])
-    for details_field in (
-        "prompt_token_details",
-        "completion_token_details",
-        "prompt_cost_details",
-        "completion_cost_details",
-    ):
-        if details_field not in payload:
-            continue
-        details = payload[details_field]
-        if isinstance(details, dict):
-            payload[details_field] = {
-                key: value for key, value in details.items() if value is not None
-            }
-    return payload
-
-
-def _validated_archive_run(payload: dict[str, Any]) -> Run:
-    """Validate an archive row and restore UTC on untyped SDK event datetimes."""
-    from langsmith.schemas import Run
-
-    run = Run.model_validate(_normalize_run_payload(payload))
-    normalized_events: list[dict[str, Any]] = []
-    for event in run.events or []:
-        normalized_event = dict(event)
-        if "time" in normalized_event:
-            normalized_event["time"] = _normalize_event_time(normalized_event["time"])
-        normalized_events.append(normalized_event)
-    return run.model_copy(update={"events": normalized_events or run.events})
-
-
-def _where_clause(query: ArchiveRunQuery) -> tuple[str, list[object]]:
-    clauses: list[str] = []
-    parameters: list[object] = []
-    since = ensure_aware_datetime(query.since)
-    before = ensure_aware_datetime(query.before)
-    if since is not None:
-        clauses.append("start_time >= ?")
-        parameters.append(since)
-    if before is not None:
-        clauses.append("start_time < ?")
-        parameters.append(before)
-    if query.error is not None:
-        clauses.append("error IS NOT NULL" if query.error else "error IS NULL")
-    if query.run_id is not None:
-        clauses.append("CAST(id AS VARCHAR) = ?")
-        parameters.append(query.run_id)
-    if query.trace_id is not None:
-        clauses.append("CAST(trace_id AS VARCHAR) = ?")
-        parameters.append(query.trace_id)
-    if query.run_type is not None:
-        clauses.append("run_type = ?")
-        parameters.append(query.run_type)
-    if query.is_root is not None:
-        clauses.append(
-            "parent_run_id IS NULL" if query.is_root else "parent_run_id IS NOT NULL"
-        )
-    for tag in query.tags:
-        # Runs API snapshots expose a native VARCHAR[] while managed Bulk Export
-        # writes the same field as JSON text. Casting either representation to
-        # JSON keeps mixed-provider archives queryable.
-        clauses.append("json_contains(CAST(tags AS JSON), to_json(?))")
-        parameters.append(tag)
-    if query.text is not None:
-        text_sql = " || ' ' || ".join(
-            f"coalesce(CAST({field} AS VARCHAR), '')" for field in query.text_fields
-        )
-        if query.text_regex:
-            clauses.append(f"regexp_matches({text_sql}, ?)")
-            pattern = f"(?i){query.text}" if query.text_ignore_case else query.text
-            parameters.append(pattern)
-        elif query.text_ignore_case:
-            clauses.append(f"lower({text_sql}) LIKE ?")
-            parameters.append(f"%{query.text.lower()}%")
-        else:
-            clauses.append(f"{text_sql} LIKE ?")
-            parameters.append(f"%{query.text}%")
-    where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
-    return where, parameters
-
-
 def query_archive_runs(
     query: ArchiveRunQuery, *, config_path: str | None = None
 ) -> list[Run]:
@@ -301,7 +165,7 @@ def query_archive_runs(
         parameters.append(query.limit)
     sql = (
         "SELECT * FROM read_parquet(?, union_by_name=true)"
-        f"{where} ORDER BY start_time DESC{limit}"
+        f"{where} ORDER BY start_time DESC, CAST(id AS VARCHAR) ASC{limit}"
     )
 
     with archive_duckdb_connection() as connection:

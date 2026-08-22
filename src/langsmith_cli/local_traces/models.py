@@ -22,6 +22,10 @@ class TraceDestination(str, Enum):
     LOCAL = "local"
 
 
+class TraceCacheStatus(str, Enum):
+    HEALTHY = "healthy"
+
+
 class TracePullRequest(BaseModel):
     """Auditable description of one explicit transfer into the local inventory."""
 
@@ -57,6 +61,50 @@ class TracePullRequest(BaseModel):
             and self.since >= self.before
         ):
             raise ValueError("Trace pull since must be earlier than before")
+        return self
+
+
+class TraceSelection(BaseModel):
+    """Typed source selector before remote rows reveal their project UUID."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    source: TraceSource
+    project_name: str
+    requested_at: datetime
+    since: datetime | None = None
+    before: datetime | None = None
+    filter: str | None = None
+    limit: int | None = 100
+
+    @field_validator("requested_at", "since", "before")
+    @classmethod
+    def _normalize_selection_datetime(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("Trace selection timestamps must be timezone-aware")
+        return value.astimezone(timezone.utc)
+
+    @field_validator("limit")
+    @classmethod
+    def _require_non_negative_selection_limit(cls, value: int | None) -> int | None:
+        if value is not None and value < 0:
+            raise ValueError("Trace selection limit must be non-negative")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_selection(self) -> "TraceSelection":
+        if self.source is TraceSource.LOCAL:
+            raise ValueError("Local is a destination, not a remote pull source")
+        if not self.project_name:
+            raise ValueError("Trace selection requires an exact project name")
+        if (
+            self.since is not None
+            and self.before is not None
+            and self.since >= self.before
+        ):
+            raise ValueError("Trace selection since must be earlier than before")
         return self
 
 
@@ -153,3 +201,40 @@ class TraceCacheWriteResult(BaseModel):
     total_run_count: int
     fragment_count: int
     content_digest: str | None
+
+
+class TraceProjectSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    project_id: str
+    project_name: str
+    run_count: int
+    fragment_count: int
+    oldest_run_start_time: datetime | None
+    newest_run_start_time: datetime | None
+    last_updated: datetime
+    origins: tuple[TraceSource, ...]
+
+
+class TraceEvictResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    removed_run_count: int
+    removed_fragment_count: int
+    remaining_run_count: int
+    remaining_fragment_count: int
+
+
+class ProjectTraceCacheWriteResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    project: str
+    result: TraceCacheWriteResult
+
+
+class TraceCacheHealth(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    status: TraceCacheStatus
+    fragment_count: int
+    run_count: int

@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
+from threading import Barrier
+from typing import Any, Iterator
 from unittest.mock import patch
 
 import pytest
+from langsmith.schemas import Run
 
 from conftest import create_run, parse_json_output
 from langsmith_cli.archive.storage import LocalArchiveStore
+from langsmith_cli.archive.models import ArchivePhase
+from langsmith_cli.archive.sync import sync_project_day
 from langsmith_cli.local_traces.models import TracePullRequest, TraceSource
 from langsmith_cli.local_traces.repository import LocalTraceRepository
 from langsmith_cli.main import cli
@@ -40,6 +46,14 @@ def _run(run_id: str, name: str, *, outputs: dict[str, str] | None = None):
         outputs=outputs,
         session_id=PROJECT_ID,
     )
+
+
+class _ArchiveRunsClient:
+    def __init__(self, runs: list[Run]) -> None:
+        self._runs = runs
+
+    def list_runs(self, **kwargs: Any) -> Iterator[Run]:
+        return iter(self._runs)
 
 
 def test_local_addition_preserves_unrelated_traces(tmp_path: Path) -> None:
@@ -149,6 +163,57 @@ def test_catalog_rejects_paths_outside_the_cache_root(tmp_path: Path) -> None:
         repository.query(RunQuery(limit=None))
 
 
+def test_concurrent_catalog_additions_merge(tmp_path: Path) -> None:
+    """INVARIANT: stale writers merge independent fragments instead of replacing."""
+    barrier = Barrier(2)
+
+    def add(run_id: str) -> None:
+        barrier.wait()
+        LocalTraceRepository(tmp_path).add_runs(
+            _pull_request(), [_run(run_id, f"run-{run_id[-1]}")]
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(add, FIRST_RUN_ID),
+            executor.submit(add, SECOND_RUN_ID),
+        ]
+        for future in futures:
+            future.result()
+
+    assert {
+        str(run.id)
+        for run in LocalTraceRepository(tmp_path).query(RunQuery(limit=None))
+    } == {
+        FIRST_RUN_ID,
+        SECOND_RUN_ID,
+    }
+
+
+def test_local_duckdb_disables_external_access_and_extension_autoload(
+    tmp_path: Path,
+) -> None:
+    """INVARIANT: an offline local query cannot reach unapproved external state."""
+    from langsmith_cli.archive.duckdb import archive_duckdb_connection
+
+    approved = tmp_path / "approved.parquet"
+    approved.touch()
+    with archive_duckdb_connection(allowed_paths=[approved]) as connection:
+        settings = dict(
+            connection.execute(
+                "SELECT name, value FROM duckdb_settings() WHERE name IN ("
+                "'enable_external_access', 'autoinstall_known_extensions', "
+                "'autoload_known_extensions')"
+            ).fetchall()
+        )
+
+    assert settings == {
+        "autoinstall_known_extensions": "false",
+        "autoload_known_extensions": "false",
+        "enable_external_access": "false",
+    }
+
+
 def test_runs_pull_cloud_then_list_local_offline(
     runner, mock_client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -203,3 +268,107 @@ def test_source_and_archive_alias_conflict_fails_fast(runner, mock_client) -> No
     assert result.exit_code != 0
     assert "Use either --source or --archive" in result.output
     mock_client.assert_not_called()
+
+
+def test_runs_search_delegates_to_the_local_source(
+    runner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LANGSMITH_CLI_RUN_CACHE_DIR", str(tmp_path))
+    LocalTraceRepository(tmp_path).add_runs(
+        _pull_request(),
+        [_run(FIRST_RUN_ID, "searchable", outputs={"message": "local needle"})],
+    )
+
+    result = runner.invoke(
+        cli,
+        [
+            "--json",
+            "runs",
+            "search",
+            "needle",
+            "--source",
+            "local",
+            "--project",
+            PROJECT_NAME,
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert parse_json_output(result.output)[0]["id"] == FIRST_RUN_ID
+
+
+def test_runs_get_and_get_latest_use_the_local_source(
+    runner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LANGSMITH_CLI_RUN_CACHE_DIR", str(tmp_path))
+    LocalTraceRepository(tmp_path).add_runs(
+        _pull_request(),
+        [_run(FIRST_RUN_ID, "local latest", outputs={"answer": "offline"})],
+    )
+
+    fetched = runner.invoke(
+        cli,
+        ["--json", "runs", "get", FIRST_RUN_ID, "--source", "local"],
+    )
+    latest = runner.invoke(
+        cli,
+        [
+            "--json",
+            "runs",
+            "get-latest",
+            "--source",
+            "local",
+            "--project",
+            PROJECT_NAME,
+        ],
+    )
+
+    assert fetched.exit_code == 0, fetched.output
+    assert latest.exit_code == 0, latest.output
+    assert parse_json_output(fetched.output)["outputs"] == {"answer": "offline"}
+    assert parse_json_output(latest.output)["id"] == FIRST_RUN_ID
+
+
+def test_runs_pull_archive_then_get_local(
+    runner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive_root = tmp_path / "archive"
+    local_root = tmp_path / "local"
+    monkeypatch.setenv("LANGSMITH_ARCHIVE_URI", str(archive_root))
+    monkeypatch.setenv("LANGSMITH_CLI_RUN_CACHE_DIR", str(local_root))
+    archived_run = _run(FIRST_RUN_ID, "archived", outputs={"source": "archive"})
+    sync_project_day(
+        _ArchiveRunsClient([archived_run]),
+        LocalArchiveStore(archive_root, str(archive_root)),
+        project_id=PROJECT_ID,
+        project_name=PROJECT_NAME,
+        trace_date=archived_run.start_time.date(),
+        phase=ArchivePhase.PRIMARY,
+    )
+
+    pulled = runner.invoke(
+        cli,
+        [
+            "--json",
+            "runs",
+            "pull",
+            "--source",
+            "archive",
+            "--to",
+            "local",
+            "--project",
+            PROJECT_NAME,
+            "--since",
+            "2024-07-03T00:00:00Z",
+            "--before",
+            "2024-07-04T00:00:00Z",
+        ],
+    )
+    fetched = runner.invoke(
+        cli,
+        ["--json", "runs", "get", FIRST_RUN_ID, "--source", "local"],
+    )
+
+    assert pulled.exit_code == 0, pulled.output
+    assert fetched.exit_code == 0, fetched.output
+    assert parse_json_output(fetched.output)["outputs"] == {"source": "archive"}
