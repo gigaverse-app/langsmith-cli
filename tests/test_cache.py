@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import create_run, parse_json_output
+from conftest import create_run, parse_json_output, strip_ansi
 from langsmith_cli.cache import (
     append_runs_streaming,
     append_runs_to_cache,
@@ -194,7 +194,7 @@ def test_cache_download_applies_supported_selection_filters(
     assert 'eq(run_type, "chain")' in selection_filter
     assert 'eq(name, "quoted\\"name")' in selection_filter
     assert wildcard.exit_code == 0, wildcard.output
-    assert f"{PROJECT_NAME}: added" in wildcard.output
+    assert f"{PROJECT_NAME}: added" in strip_ansi(wildcard.output)
     assert list(cache_root.rglob("*.jsonl")) == []
 
 
@@ -338,11 +338,11 @@ def test_cache_human_and_alternate_output_paths(
     assert "project_name:" in yaml_result.output
     assert written.exit_code == 0
     assert PROJECT_NAME in output_path.read_text(encoding="utf-8")
-    assert "Healthy: 1 logical run" in repaired.output
+    assert "Healthy: 1 logical run" in strip_ansi(repaired.output)
     assert "outputs:" in schema.output
     assert missing_schema.exit_code != 0
     assert "No cache found" in missing_schema.output
-    assert "Evicted 1 run" in cleared.output
+    assert "Evicted 1 run" in strip_ansi(cleared.output)
 
 
 def test_cache_dir_reports_shared_root(runner, cache_root: Path) -> None:

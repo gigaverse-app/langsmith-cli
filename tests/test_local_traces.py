@@ -13,7 +13,7 @@ from unittest.mock import patch
 import pytest
 from langsmith.schemas import Run
 
-from conftest import create_run, parse_json_output
+from conftest import create_run, parse_json_output, strip_ansi
 from langsmith_cli.archive.storage import LocalArchiveStore
 from langsmith_cli.archive.models import ArchivePhase
 from langsmith_cli.archive.sync import sync_project_day
@@ -331,7 +331,7 @@ def test_pull_human_output_and_archive_filter_failure(
     )
 
     assert human.exit_code == 0, human.output
-    assert "Added 1 run(s) from cloud" in human.output
+    assert "Added 1 run(s) from cloud" in strip_ansi(human.output)
     assert unsupported.exit_code != 0
     assert "Archive pulls do not support raw FQL filters" in unsupported.output
 
