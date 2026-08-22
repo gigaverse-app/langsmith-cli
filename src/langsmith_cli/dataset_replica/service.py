@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
 
 from langsmith_cli.archive.storage import create_store
 from langsmith_cli.dataset_resolution import resolve_dataset
+from langsmith_cli.dataset_replica.contracts import ReplicaWriteResult
 from langsmith_cli.dataset_replica.models import (
     ReplicaDestination,
     ReplicaSource,
-    ReplicaWriteResult,
 )
 from langsmith_cli.dataset_replica.repository import (
     DatasetReplicaConfigurationError,
@@ -107,16 +107,17 @@ def pull_dataset(
     )
     versions = source_repository.list_versions(dataset_name_or_id)
     selected = versions if all_versions else [_select_version(versions, as_of)]
+    dataset = source_repository.read_dataset(dataset_name_or_id)
     results: list[ReplicaWriteResult] = []
     for version in reversed(selected):
-        version_text = version.as_of.isoformat()
-        dataset = source_repository.read_dataset(dataset_name_or_id, version_text)
-        examples = source_repository.read_examples(
+        version_text = version.as_of.astimezone(timezone.utc).isoformat()
+        examples = source_repository.iter_examples(
             dataset_name_or_id,
             as_of=version_text,
             include_attachments=True,
         )
         results.append(target.write_snapshot(dataset, version, examples))
+    target.sync_version_tags(str(dataset.id), versions)
     return results
 
 
@@ -162,13 +163,11 @@ def _pull_from_cloud(
     for version in versions:
         # INVARIANT: every page is read against one server-resolved exact version.
         # Without this bound, concurrent cloud edits could create a mixed snapshot.
-        examples = list(
-            client.list_examples(
-                dataset_id=dataset.id,
-                as_of=version.as_of,
-                include_attachments=True,
-                inline_s3_urls=False,
-            )
+        examples = client.list_examples(
+            dataset_id=dataset.id,
+            as_of=version.as_of,
+            include_attachments=True,
+            inline_s3_urls=False,
         )
         results.append(target.write_snapshot(dataset, version, examples))
     target.sync_version_tags(str(dataset.id), available_versions)

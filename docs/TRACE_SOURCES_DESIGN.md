@@ -573,10 +573,11 @@ are added. Dataset and Example are strict typed objects at the backend boundary;
 replica catalog metadata is a separate typed transfer envelope, never injected into
 their metadata fields.
 
-Service-derived Dataset summary fields such as experiment/session counts and last
-session time are preserved exactly as observed at pull time, with that observation
-time in the replica envelope. They do not imply that associated experiments,
-feedback, or runs were copied, and they do not update while the replica is offline.
+The complete Dataset envelope is mutable catalog state, exactly as it is in
+LangSmith. A successful pull refreshes its name, description, schemas, metadata,
+counts, and timestamps without rewriting an immutable DatasetVersion. Those fields
+remain the last source observation while the replica is offline; service-derived
+session/experiment summaries do not imply that their runs or feedback were copied.
 
 This contract follows LangSmith's official
 [dataset management model](https://docs.langchain.com/langsmith/manage-datasets-in-application),
@@ -639,22 +640,23 @@ from a complete copied history.
 ### Identity, lineage, and conflict policy
 
 **A replica is identified by source namespace plus Dataset ID, never by name.** The
-destination catalog stores origin workspace/source, source dataset ID, fetched
-version, content digest, and transfer time outside the Dataset object. Dataset and
-Example IDs are preserved in local/archive replicas; names remain mutable lookup
-labels in the head and are deliberately excluded from immutable content identity.
-LangSmith's DatasetVersion freezes Example membership/content, while the Dataset
-envelope is observed at transfer time; the CLI does not claim a historical Dataset
-metadata API that LangSmith itself does not expose.
+destination catalog stores the current Dataset envelope plus fetched versions,
+content digests, and manifest digests. Dataset and Example IDs are preserved in
+local/archive replicas. LangSmith's DatasetVersion freezes Example
+membership/content and attachments; the complete Dataset envelope remains mutable
+head state and is deliberately excluded from immutable version identity. An
+archive/local `datasets get --as-of` validates that the requested version exists but
+returns the current Dataset envelope, because LangSmith exposes no historical
+Dataset-metadata API.
 
 | Situation | Decision |
 |---|---|
-| Pull same dataset/version again | Idempotent no-op after digest verification |
+| Pull same dataset/version again | Idempotent version no-op after digest verification; refresh mutable Dataset catalog state |
 | Pull a later version from the same lineage | Fast-forward; retain the older version and publish the new immutable head |
 | Pull an older version from the same lineage | Add the historical snapshot; do not move the current head backward |
 | Same name, different source Dataset ID | Keep as distinct datasets; ambiguous name lookup fails |
 | Destination head is not an ancestor of incoming version | Fail divergence; no example-by-example merge |
-| Same lineage and `as_of`, different canonical digest | Fail corruption/divergence; never choose one silently |
+| Same lineage and `as_of`, different canonical Example/attachment digest | Fail corruption/divergence; never choose one silently |
 | Example deleted in a newer version | Absent from that version, present when reading an older `as_of` version |
 | Source dataset later deleted | Existing local/archive replicas remain; deletion never propagates implicitly |
 
@@ -670,11 +672,11 @@ fast-forward replica.
 | Step | Required behavior |
 |---:|---|
 | 1 | Resolve the source dataset by ID/name and freeze an exact timestamp/tag target |
-| 2 | Read the full Dataset object, version/tag records, and all examples at that `as_of` |
-| 3 | Fetch attachment bytes, validate media/name/digest metadata, and reject expiring URLs as stored content |
+| 2 | Read the current Dataset catalog object, version/tag records, and all examples at that `as_of` |
+| 3 | Stream attachment bytes into bounded local staging, validate media/name/digest metadata, and reject expiring URLs as stored content |
 | 4 | Validate every strict SDK object and cross-reference Dataset/Example IDs |
-| 5 | Write content-addressed dataset/example Parquet, content-addressed attachment blobs, and one uniquely staged immutable manifest |
-| 6 | Verify object digests, then compare-and-swap the destination head; on contention, reread and merge independent versions |
+| 5 | Stream Examples through a disk-backed DuckDB staging table into content-addressed Parquet; stage content-addressed attachment blobs and one unique immutable manifest |
+| 6 | Authenticate the manifest digest from the head, verify object/canonical digests, then compare-and-swap the destination head; on contention, reread and merge independent versions and unique tag pointers |
 | 7 | Optionally materialize linked source traces as a separate, auditable phase |
 
 The dataset transaction is all-or-nothing. The optional trace phase has its own
@@ -691,10 +693,9 @@ reader:
 ```text
 <replica-root>/
   datasets/
-    heads/<dataset-id>.json
+    heads/<dataset-id>.json             # schema v2: current Dataset + versions
     <dataset-id>/versions/<sha256(as-of)>/
       objects/
-        dataset-<sha256>.parquet
         examples-<sha256>.parquet
       manifests/<publication-uuid>.json
     blobs/<attachment-sha256>
@@ -705,15 +706,21 @@ The head is the only reachability boundary. Writers may leave unreachable staged
 objects after losing a race, but they cannot overwrite the bytes selected by the
 winning head: Parquet/blob keys are content-addressed and manifests are unique.
 Local writes stream to an adjacent temporary file, `fsync`, and atomically replace
-the target. Readers verify every Parquet and attachment digest before deserializing.
+the target. Each head version stores the SHA-256 of its exact manifest bytes; readers
+verify that trust edge, the Parquet/blob digests, row counts, cross-references, and
+the canonical Example/attachment digest before constructing any SDK Example.
 
-Parquet remains the typed query format for Dataset/Example/version rows. Attachments
+Parquet remains the typed query format for immutable Example-version rows. The
+current strict Pydantic Dataset envelope and movable tag pointers live in the CAS
+head because they are mutable LangSmith catalog state. Attachments
 are content-addressed binary blobs because wrapping arbitrary media in Parquet would
-not reproduce LangSmith attachment semantics. `active.json` exposes only validated
-versions and attachment digests. Dataset names, version tags, attachment names, and
-raw timestamps are metadata only and never become path components. Archive uses the
-equivalent object layout with conditionally published manifests and durable
-retention; local uses the same logical schema without a durability promise. Local
+not reproduce LangSmith attachment semantics. Heads expose only authenticated
+manifests and validated versions. Dataset names, version tags, attachment names, and
+raw timestamps are metadata only and never become path components; all identity
+timestamps are canonical aware UTC. Publication uses 1,000-row Pydantic batches, a
+disk-backed DuckDB staging database, and a dataset-specific memory cap. Archive uses
+the equivalent object layout with conditionally published heads and durable
+retention; local uses the same schema without a durability promise. Local
 performs no automatic version, TTL, size, or attachment eviction; `datasets evict`
 removes the replica explicitly, and garbage collection deletes attachment blobs
 only when no visible version references their digest.
@@ -979,6 +986,11 @@ semantics, and warn-or-fail by explicit policy for insufficient coverage.
 | A newer version deletes an example | Destination union resurrects deleted data | Publish the exact new version; preserve deletion in latest and older `as_of` snapshot separately |
 | Same dataset name exists in two workspaces | Pull advances the wrong replica | Identity is source namespace plus Dataset ID; ambiguous names fail |
 | A version tag moves later | Previously copied evidence changes meaning | Resolve tag to exact `as_of` at pull time and record both tag and resolution |
+| One transferred version moves a tag already present at the destination | The tag becomes ambiguous | Synchronize the source tag map and enforce at most one owner per tag inside the head CAS |
+| Equivalent instants use different timezone offsets | One version is published twice and makes the head unreadable | Canonicalize every identity timestamp to aware UTC before comparison or keying |
+| Dataset metadata changes without a new DatasetVersion | A routine refresh is rejected as divergent | Keep the Dataset envelope as mutable head state; version digests cover stable Dataset ID plus Examples/attachments |
+| A manifest redirects one version to another valid Parquet object | Historical reads return plausible data from the wrong version | Authenticate exact manifest bytes from the CAS head and recompute canonical content on read |
+| A large Dataset is pulled | Multiple full Python copies exhaust the workstation before DuckDB batching | Stream SDK pages into bounded Pydantic batches and disk-backed DuckDB staging; stream attachments in fixed chunks |
 | SDK adds or changes a required field | Replica silently drops cloud semantics | Fail schema compatibility until explicit migration and round-trip fixture exist |
 | Backend compilers order ties differently | `--limit` returns different runs | Canonical ordering includes a stable run-ID tie-breaker |
 | Example filtering is pushed down differently | Cloud and DuckDB disagree on examples/splits | Shared typed semantics and cross-backend golden fixtures |
@@ -1010,9 +1022,10 @@ semantics, and warn-or-fail by explicit policy for insufficient coverage.
   coverage as a policy.
 - Comparison uses stable identities and canonical digests. A same-ID/different-row
   result is reported as divergence, not deduplicated or assigned an implicit winner.
-- Dataset replication freezes one exact LangSmith version and round-trips strict
-  Dataset/Example models. It never unions examples, infers a custom membership
-  model, or mutates the dataset to record companion trace status.
+- Dataset replication freezes one exact LangSmith Example/attachment version and
+  round-trips strict Pydantic Dataset/Example contracts. The Dataset envelope and
+  unique version tags remain mutable catalog state, matching LangSmith rather than
+  inventing historical metadata semantics.
 - Cloud is the dataset mutation authority initially. Archive/local fast-forward
   exact versions from the same lineage and reject divergence.
 - `source_run_id` is optional lineage. Dataset completeness and optional linked-trace
@@ -1133,13 +1146,13 @@ federation.**
 | S12 | `source_run_id` is optional lineage and never substitutes for copied trace content | Dataset/trace transfer boundary |
 | S13 | Pull/add preserves unrelated local traces; compaction preserves the logical trace inventory | Cache manager parity checks |
 | S14 | Attachment bytes and all historical dataset versions remain addressable for every published archive version | Dataset manifest validation |
-| S15 | `(Dataset ID, as_of)` identifies exactly one canonical Dataset/Example/attachment snapshot | Content digest comparison before idempotent return |
-| S16 | A published head references only complete immutable objects from one manifest, including under concurrent writers | Content-addressed objects, unique manifests, and head CAS |
+| S15 | `(Dataset ID, canonical UTC as_of)` identifies exactly one canonical Example/attachment snapshot; Dataset metadata remains mutable catalog state | Content digest comparison before idempotent return plus mutable Pydantic Dataset head payload |
+| S16 | A published head references only complete immutable objects from one authenticated manifest, including under concurrent writers | Content-addressed objects, unique manifests, manifest SHA-256, and head CAS |
 | S17 | Concurrent writers of independent versions merge by rereading the winning head; they never discard an already-published version | Bounded head-CAS retry loop |
 | S18 | Every replicated Example has the same `dataset_id` as its Dataset and example IDs are unique within a snapshot | Pre-publication cross-reference validation |
 | S19 | SDK contract additions/removals fail before read or publication rather than silently dropping fields | Runtime model-field-set assertion plus contract test |
-| S20 | Dataset names can change without changing stable Dataset identity or rewriting immutable version content | Mutable head label plus ID-based storage keys |
-| S21 | Catalog JSON, manifest cross-references, row counts, Dataset/Example IDs, and object digests are validated before SDK reconstruction | Replica schema and integrity boundary |
+| S20 | The complete Dataset envelope can change without changing stable Dataset identity or rewriting immutable version content | Mutable strict Pydantic head payload plus ID-based storage keys |
+| S21 | Catalog JSON, authenticated manifest cross-references, row counts, Dataset/Example IDs, canonical content, and object digests are validated before SDK reconstruction | Replica schema-v2 and integrity boundary |
 
 # Appendix B: resolved follow-up decisions
 

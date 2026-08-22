@@ -7,13 +7,12 @@ and the JSON-compatible payload stored in Parquet.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, TypedDict
 
 
-REPLICA_SCHEMA_VERSION = 1
+REPLICA_SCHEMA_VERSION = 2
 
 
 class ReplicaSource(str, Enum):
@@ -74,10 +73,7 @@ class VersionPayload(TypedDict):
 class SnapshotManifestPayload(TypedDict):
     schema_version: int
     dataset_id: str
-    dataset_name: str
     version: VersionPayload
-    dataset_key: str
-    dataset_sha256: str
     examples_key: str
     examples_sha256: str
     content_digest: str
@@ -89,53 +85,28 @@ class SnapshotManifestPayload(TypedDict):
 class HeadVersionPayload(TypedDict):
     as_of: str
     manifest_key: str
+    manifest_sha256: str
     tags: list[str] | None
 
 
 class DatasetHeadPayload(TypedDict):
     schema_version: int
     dataset_id: str
-    dataset_name: str
+    dataset: DatasetPayload
     latest_as_of: str
     versions: list[HeadVersionPayload]
 
 
-@dataclass(frozen=True)
-class AttachmentBlob:
-    payload: AttachmentPayload
-    content: bytes
-
-
-@dataclass(frozen=True)
-class SerializedExample:
-    payload: ExamplePayload
-    attachments: list[AttachmentPayload]
-    blobs: list[AttachmentBlob]
-
-
-@dataclass(frozen=True)
-class ReplicaWriteResult:
-    dataset_id: str
-    dataset_name: str
-    as_of: datetime
-    example_count: int
-    attachment_count: int
-    already_present: bool
-    destination_uri: str
-
-
-@dataclass(frozen=True)
-class ReplicaStatus:
-    dataset_id: str
-    dataset_name: str
-    latest_as_of: datetime
-    versions: int
-    source_uri: str
-
-
 def datetime_text(value: datetime | None) -> str | None:
-    return value.isoformat() if value is not None else None
+    if value is None:
+        return None
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("Replica timestamps must be timezone-aware")
+    return value.astimezone(timezone.utc).isoformat()
 
 
 def parse_datetime(value: str) -> datetime:
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError("Replica timestamps must be timezone-aware")
+    return parsed.astimezone(timezone.utc)

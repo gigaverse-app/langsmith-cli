@@ -59,7 +59,9 @@ langsmith-cli --json datasets get <dataset-id-or-name> [OPTIONS]
 **Options:**
 - `--source [cloud|archive|local]` - Read from one backend (default: `cloud`)
 - `--as-of TEXT` - Archive/local version tag or ISO timestamp (default: `latest`);
-  cloud Dataset metadata has no versioned read API, so non-latest cloud values fail
+  this validates replica version availability but returns the current mutable
+  Dataset catalog envelope; cloud Dataset metadata has no versioned read API, so
+  non-latest cloud values fail
 - `--archive-uri TEXT` - Archive root; defaults to `LANGSMITH_ARCHIVE_URI`
 - `--local-dir DIRECTORY` - Override the platform-local dataset cache
 - `--fields TEXT` - Comma-separated field names to include
@@ -75,8 +77,9 @@ langsmith-cli --json datasets get "ae99b6fa-a6db-4f1c-8868-bc6764f4c29e"
 ### `datasets pull`
 
 Copy exact, read-only dataset versions between backends. Cloud is the mutation
-authority; archive and local replicas preserve LangSmith `Dataset`, `Example`, and
-`DatasetVersion` fields in Parquet, with attachment bytes stored separately.
+authority; archive and local replicas preserve the current strict Pydantic `Dataset`
+catalog envelope plus exact `Example`/`DatasetVersion` state. Immutable Examples use
+Parquet and attachment bytes are stored separately.
 
 ```bash
 langsmith-cli --json datasets pull <dataset-id-or-name> --to local [OPTIONS]
@@ -101,10 +104,12 @@ langsmith-cli --json datasets pull my-evals --to archive --all-versions
 langsmith-cli --json datasets pull my-evals --source archive --to local
 ```
 
-Repeated pulls of the same exact version are idempotent only when the canonical
-Dataset/Example/attachment content matches; divergent content at the same timestamp
-fails. Parquet and attachments are content-addressed and digest-verified, while a
-compare-and-swap head safely merges concurrent pulls of independent versions. Use
+Repeated pulls of the same exact version are idempotent when canonical
+Example/attachment content matches; Dataset metadata refreshes independently in the
+mutable head. Divergent version content at the same canonical UTC timestamp fails.
+Parquet, attachments, and exact manifest bytes are digest-verified, while a
+compare-and-swap head safely merges concurrent versions and keeps each movable tag
+unique. Use
 `--archive-uri` when the command needs the archive; local data defaults to the OS
 cache directory.
 

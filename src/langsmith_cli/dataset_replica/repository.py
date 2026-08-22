@@ -7,18 +7,26 @@ from datetime import datetime, timezone
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import tempfile
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 from uuid import uuid4
 
 from langsmith_cli.archive.duckdb import (
     ARCHIVE_PARQUET_COPY_OPTIONS,
+    DuckConnection,
     archive_duckdb_connection,
 )
 from langsmith_cli.archive.storage import ArchiveStore, ConcurrentArchiveWriteError
+from langsmith_cli.dataset_replica.contracts import (
+    ReplicaStatus,
+    ReplicaWriteResult,
+    SerializedExample,
+    StagedAttachment,
+    StagedSnapshot,
+)
 from langsmith_cli.dataset_replica.models import (
-    AttachmentBlob,
     AttachmentPayload,
     DatasetHeadPayload,
     DatasetPayload,
@@ -26,9 +34,6 @@ from langsmith_cli.dataset_replica.models import (
     ExamplePayload,
     HeadVersionPayload,
     REPLICA_SCHEMA_VERSION,
-    ReplicaStatus,
-    ReplicaWriteResult,
-    SerializedExample,
     SnapshotManifestPayload,
     VersionPayload,
     datetime_text,
@@ -47,19 +52,20 @@ if TYPE_CHECKING:
 HEADS_PREFIX = "datasets/heads"
 BLOBS_PREFIX = "datasets/blobs"
 MAX_HEAD_PUBLICATION_ATTEMPTS = 16
-DUCKDB_INSERT_BATCH_SIZE = 10_000
-HEAD_KEYS = frozenset(
-    {"schema_version", "dataset_id", "dataset_name", "latest_as_of", "versions"}
+DUCKDB_INSERT_BATCH_SIZE = 1_000
+DATASET_REPLICA_DUCKDB_MEMORY_LIMIT = "256 MiB"
+DATASET_REPLICA_DUCKDB_MEMORY_LIMIT_ENV = (
+    "LANGSMITH_DATASET_REPLICA_DUCKDB_MEMORY_LIMIT"
 )
-HEAD_VERSION_KEYS = frozenset({"as_of", "manifest_key", "tags"})
+HEAD_KEYS = frozenset(
+    {"schema_version", "dataset_id", "dataset", "latest_as_of", "versions"}
+)
+HEAD_VERSION_KEYS = frozenset({"as_of", "manifest_key", "manifest_sha256", "tags"})
 MANIFEST_KEYS = frozenset(
     {
         "schema_version",
         "dataset_id",
-        "dataset_name",
         "version",
-        "dataset_key",
-        "dataset_sha256",
         "examples_key",
         "examples_sha256",
         "content_digest",
@@ -99,6 +105,7 @@ EXAMPLE_PAYLOAD_KEYS = frozenset(
     }
 )
 ATTACHMENT_KEYS = frozenset({"name", "mime_type", "digest", "size"})
+ATTACHMENT_READ_CHUNK_SIZE = 1024 * 1024
 
 DATASET_SDK_FIELDS = frozenset(
     {
@@ -162,6 +169,14 @@ class DatasetReplicaConfigurationError(DatasetReplicaError):
     """A replica location is missing required local/archive configuration."""
 
 
+class _BinaryReader(Protocol):
+    def read(self, size: int = -1) -> bytes: ...
+
+
+class _Digest(Protocol):
+    def update(self, content: bytes, /) -> None: ...
+
+
 class DatasetReplicaRepository:
     """Read and atomically publish exact dataset versions in one object store."""
 
@@ -182,27 +197,6 @@ class DatasetReplicaRepository:
         dataset_payload = _serialize_dataset(dataset)
         version_payload = _serialize_version(version)
         dataset_id = dataset_payload["id"]
-        serialized_examples = [_serialize_example(example) for example in examples]
-        _validate_example_membership(dataset_id, serialized_examples)
-        content_digest = _snapshot_content_digest(dataset_payload, serialized_examples)
-
-        # Fast idempotence path. Content is serialized and hashed before this
-        # check: `(dataset_id, as_of)` is an immutable identity, not merely a
-        # convenient object-store prefix.
-        existing = self._publish_head(
-            dataset_payload=dataset_payload,
-            version=version,
-            version_payload=version_payload,
-            manifest_key=None,
-            content_digest=content_digest,
-            example_count=len(serialized_examples),
-            attachment_count=sum(
-                len(example.attachments) for example in serialized_examples
-            ),
-        )
-        if existing is not None:
-            return existing
-
         version_token = hashlib.sha256(
             version_payload["as_of"].encode("utf-8")
         ).hexdigest()
@@ -210,80 +204,81 @@ class DatasetReplicaRepository:
 
         with tempfile.TemporaryDirectory(prefix="langsmith-dataset-replica-") as raw:
             staging = Path(raw)
-            dataset_path = staging / "dataset.parquet"
             examples_path = staging / "examples.parquet"
-            _write_dataset_parquet(dataset_path, dataset_payload)
-            _write_examples_parquet(examples_path, serialized_examples)
-            dataset_sha256 = _file_sha256(dataset_path)
+            staged = _write_examples_parquet(
+                examples_path,
+                examples,
+                dataset_id=dataset_id,
+                attachment_directory=staging / "attachments",
+            )
+
+            # Idempotence is decided only after the streamed input has one
+            # canonical digest. Dataset catalog fields deliberately do not
+            # participate: LangSmith versions Example state, not Dataset metadata.
+            existing = self._publish_head(
+                dataset_payload=dataset_payload,
+                version=version,
+                version_payload=version_payload,
+                manifest_key=None,
+                manifest_sha256=None,
+                content_digest=staged.content_digest,
+                example_count=staged.example_count,
+                attachment_count=staged.attachment_count,
+            )
+            if existing is not None:
+                return existing
+
             examples_sha256 = _file_sha256(examples_path)
-            dataset_key = f"{version_prefix}/objects/dataset-{dataset_sha256}.parquet"
             examples_key = (
                 f"{version_prefix}/objects/examples-{examples_sha256}.parquet"
             )
             # Content-addressed objects are immutable. Reusing an existing key is
             # safe because equal SHA-256 keys imply equal publication bytes.
             self._put_file_if_absent_verified(
-                dataset_key,
-                dataset_path,
-                dataset_sha256,
-                staging / "existing-dataset.parquet",
-            )
-            self._put_file_if_absent_verified(
                 examples_key,
                 examples_path,
                 examples_sha256,
                 staging / "existing-examples.parquet",
             )
+            for digest, attachment in staged.attachments.items():
+                self._put_file_if_absent_verified(
+                    f"{BLOBS_PREFIX}/{digest}",
+                    attachment.path,
+                    digest,
+                    staging / f"existing-attachment-{digest}",
+                )
 
-        unique_blobs: dict[str, AttachmentBlob] = {}
-        for example in serialized_examples:
-            for blob in example.blobs:
-                unique_blobs[blob.payload["digest"]] = blob
-        for digest, blob in unique_blobs.items():
-            blob_key = f"{BLOBS_PREFIX}/{digest}"
-            if self._store.exists(blob_key):
-                existing_content = self._store.get_bytes(blob_key)
-                if _bytes_sha256(existing_content) != digest:
-                    raise DatasetReplicaIntegrityError(
-                        f"Replica attachment digest mismatch: {blob_key}"
-                    )
-            else:
-                self._store.put_bytes(blob_key, blob.content)
-
-        attachment_count = sum(
-            len(example.attachments) for example in serialized_examples
-        )
-        # Manifests are immutable and uniquely staged. Only the head CAS below
-        # makes one complete manifest reachable; losing writers leave harmless
-        # unreachable objects rather than mutating a winner's snapshot.
-        manifest_key = f"{version_prefix}/manifests/{uuid4().hex}.json"
-        manifest: SnapshotManifestPayload = {
-            "schema_version": REPLICA_SCHEMA_VERSION,
-            "dataset_id": dataset_id,
-            "dataset_name": dataset_payload["name"],
-            "version": version_payload,
-            "dataset_key": dataset_key,
-            "dataset_sha256": dataset_sha256,
-            "examples_key": examples_key,
-            "examples_sha256": examples_sha256,
-            "content_digest": content_digest,
-            "example_count": len(serialized_examples),
-            "attachment_count": attachment_count,
-            "published_at": datetime.now(timezone.utc).isoformat(),
-        }
-        self._store.put_text(manifest_key, _json_text(manifest))
-        result = self._publish_head(
-            dataset_payload=dataset_payload,
-            version=version,
-            version_payload=version_payload,
-            manifest_key=manifest_key,
-            content_digest=content_digest,
-            example_count=len(serialized_examples),
-            attachment_count=attachment_count,
-        )
-        if result is None:
-            raise DatasetReplicaError("Dataset head publication made no progress")
-        return result
+            # The CAS head authenticates these immutable manifest bytes. A valid
+            # Parquet object cannot be substituted into another version by editing
+            # only its manifest.
+            manifest_key = f"{version_prefix}/manifests/{uuid4().hex}.json"
+            manifest: SnapshotManifestPayload = {
+                "schema_version": REPLICA_SCHEMA_VERSION,
+                "dataset_id": dataset_id,
+                "version": version_payload,
+                "examples_key": examples_key,
+                "examples_sha256": examples_sha256,
+                "content_digest": staged.content_digest,
+                "example_count": staged.example_count,
+                "attachment_count": staged.attachment_count,
+                "published_at": datetime.now(timezone.utc).isoformat(),
+            }
+            manifest_text = _json_text(manifest)
+            manifest_sha256 = _bytes_sha256(manifest_text.encode("utf-8"))
+            self._store.put_text(manifest_key, manifest_text)
+            result = self._publish_head(
+                dataset_payload=dataset_payload,
+                version=version,
+                version_payload=version_payload,
+                manifest_key=manifest_key,
+                manifest_sha256=manifest_sha256,
+                content_digest=staged.content_digest,
+                example_count=staged.example_count,
+                attachment_count=staged.attachment_count,
+            )
+            if result is None:
+                raise DatasetReplicaError("Dataset head publication made no progress")
+            return result
 
     def _publish_head(
         self,
@@ -292,6 +287,7 @@ class DatasetReplicaRepository:
         version: DatasetVersion,
         version_payload: VersionPayload,
         manifest_key: str | None,
+        manifest_sha256: str | None,
         content_digest: str,
         example_count: int,
         attachment_count: int,
@@ -317,16 +313,21 @@ class DatasetReplicaRepository:
                         )
                     if (
                         item["tags"] != version_payload["tags"]
-                        or old_head["dataset_name"] != dataset_payload["name"]
+                        or old_head["dataset"] != dataset_payload
                     ):
-                        versions = [dict(value) for value in old_head["versions"]]
-                        for updated_item in versions:
-                            if updated_item["as_of"] == version_payload["as_of"]:
-                                updated_item["tags"] = version_payload["tags"]
+                        versions = [
+                            cast(HeadVersionPayload, dict(value))
+                            for value in old_head["versions"]
+                        ]
+                        _set_version_tags(
+                            versions,
+                            version_payload["as_of"],
+                            version_payload["tags"],
+                        )
                         updated_head: DatasetHeadPayload = {
                             **old_head,
-                            "dataset_name": dataset_payload["name"],
-                            "versions": cast(list[HeadVersionPayload], versions),
+                            "dataset": dataset_payload,
+                            "versions": versions,
                         }
                         try:
                             self._store.put_text_if_version(
@@ -348,19 +349,32 @@ class DatasetReplicaRepository:
 
             if manifest_key is None:
                 return None
-            versions = [] if old_head is None else list(old_head["versions"])
+            if manifest_sha256 is None:
+                raise DatasetReplicaError("New manifest publication requires a digest")
+            versions: list[HeadVersionPayload] = (
+                []
+                if old_head is None
+                else [
+                    cast(HeadVersionPayload, dict(value))
+                    for value in old_head["versions"]
+                ]
+            )
             versions.append(
                 HeadVersionPayload(
                     as_of=version_payload["as_of"],
                     manifest_key=manifest_key,
-                    tags=version_payload["tags"],
+                    manifest_sha256=manifest_sha256,
+                    tags=None,
                 )
+            )
+            _set_version_tags(
+                versions, version_payload["as_of"], version_payload["tags"]
             )
             versions.sort(key=lambda item: parse_datetime(item["as_of"]))
             head: DatasetHeadPayload = {
                 "schema_version": REPLICA_SCHEMA_VERSION,
                 "dataset_id": dataset_id,
-                "dataset_name": dataset_payload["name"],
+                "dataset": dataset_payload,
                 "latest_as_of": versions[-1]["as_of"],
                 "versions": versions,
             }
@@ -403,11 +417,11 @@ class DatasetReplicaRepository:
 
     def read_dataset(self, name_or_id: str, as_of: str | None = None) -> Dataset:
         head = self._resolve_head(name_or_id)
-        manifest = self._resolve_manifest(head, as_of)
-        dataset = self._read_dataset(manifest)
-        # Dataset names are mutable lookup labels in LangSmith, not replica
-        # identities. The head carries the newest label for every exact version.
-        return dataset.model_copy(update={"name": head["dataset_name"]})
+        # Dataset metadata is mutable catalog state in LangSmith. `as_of` selects
+        # and validates Example-version availability but never invents historical
+        # Dataset-envelope semantics that the cloud API does not provide.
+        self._resolve_manifest(head, as_of)
+        return self._read_dataset_from_head(head)
 
     def list_versions(self, name_or_id: str) -> list[DatasetVersion]:
         from langsmith.schemas import DatasetVersion
@@ -425,7 +439,10 @@ class DatasetReplicaRepository:
         self, dataset_id: str, versions: Iterable[DatasetVersion]
     ) -> None:
         """Refresh mutable tag pointers without rewriting immutable snapshots."""
-        tags_by_time = {version.as_of.isoformat(): version.tags for version in versions}
+        tags_by_time = {
+            _datetime_text_required(version.as_of): version.tags for version in versions
+        }
+        _validate_unique_tag_mapping(tags_by_time)
         for _attempt in range(MAX_HEAD_PUBLICATION_ATTEMPTS):
             head, expected_version = self._read_head_for_update(dataset_id)
             if head is None:
@@ -435,6 +452,20 @@ class DatasetReplicaRepository:
                 as_of = item["as_of"]
                 if as_of in tags_by_time and item["tags"] != tags_by_time[as_of]:
                     item["tags"] = tags_by_time[as_of]
+                    changed = True
+            source_tags = {
+                tag
+                for tags in tags_by_time.values()
+                if tags is not None
+                for tag in tags
+            }
+            for item in head["versions"]:
+                if item["as_of"] in tags_by_time or item["tags"] is None:
+                    continue
+                retained = [tag for tag in item["tags"] if tag not in source_tags]
+                next_tags = retained or None
+                if next_tags != item["tags"]:
+                    item["tags"] = next_tags
                     changed = True
             if not changed:
                 return
@@ -459,9 +490,25 @@ class DatasetReplicaRepository:
         as_of: str | None = None,
         include_attachments: bool = False,
     ) -> list[Example]:
+        return list(
+            self.iter_examples(
+                name_or_id,
+                as_of=as_of,
+                include_attachments=include_attachments,
+            )
+        )
+
+    def iter_examples(
+        self,
+        name_or_id: str,
+        *,
+        as_of: str | None = None,
+        include_attachments: bool = False,
+    ) -> Iterable[Example]:
+        """Validate one immutable snapshot, then stream its SDK Examples."""
         head = self._resolve_head(name_or_id)
         manifest = self._resolve_manifest(head, as_of)
-        return self._read_examples(manifest, include_attachments=include_attachments)
+        return self._iter_examples(manifest, include_attachments=include_attachments)
 
     def read_example(
         self,
@@ -479,7 +526,7 @@ class DatasetReplicaRepository:
                 # Absence of the requested version in one dataset says nothing
                 # about whether another dataset contains the requested example.
                 continue
-            for example in self._read_examples(
+            for example in self._iter_examples(
                 manifest, include_attachments=include_attachments
             ):
                 if str(example.id) == example_id:
@@ -496,7 +543,7 @@ class DatasetReplicaRepository:
         return [
             ReplicaStatus(
                 dataset_id=head["dataset_id"],
-                dataset_name=head["dataset_name"],
+                dataset_name=head["dataset"]["name"],
                 latest_as_of=parse_datetime(head["latest_as_of"]),
                 versions=len(head["versions"]),
                 source_uri=self.base_uri,
@@ -515,7 +562,7 @@ class DatasetReplicaRepository:
         heads = [
             head
             for head in self._list_heads()
-            if head["dataset_id"] == name_or_id or head["dataset_name"] == name_or_id
+            if head["dataset_id"] == name_or_id or head["dataset"]["name"] == name_or_id
         ]
         if not heads:
             raise DatasetReplicaNotFoundError(f"Dataset not found: {name_or_id}")
@@ -554,43 +601,17 @@ class DatasetReplicaRepository:
         raise DatasetReplicaNotFoundError(f"Dataset version not found: {as_of}")
 
     def _read_dataset_from_head(self, head: DatasetHeadPayload) -> Dataset:
-        dataset = self._read_dataset(self._resolve_manifest(head, None))
-        return dataset.model_copy(update={"name": head["dataset_name"]})
-
-    def _read_dataset(self, manifest: SnapshotManifestPayload) -> Dataset:
         from langsmith.schemas import Dataset
 
         _assert_sdk_contract()
-        with tempfile.TemporaryDirectory(prefix="langsmith-dataset-read-") as raw:
-            path = Path(raw) / "dataset.parquet"
-            self._download_verified(
-                manifest["dataset_key"], manifest["dataset_sha256"], path
-            )
-            with archive_duckdb_connection() as connection:
-                rows = connection.execute(
-                    "SELECT payload_json FROM read_parquet(?)", [str(path)]
-                ).fetchall()
-        if len(rows) != 1:
-            raise DatasetReplicaIntegrityError(
-                f"Dataset Parquet must contain exactly one row: {manifest['dataset_key']}"
-            )
-        payload = _parse_dataset_payload(rows[0][0])
-        if payload["id"] != manifest["dataset_id"]:
-            raise DatasetReplicaIntegrityError(
-                "Dataset Parquet ID does not match its manifest dataset ID"
-            )
-        if payload["name"] != manifest["dataset_name"]:
-            raise DatasetReplicaIntegrityError(
-                "Dataset Parquet name does not match its immutable manifest"
-            )
-        return Dataset(**payload)
+        return Dataset(**head["dataset"])
 
-    def _read_examples(
+    def _iter_examples(
         self,
         manifest: SnapshotManifestPayload,
         *,
         include_attachments: bool,
-    ) -> list[Example]:
+    ) -> Iterable[Example]:
         from langsmith.schemas import Example
 
         _assert_sdk_contract()
@@ -600,43 +621,28 @@ class DatasetReplicaRepository:
                 manifest["examples_key"], manifest["examples_sha256"], path
             )
             with archive_duckdb_connection() as connection:
-                rows = connection.execute(
+                _validate_examples_relation(connection, path, manifest)
+                cursor = connection.execute(
                     "SELECT payload_json, attachments_json "
                     "FROM read_parquet(?) ORDER BY created_at, id",
                     [str(path)],
-                ).fetchall()
-        result: list[Example] = []
-        attachment_count = 0
-        for payload_text, attachments_text in rows:
-            payload = _parse_example_payload(payload_text)
-            if payload["dataset_id"] != manifest["dataset_id"]:
-                raise DatasetReplicaIntegrityError(
-                    "Example dataset ID does not match its manifest dataset ID"
                 )
-            attachments_payload = _parse_attachments(attachments_text)
-            attachment_count += len(attachments_payload)
-            attachments = None
-            if include_attachments and attachments_payload:
-                attachments = {
-                    item["name"]: {
-                        "presigned_url": self._store.object_uri(
-                            f"{BLOBS_PREFIX}/{item['digest']}"
-                        ),
-                        "reader": io.BytesIO(self._read_attachment(item)),
-                        "mime_type": item["mime_type"],
-                    }
-                    for item in attachments_payload
-                }
-            result.append(Example(**payload, attachments=attachments))
-        if len(result) != manifest["example_count"]:
-            raise DatasetReplicaIntegrityError(
-                "Replica example count does not match its manifest"
-            )
-        if attachment_count != manifest["attachment_count"]:
-            raise DatasetReplicaIntegrityError(
-                "Replica attachment count does not match its manifest"
-            )
-        return result
+                for payload_text, attachments_text in _fetch_example_rows(cursor):
+                    payload = _parse_example_payload(payload_text)
+                    attachments_payload = _parse_attachments(attachments_text)
+                    attachments = None
+                    if include_attachments and attachments_payload:
+                        attachments = {
+                            attachment["name"]: {
+                                "presigned_url": self._store.object_uri(
+                                    f"{BLOBS_PREFIX}/{attachment['digest']}"
+                                ),
+                                "reader": io.BytesIO(self._read_attachment(attachment)),
+                                "mime_type": attachment["mime_type"],
+                            }
+                            for attachment in attachments_payload
+                        }
+                    yield Example(**payload, attachments=attachments)
 
     def _download_verified(
         self, key: str, expected_sha256: str, destination: Path
@@ -658,13 +664,15 @@ class DatasetReplicaRepository:
             )
         return content
 
-    def _read_manifest(self, key: str) -> SnapshotManifestPayload:
-        return _parse_manifest(self._store.get_text(key))
-
     def _read_manifest_for_head(
         self, head: DatasetHeadPayload, item: HeadVersionPayload
     ) -> SnapshotManifestPayload:
-        manifest = self._read_manifest(item["manifest_key"])
+        manifest_text = self._store.get_text(item["manifest_key"])
+        if _bytes_sha256(manifest_text.encode("utf-8")) != item["manifest_sha256"]:
+            raise DatasetReplicaIntegrityError(
+                f"Replica manifest digest mismatch: {item['manifest_key']}"
+            )
+        manifest = _parse_manifest(manifest_text)
         if manifest["dataset_id"] != head["dataset_id"]:
             raise DatasetReplicaIntegrityError(
                 "Dataset head references a manifest with a different dataset ID"
@@ -697,7 +705,7 @@ def _serialize_dataset(dataset: Dataset) -> DatasetPayload:
         "description": dataset.description,
         "data_type": data_type,
         "id": str(dataset.id),
-        "created_at": dataset.created_at.isoformat(),
+        "created_at": _datetime_text_required(dataset.created_at),
         "modified_at": datetime_text(dataset.modified_at),
         "example_count": dataset.example_count,
         "session_count": dataset.session_count,
@@ -721,39 +729,80 @@ def _serialize_transformation(
 
 
 def _serialize_version(version: DatasetVersion) -> VersionPayload:
-    return {"tags": version.tags, "as_of": version.as_of.isoformat()}
+    return {"tags": version.tags, "as_of": _datetime_text_required(version.as_of)}
 
 
-def _serialize_example(example: Example) -> SerializedExample:
+def _serialize_example(
+    example: Example,
+    attachment_directory: Path,
+) -> tuple[SerializedExample, dict[str, StagedAttachment]]:
     payload: ExamplePayload = {
         "id": str(example.id),
         "dataset_id": str(example.dataset_id),
         "inputs": example.inputs,
         "outputs": example.outputs,
         "metadata": example.metadata,
-        "created_at": example.created_at.isoformat(),
+        "created_at": _datetime_text_required(example.created_at),
         "modified_at": datetime_text(example.modified_at),
         "source_run_id": (
             str(example.source_run_id) if example.source_run_id is not None else None
         ),
     }
     attachments: list[AttachmentPayload] = []
-    blobs: list[AttachmentBlob] = []
+    blobs: dict[str, StagedAttachment] = {}
     if example.attachments is not None:
         for name, attachment in sorted(example.attachments.items()):
-            content = attachment["reader"].read()
-            if not isinstance(content, bytes):
-                raise DatasetReplicaError("Attachment reader must return bytes")
-            digest = hashlib.sha256(content).hexdigest()
+            digest, size, path = _stage_attachment(
+                cast(_BinaryReader, attachment["reader"]), attachment_directory
+            )
             attachment_payload: AttachmentPayload = {
                 "name": name,
                 "mime_type": attachment["mime_type"],
                 "digest": digest,
-                "size": len(content),
+                "size": size,
             }
             attachments.append(attachment_payload)
-            blobs.append(AttachmentBlob(payload=attachment_payload, content=content))
-    return SerializedExample(payload=payload, attachments=attachments, blobs=blobs)
+            blobs[digest] = StagedAttachment(
+                path=path,
+            )
+    return SerializedExample(payload=payload, attachments=attachments), blobs
+
+
+def _stage_attachment(reader: _BinaryReader, directory: Path) -> tuple[str, int, Path]:
+    """Spool one attachment with RAM bounded by the fixed read chunk."""
+    directory.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w+b",
+            dir=directory,
+            prefix="attachment-",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary:
+            temporary_path = Path(temporary.name)
+            while True:
+                chunk = reader.read(ATTACHMENT_READ_CHUNK_SIZE)
+                if not isinstance(chunk, bytes):
+                    raise DatasetReplicaError("Attachment reader must return bytes")
+                if not chunk:
+                    break
+                temporary.write(chunk)
+                digest.update(chunk)
+                size += len(chunk)
+        digest_text = digest.hexdigest()
+        final_path = directory / digest_text
+        if final_path.exists():
+            temporary_path.unlink()
+        else:
+            os.replace(temporary_path, final_path)
+        temporary_path = None
+        return digest_text, size, final_path
+    finally:
+        if temporary_path is not None and temporary_path.exists():
+            temporary_path.unlink()
 
 
 def _assert_sdk_contract() -> None:
@@ -793,82 +842,210 @@ def _assert_sdk_fields(
         )
 
 
-def _validate_example_membership(
-    dataset_id: str, examples: list[SerializedExample]
-) -> None:
-    seen: set[str] = set()
-    for example in examples:
-        example_id = example.payload["id"]
-        if example.payload["dataset_id"] != dataset_id:
-            raise DatasetReplicaConflictError(
-                f"Example {example_id} belongs to dataset "
-                f"{example.payload['dataset_id']}, not {dataset_id}"
-            )
-        if example_id in seen:
-            raise DatasetReplicaConflictError(
-                f"Snapshot contains duplicate example ID: {example_id}"
-            )
-        seen.add(example_id)
-
-
-def _snapshot_content_digest(
-    dataset: DatasetPayload, examples: list[SerializedExample]
-) -> str:
-    # Names are mutable lookup labels. Stable Dataset ID plus the remaining
-    # strict Dataset fields and exact examples define immutable version content.
-    canonical_dataset = {key: value for key, value in dataset.items() if key != "name"}
-    canonical_examples = sorted(
-        (
-            {"payload": example.payload, "attachments": example.attachments}
-            for example in examples
-        ),
-        key=lambda item: item["payload"]["id"],
-    )
-    return _bytes_sha256(
-        _json_text(
-            {"dataset": canonical_dataset, "examples": canonical_examples}
-        ).encode("utf-8")
-    )
-
-
-def _write_dataset_parquet(path: Path, payload: DatasetPayload) -> None:
-    with archive_duckdb_connection() as connection:
-        connection.execute("CREATE TABLE dataset (payload_json VARCHAR NOT NULL)")
-        connection.execute("INSERT INTO dataset VALUES (?)", [_json_text(payload)])
+def _write_examples_parquet(
+    path: Path,
+    examples: Iterable[Example],
+    *,
+    dataset_id: str,
+    attachment_directory: Path,
+) -> StagedSnapshot:
+    with archive_duckdb_connection(
+        path.parent,
+        database_path=path.parent / "dataset-replica.duckdb",
+    ) as connection:
+        # Dataset ingestion is a streaming CLI workload, not the wide trace
+        # canonicalization workload that needs the archive-wide 1 GiB default.
+        # A smaller, independently configurable cap keeps local pulls practical.
         connection.execute(
-            f"COPY dataset TO {_sql_literal(path)} " + ARCHIVE_PARQUET_COPY_OPTIONS
+            "SET memory_limit = ?", [_dataset_replica_duckdb_memory_limit()]
         )
-
-
-def _write_examples_parquet(path: Path, examples: list[SerializedExample]) -> None:
-    with archive_duckdb_connection() as connection:
         connection.execute(
             "CREATE TABLE examples ("
-            "id UUID NOT NULL, created_at TIMESTAMPTZ NOT NULL, "
+            "id UUID PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL, "
             "payload_json VARCHAR NOT NULL, attachments_json VARCHAR NOT NULL)"
         )
-        ordered = sorted(
-            examples,
-            key=lambda item: (item.payload["created_at"], item.payload["id"]),
-        )
-        for start in range(0, len(ordered), DUCKDB_INSERT_BATCH_SIZE):
-            batch = ordered[start : start + DUCKDB_INSERT_BATCH_SIZE]
-            # Bind one typed array per column to avoid one Python↔DuckDB call per
-            # Example while bounding each parameter batch's memory footprint.
-            connection.execute(
-                "INSERT INTO examples SELECT "
-                "unnest(?::UUID[]), unnest(?::TIMESTAMPTZ[]), "
-                "unnest(?::VARCHAR[]), unnest(?::VARCHAR[])",
-                [
-                    [example.payload["id"] for example in batch],
-                    [example.payload["created_at"] for example in batch],
-                    [_json_text(example.payload) for example in batch],
-                    [_json_text(example.attachments) for example in batch],
-                ],
+        batch: list[SerializedExample] = []
+        attachments: dict[str, StagedAttachment] = {}
+        example_count = 0
+        attachment_count = 0
+        for example in examples:
+            serialized, staged_attachments = _serialize_example(
+                example, attachment_directory
             )
+            example_id = serialized.payload["id"]
+            if serialized.payload["dataset_id"] != dataset_id:
+                raise DatasetReplicaConflictError(
+                    f"Example {example_id} belongs to dataset "
+                    f"{serialized.payload['dataset_id']}, not {dataset_id}"
+                )
+            batch.append(serialized)
+            attachments.update(staged_attachments)
+            example_count += 1
+            attachment_count += len(serialized.attachments)
+            if len(batch) == DUCKDB_INSERT_BATCH_SIZE:
+                _insert_example_batch(connection, batch)
+                batch.clear()
+        if batch:
+            _insert_example_batch(connection, batch)
         connection.execute(
             f"COPY examples TO {_sql_literal(path)} " + ARCHIVE_PARQUET_COPY_OPTIONS
         )
+        cursor = connection.execute(
+            "SELECT payload_json, attachments_json FROM examples ORDER BY id"
+        )
+        content_digest = _snapshot_content_digest_from_rows(
+            dataset_id, _fetch_example_rows(cursor)
+        )
+    return StagedSnapshot(
+        example_count=example_count,
+        attachment_count=attachment_count,
+        content_digest=content_digest,
+        attachments=attachments,
+    )
+
+
+def _insert_example_batch(
+    connection: DuckConnection, batch: list[SerializedExample]
+) -> None:
+    from duckdb import ConstraintException
+
+    try:
+        connection.execute(
+            "INSERT INTO examples SELECT "
+            "unnest(?::UUID[]), unnest(?::TIMESTAMPTZ[]), "
+            "unnest(?::VARCHAR[]), unnest(?::VARCHAR[])",
+            [
+                [example.payload["id"] for example in batch],
+                [example.payload["created_at"] for example in batch],
+                [_json_text(example.payload) for example in batch],
+                [_json_text(example.attachments) for example in batch],
+            ],
+        )
+    except ConstraintException as exc:
+        raise DatasetReplicaConflictError(
+            "Snapshot contains duplicate example ID"
+        ) from exc
+
+
+def _fetch_example_rows(cursor: DuckConnection) -> Iterable[tuple[str, str]]:
+    while rows := cursor.fetchmany(DUCKDB_INSERT_BATCH_SIZE):
+        yield from cast(list[tuple[str, str]], rows)
+
+
+def _validate_examples_relation(
+    connection: DuckConnection,
+    path: Path,
+    manifest: SnapshotManifestPayload,
+) -> None:
+    """Validate all version invariants before yielding any SDK Example."""
+    cursor = connection.execute(
+        "SELECT payload_json, attachments_json FROM read_parquet(?) ORDER BY id",
+        [str(path)],
+    )
+    digest = hashlib.sha256()
+    _update_digest_part(digest, manifest["dataset_id"])
+    example_count = 0
+    attachment_count = 0
+    previous_id: str | None = None
+    for payload_text, attachments_text in _fetch_example_rows(cursor):
+        payload = _parse_example_payload(payload_text)
+        if payload["dataset_id"] != manifest["dataset_id"]:
+            raise DatasetReplicaIntegrityError(
+                "Example dataset ID does not match its manifest dataset ID"
+            )
+        if payload["id"] == previous_id:
+            raise DatasetReplicaIntegrityError(
+                f"Replica contains duplicate example ID: {payload['id']}"
+            )
+        previous_id = payload["id"]
+        attachments = _parse_attachments(attachments_text)
+        _update_digest_part(digest, _json_text(payload))
+        _update_digest_part(digest, _json_text(attachments))
+        example_count += 1
+        attachment_count += len(attachments)
+    if example_count != manifest["example_count"]:
+        raise DatasetReplicaIntegrityError(
+            "Replica example count does not match its manifest"
+        )
+    if attachment_count != manifest["attachment_count"]:
+        raise DatasetReplicaIntegrityError(
+            "Replica attachment count does not match its manifest"
+        )
+    if digest.hexdigest() != manifest["content_digest"]:
+        raise DatasetReplicaIntegrityError(
+            "Replica canonical content digest does not match its manifest"
+        )
+
+
+def _snapshot_content_digest_from_rows(
+    dataset_id: str, rows: Iterable[tuple[str, str]]
+) -> str:
+    digest = hashlib.sha256()
+    _update_digest_part(digest, dataset_id)
+    for payload_text, attachments_text in rows:
+        _update_digest_part(digest, payload_text)
+        _update_digest_part(digest, attachments_text)
+    return digest.hexdigest()
+
+
+def _update_digest_part(digest: _Digest, value: str) -> None:
+    encoded = value.encode("utf-8")
+    digest.update(len(encoded).to_bytes(8, "big"))
+    digest.update(encoded)
+
+
+def _datetime_text_required(value: datetime) -> str:
+    text = datetime_text(value)
+    if text is None:
+        raise ValueError("Replica timestamp is required")
+    return text
+
+
+def _dataset_replica_duckdb_memory_limit() -> str:
+    if DATASET_REPLICA_DUCKDB_MEMORY_LIMIT_ENV in os.environ:
+        configured = os.environ[DATASET_REPLICA_DUCKDB_MEMORY_LIMIT_ENV].strip()
+        if configured:
+            return configured
+    return DATASET_REPLICA_DUCKDB_MEMORY_LIMIT
+
+
+def _set_version_tags(
+    versions: list[HeadVersionPayload],
+    selected_as_of: str,
+    tags: list[str] | None,
+) -> None:
+    """Move incoming tag pointers atomically within one candidate head.
+
+    INVARIANT: each LangSmith tag resolves to at most one exact version. The
+    candidate head is still private here; the enclosing CAS publishes the tag
+    moves and version append as one metadata transition.
+    """
+    if tags is not None and len(tags) != len(set(tags)):
+        raise DatasetReplicaConflictError(
+            "Dataset version tags must not contain duplicates"
+        )
+    normalized_tags = None if not tags else list(tags)
+    incoming = set(normalized_tags or [])
+    for item in versions:
+        current = item["tags"] or []
+        if item["as_of"] == selected_as_of:
+            item["tags"] = normalized_tags
+            continue
+        retained = [tag for tag in current if tag not in incoming]
+        item["tags"] = retained or None
+
+
+def _validate_unique_tag_mapping(
+    tags_by_time: Mapping[str, list[str] | None],
+) -> None:
+    owner_by_tag: dict[str, str] = {}
+    for as_of, tags in tags_by_time.items():
+        for tag in tags or []:
+            if tag in owner_by_tag and owner_by_tag[tag] != as_of:
+                raise DatasetReplicaConflictError(
+                    f"Dataset version tag resolves to multiple versions: {tag}"
+                )
+            owner_by_tag[tag] = as_of
 
 
 def _sql_literal(path: Path) -> str:
@@ -909,8 +1086,15 @@ def _parse_head(text: str) -> DatasetHeadPayload:
     _require_exact_keys(raw, HEAD_KEYS, "Dataset head")
     if raw["schema_version"] != REPLICA_SCHEMA_VERSION:
         raise DatasetReplicaError("Unsupported dataset replica schema")
-    _require_string(raw["dataset_id"], "Dataset head dataset_id")
-    _require_string(raw["dataset_name"], "Dataset head dataset_name")
+    dataset_id = _require_string(raw["dataset_id"], "Dataset head dataset_id")
+    raw_dataset = raw["dataset"]
+    if not isinstance(raw_dataset, dict):
+        raise DatasetReplicaSchemaError("Dataset head dataset must be a JSON object")
+    dataset = _parse_dataset_payload_object(raw_dataset)
+    if dataset["id"] != dataset_id:
+        raise DatasetReplicaIntegrityError(
+            "Dataset head payload ID does not match its catalog identity"
+        )
     latest_as_of = _require_datetime_text(
         raw["latest_as_of"], "Dataset head latest_as_of"
     )
@@ -933,6 +1117,10 @@ def _parse_head(text: str) -> DatasetHeadPayload:
         _require_string(
             raw_version["manifest_key"], "Dataset head version manifest_key"
         )
+        _require_sha256(
+            raw_version["manifest_sha256"],
+            "Dataset head version manifest_sha256",
+        )
         _require_tags(raw_version["tags"], "Dataset head version tags")
         parsed_versions.append(cast(HeadVersionPayload, raw_version))
         version_times.append(as_of)
@@ -946,6 +1134,13 @@ def _parse_head(text: str) -> DatasetHeadPayload:
         raise DatasetReplicaSchemaError(
             "Dataset head latest_as_of must equal its newest version"
         )
+    try:
+        _validate_unique_tag_mapping(
+            {item["as_of"]: item["tags"] for item in parsed_versions}
+        )
+    except DatasetReplicaConflictError as exc:
+        raise DatasetReplicaSchemaError(str(exc)) from exc
+    raw["dataset"] = dataset
     raw["versions"] = parsed_versions
     return cast(DatasetHeadPayload, raw)
 
@@ -956,16 +1151,15 @@ def _parse_manifest(text: str) -> SnapshotManifestPayload:
     if raw["schema_version"] != REPLICA_SCHEMA_VERSION:
         raise DatasetReplicaError("Unsupported dataset replica schema")
     _require_string(raw["dataset_id"], "Dataset manifest dataset_id")
-    _require_string(raw["dataset_name"], "Dataset manifest dataset_name")
     raw_version = raw["version"]
     if not isinstance(raw_version, dict):
         raise DatasetReplicaSchemaError("Dataset manifest version must be an object")
     _require_exact_keys(raw_version, VERSION_KEYS, "Dataset manifest version")
     _require_datetime_text(raw_version["as_of"], "Dataset manifest version as_of")
     _require_tags(raw_version["tags"], "Dataset manifest version tags")
-    for field in ("dataset_key", "examples_key"):
+    for field in ("examples_key",):
         _require_string(raw[field], f"Dataset manifest {field}")
-    for field in ("dataset_sha256", "examples_sha256", "content_digest"):
+    for field in ("examples_sha256", "content_digest"):
         _require_sha256(raw[field], f"Dataset manifest {field}")
     for field in ("example_count", "attachment_count"):
         value = raw[field]
@@ -977,9 +1171,10 @@ def _parse_manifest(text: str) -> SnapshotManifestPayload:
     return cast(SnapshotManifestPayload, raw)
 
 
-def _parse_dataset_payload(text: str) -> DatasetPayload:
-    raw = _load_object(text, "Dataset payload")
+def _parse_dataset_payload_object(raw: dict[str, Any]) -> DatasetPayload:
     _require_exact_keys(raw, DATASET_PAYLOAD_KEYS, "Dataset payload")
+    _require_string(raw["id"], "Dataset payload id")
+    _require_string(raw["name"], "Dataset payload name")
     return cast(DatasetPayload, raw)
 
 
@@ -1032,9 +1227,14 @@ def _require_string(value: object, kind: str) -> str:
 def _require_datetime_text(value: object, kind: str) -> datetime:
     text = _require_string(value, kind)
     try:
-        return parse_datetime(text)
+        parsed = parse_datetime(text)
     except ValueError as exc:
-        raise DatasetReplicaSchemaError(f"{kind} must be an ISO timestamp") from exc
+        raise DatasetReplicaSchemaError(
+            f"{kind} must be a timezone-aware ISO timestamp"
+        ) from exc
+    if text != parsed.isoformat():
+        raise DatasetReplicaSchemaError(f"{kind} must use canonical UTC spelling")
+    return parsed
 
 
 def _require_tags(value: object, kind: str) -> None:
@@ -1042,6 +1242,8 @@ def _require_tags(value: object, kind: str) -> None:
         return
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         raise DatasetReplicaSchemaError(f"{kind} must be a string array or null")
+    if len(value) != len(set(value)):
+        raise DatasetReplicaSchemaError(f"{kind} must not contain duplicate tags")
 
 
 def _require_sha256(value: object, kind: str) -> str:

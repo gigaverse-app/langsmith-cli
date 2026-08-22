@@ -135,6 +135,10 @@ def list_examples(
             )
         )
     else:
+        from langsmith_cli.dataset_replica.repository import (
+            DatasetReplicaNotFoundError,
+        )
+
         if filter_ is not None:
             raise click.ClickException(
                 "--filter is currently available only for --source cloud"
@@ -151,13 +155,20 @@ def list_examples(
         )
         examples_list = []
         for dataset_ref in dataset_refs:
-            examples_list.extend(
-                repository.read_examples(
-                    dataset_ref,
-                    as_of=as_of,
-                    include_attachments=bool(include_attachments),
+            try:
+                examples_list.extend(
+                    repository.read_examples(
+                        dataset_ref,
+                        as_of=as_of,
+                        include_attachments=bool(include_attachments),
+                    )
                 )
-            )
+            except DatasetReplicaNotFoundError:
+                if dataset is not None:
+                    raise
+                # A global query spans independent histories. A version absent
+                # from one Dataset does not invalidate eligible peer histories.
+                continue
         if example_ids_list is not None:
             selected_ids = set(example_ids_list)
             examples_list = [e for e in examples_list if str(e.id) in selected_ids]

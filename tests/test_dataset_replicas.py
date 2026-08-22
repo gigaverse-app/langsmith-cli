@@ -95,6 +95,20 @@ def replica_example(
     )
 
 
+def _replace_manifest_and_head_digest(
+    store, head_key: str, manifest_index: int, manifest: dict
+) -> None:
+    """Test helper for reaching validation below the authenticated manifest."""
+    head = json.loads(store.get_text(head_key))
+    manifest_key = head["versions"][manifest_index]["manifest_key"]
+    manifest_text = json.dumps(manifest, sort_keys=True, separators=(",", ":"))
+    store.put_text(manifest_key, manifest_text)
+    head["versions"][manifest_index]["manifest_sha256"] = hashlib.sha256(
+        manifest_text.encode("utf-8")
+    ).hexdigest()
+    store.put_text(head_key, json.dumps(head, sort_keys=True, separators=(",", ":")))
+
+
 def test_repository_round_trips_sdk_models_and_attachment_bytes(tmp_path: Path):
     """INVARIANT: a replica preserves SDK fields and durable attachment bytes."""
     repository = DatasetReplicaRepository(create_store(str(tmp_path)))
@@ -185,6 +199,37 @@ def test_same_timestamp_rejects_different_snapshot_content(tmp_path: Path) -> No
     assert restored[0].inputs == {"question": "first"}
 
 
+def test_dataset_catalog_metadata_is_mutable_outside_version_identity(
+    tmp_path: Path,
+) -> None:
+    """INVARIANT: Dataset catalog state may change without rewriting a version."""
+    repository = DatasetReplicaRepository(create_store(str(tmp_path)))
+    version = DatasetVersion(tags=["prod"], as_of=VERSION_ONE)
+    repository.write_snapshot(
+        replica_dataset(), version, [replica_example(attachment=None)]
+    )
+    changed = replica_dataset().model_copy(
+        update={
+            "description": "Updated mutable catalog description",
+            "modified_at": VERSION_TWO + timedelta(days=1),
+        }
+    )
+
+    repeated = repository.write_snapshot(
+        changed, version, [replica_example(attachment=None)]
+    )
+
+    assert repeated.already_present is True
+    assert repository.read_dataset(str(DATASET_ID)).description == changed.description
+    assert (
+        repository.read_dataset(
+            str(DATASET_ID), as_of=VERSION_ONE.isoformat()
+        ).modified_at
+        == changed.modified_at
+    )
+    assert repository.read_examples(str(DATASET_ID))[0].inputs == {"question": "why?"}
+
+
 def test_snapshot_rejects_example_from_another_dataset(tmp_path: Path) -> None:
     """INVARIANT: every example in a snapshot belongs to its dataset ID."""
     repository = DatasetReplicaRepository(create_store(str(tmp_path)))
@@ -215,10 +260,10 @@ def test_corrupt_snapshot_artifact_fails_integrity_check(tmp_path: Path) -> None
     repository.write_snapshot(replica_dataset(), DatasetVersion(as_of=VERSION_ONE), [])
     head = json.loads(store.get_text(f"datasets/heads/{DATASET_ID}.json"))
     manifest = json.loads(store.get_text(head["versions"][0]["manifest_key"]))
-    store.put_bytes(manifest["dataset_key"], b"not parquet")
+    store.put_bytes(manifest["examples_key"], b"not parquet")
 
     with pytest.raises(DatasetReplicaIntegrityError, match="digest mismatch"):
-        repository.read_dataset(str(DATASET_ID))
+        repository.read_examples(str(DATASET_ID))
 
 
 def test_corrupt_attachment_fails_before_reader_is_returned(tmp_path: Path) -> None:
@@ -251,28 +296,55 @@ def test_manifest_cross_references_and_counts_are_enforced(tmp_path: Path) -> No
     manifest_key = head["versions"][0]["manifest_key"]
     manifest = json.loads(store.get_text(manifest_key))
     manifest["example_count"] = 2
-    store.put_text(manifest_key, json.dumps(manifest))
+    _replace_manifest_and_head_digest(store, head_key, 0, manifest)
 
     with pytest.raises(DatasetReplicaIntegrityError, match="example count"):
         repository.read_examples(str(DATASET_ID))
 
     manifest["dataset_id"] = "e4970850-07ca-460c-a1b9-5ea1ea2a60de"
-    store.put_text(manifest_key, json.dumps(manifest))
+    _replace_manifest_and_head_digest(store, head_key, 0, manifest)
     with pytest.raises(DatasetReplicaIntegrityError, match="dataset ID"):
         repository.read_dataset(str(DATASET_ID))
 
     manifest["dataset_id"] = str(DATASET_ID)
     manifest["version"]["as_of"] = VERSION_TWO.isoformat()
-    store.put_text(manifest_key, json.dumps(manifest))
+    _replace_manifest_and_head_digest(store, head_key, 0, manifest)
     with pytest.raises(DatasetReplicaIntegrityError, match="manifest version"):
         repository.read_dataset(str(DATASET_ID))
 
     manifest["version"]["as_of"] = VERSION_ONE.isoformat()
     manifest["example_count"] = 1
     manifest["attachment_count"] = 1
-    store.put_text(manifest_key, json.dumps(manifest))
+    _replace_manifest_and_head_digest(store, head_key, 0, manifest)
     with pytest.raises(DatasetReplicaIntegrityError, match="attachment count"):
         repository.read_examples(str(DATASET_ID))
+
+
+def test_head_authenticates_manifest_bytes(tmp_path: Path) -> None:
+    """INVARIANT: a version head authenticates the exact manifest it selected."""
+    store = create_store(str(tmp_path))
+    repository = DatasetReplicaRepository(store)
+    repository.write_snapshot(
+        replica_dataset(),
+        DatasetVersion(as_of=VERSION_ONE),
+        [replica_example(input_value="v1", attachment=None)],
+    )
+    repository.write_snapshot(
+        replica_dataset(),
+        DatasetVersion(as_of=VERSION_TWO),
+        [replica_example(input_value="v2", attachment=None)],
+    )
+    head = json.loads(store.get_text(f"datasets/heads/{DATASET_ID}.json"))
+    first_manifest_key = head["versions"][0]["manifest_key"]
+    second_manifest_key = head["versions"][1]["manifest_key"]
+    first_manifest = json.loads(store.get_text(first_manifest_key))
+    second_manifest = json.loads(store.get_text(second_manifest_key))
+    first_manifest["examples_key"] = second_manifest["examples_key"]
+    first_manifest["examples_sha256"] = second_manifest["examples_sha256"]
+    store.put_text(first_manifest_key, json.dumps(first_manifest))
+
+    with pytest.raises(DatasetReplicaIntegrityError, match="manifest digest"):
+        repository.read_examples(str(DATASET_ID), as_of=VERSION_ONE.isoformat())
 
 
 def test_malformed_head_fails_as_typed_schema_error(tmp_path: Path) -> None:
@@ -282,9 +354,9 @@ def test_malformed_head_fails_as_typed_schema_error(tmp_path: Path) -> None:
         f"datasets/heads/{DATASET_ID}.json",
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "dataset_id": str(DATASET_ID),
-                "dataset_name": "broken",
+                "dataset": replica_dataset().model_dump(mode="json"),
                 "latest_as_of": VERSION_ONE.isoformat(),
                 "versions": [],
             }
@@ -300,12 +372,13 @@ def test_untrusted_catalog_payload_shapes_fail_fast() -> None:
     version = {
         "as_of": VERSION_ONE.isoformat(),
         "manifest_key": "datasets/manifest.json",
+        "manifest_sha256": "d" * 64,
         "tags": ["latest"],
     }
     valid_head = {
-        "schema_version": 1,
+        "schema_version": 2,
         "dataset_id": str(DATASET_ID),
-        "dataset_name": "evaluation-set",
+        "dataset": replica_dataset().model_dump(mode="json"),
         "latest_as_of": VERSION_ONE.isoformat(),
         "versions": [version],
     }
@@ -314,7 +387,7 @@ def test_untrusted_catalog_payload_shapes_fail_fast() -> None:
     with pytest.raises(DatasetReplicaSchemaError, match="fields changed"):
         _parse_head("{}")
     with pytest.raises(DatasetReplicaError, match="Unsupported"):
-        _parse_head(json.dumps({**valid_head, "schema_version": 2}))
+        _parse_head(json.dumps({**valid_head, "schema_version": 3}))
     with pytest.raises(DatasetReplicaSchemaError, match="JSON object"):
         _parse_head(json.dumps({**valid_head, "versions": [1]}))
     with pytest.raises(DatasetReplicaSchemaError, match="unique and sorted"):
@@ -336,12 +409,9 @@ def test_untrusted_catalog_payload_shapes_fail_fast() -> None:
         _parse_head(json.dumps({**valid_head, "versions": [{**version, "tags": [1]}]}))
 
     valid_manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
         "dataset_id": str(DATASET_ID),
-        "dataset_name": "evaluation-set",
         "version": {"as_of": VERSION_ONE.isoformat(), "tags": None},
-        "dataset_key": "datasets/dataset.parquet",
-        "dataset_sha256": "a" * 64,
         "examples_key": "datasets/examples.parquet",
         "examples_sha256": "b" * 64,
         "content_digest": "c" * 64,
@@ -550,6 +620,63 @@ def test_concurrent_divergent_same_version_cannot_publish_mixed_data(
     assert stored_inputs is not None
     stored_value = stored_inputs["question"]
     assert stored_value == winner * (250_000 if winner == "A" else 2)
+
+
+def test_equivalent_timestamp_offsets_have_one_canonical_identity(
+    tmp_path: Path,
+) -> None:
+    """INVARIANT: version identity is an instant, never timestamp spelling."""
+    repository = DatasetReplicaRepository(create_store(str(tmp_path)))
+    utc_version = DatasetVersion(as_of=VERSION_ONE)
+    offset_version = DatasetVersion(
+        as_of=VERSION_ONE.astimezone(timezone(timedelta(hours=2)))
+    )
+
+    first = repository.write_snapshot(
+        replica_dataset(), utc_version, [replica_example(attachment=None)]
+    )
+    repeated = repository.write_snapshot(
+        replica_dataset(), offset_version, [replica_example(attachment=None)]
+    )
+
+    assert first.already_present is False
+    assert repeated.already_present is True
+    assert [item.as_of for item in repository.list_versions(str(DATASET_ID))] == [
+        VERSION_ONE
+    ]
+
+
+class _ChunkOnlyAttachmentReader(io.BytesIO):
+    """Fail if publication tries to materialize an attachment in one read."""
+
+    def read(self, size: int | None = -1) -> bytes:
+        if size is None or size < 0:
+            raise AssertionError("attachment reads must be chunk bounded")
+        return super().read(size)
+
+
+def test_attachment_publication_streams_bounded_chunks(tmp_path: Path) -> None:
+    """INVARIANT: attachment size does not become an equivalent RAM allocation."""
+    example = replica_example(attachment=None).model_copy(
+        update={
+            "attachments": {
+                "large.bin": {
+                    "presigned_url": "https://cloud.invalid/large",
+                    "reader": _ChunkOnlyAttachmentReader(b"bounded-stream"),
+                    "mime_type": "application/octet-stream",
+                }
+            }
+        }
+    )
+    repository = DatasetReplicaRepository(create_store(str(tmp_path)))
+
+    repository.write_snapshot(
+        replica_dataset(), DatasetVersion(as_of=VERSION_ONE), [example]
+    )
+
+    restored = repository.read_examples(str(DATASET_ID), include_attachments=True)[0]
+    assert restored.attachments is not None
+    assert restored.attachments["large.bin"]["reader"].read() == b"bounded-stream"
 
 
 def test_sdk_contract_drift_fails_before_snapshot_publication(
@@ -847,6 +974,86 @@ def test_archive_snapshot_can_be_pulled_to_local(tmp_path: Path):
     assert results[0].already_present is False
     assert restored.attachments is not None
     assert restored.attachments["diagram.png"]["reader"].read() == b"diagram-bytes"
+
+
+def test_selected_version_transfer_synchronizes_unique_tag_pointers(
+    tmp_path: Path,
+) -> None:
+    """INVARIANT: a LangSmith version tag resolves to at most one local version."""
+    archive = tmp_path / "archive"
+    local = tmp_path / "local"
+    source = DatasetReplicaRepository(create_store(str(archive)))
+    destination = DatasetReplicaRepository(create_store(str(local)))
+    destination.write_snapshot(
+        replica_dataset(),
+        DatasetVersion(tags=["prod"], as_of=VERSION_ONE),
+        [replica_example(input_value="v1", attachment=None)],
+    )
+    source.write_snapshot(
+        replica_dataset(),
+        DatasetVersion(tags=None, as_of=VERSION_ONE),
+        [replica_example(input_value="v1", attachment=None)],
+    )
+    source.write_snapshot(
+        replica_dataset(),
+        DatasetVersion(tags=["prod"], as_of=VERSION_TWO),
+        [replica_example(input_value="v2", attachment=None)],
+    )
+
+    pull_dataset(
+        client=None,
+        dataset_name_or_id=str(DATASET_ID),
+        source=ReplicaSource.ARCHIVE,
+        destination=ReplicaDestination.LOCAL,
+        as_of="prod",
+        all_versions=False,
+        archive_uri=str(archive),
+        local_directory=str(local),
+    )
+
+    versions = destination.list_versions(str(DATASET_ID))
+    assert [(item.as_of, item.tags) for item in versions] == [
+        (VERSION_TWO, ["prod"]),
+        (VERSION_ONE, None),
+    ]
+    assert destination.read_examples(str(DATASET_ID), as_of="prod")[0].inputs == {
+        "question": "v2"
+    }
+
+
+def test_global_offline_list_skips_histories_without_requested_version(
+    runner, tmp_path: Path
+) -> None:
+    """INVARIANT: independent histories cannot abort a global as-of query."""
+    repository = DatasetReplicaRepository(create_store(str(tmp_path)))
+    repository.write_snapshot(
+        replica_dataset(),
+        DatasetVersion(as_of=VERSION_ONE),
+        [replica_example(attachment=None)],
+    )
+    unrelated_id = UUID("e4970850-07ca-460c-a1b9-5ea1ea2a60de")
+    unrelated = replica_dataset().model_copy(
+        update={"id": unrelated_id, "name": "only-newer"}
+    )
+    repository.write_snapshot(unrelated, DatasetVersion(as_of=VERSION_TWO), [])
+
+    result = runner.invoke(
+        cli,
+        [
+            "--json",
+            "examples",
+            "list",
+            "--source",
+            "local",
+            "--local-dir",
+            str(tmp_path),
+            "--as-of",
+            VERSION_ONE.isoformat(),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert [item["id"] for item in json.loads(result.output)] == [str(EXAMPLE_ID)]
 
 
 def test_same_name_datasets_are_ambiguous_instead_of_overwriting(tmp_path: Path):

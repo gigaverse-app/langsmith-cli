@@ -11,20 +11,30 @@
 ## Correctness invariants
 
 - [x] One exact `DatasetVersion.as_of` is resolved before examples are fetched.
-- [x] Publication exposes a new head only after both Parquet objects, the manifest,
-  and all attachment blobs are present.
+- [x] Publication exposes a new head only after Example Parquet, an authenticated
+  immutable manifest, and all attachment blobs are present.
 - [x] Concurrent independent versions both publish after CAS retries; concurrent
   divergent content for one timestamp produces one winner and one typed conflict.
 - [x] Parquet objects are content-addressed, local writes replace atomically, and
   every Parquet/attachment digest is verified before deserialization.
-- [x] `(Dataset ID, as_of)` is idempotent only for identical canonical content.
+- [x] `(Dataset ID, canonical UTC as_of)` is idempotent only for identical
+  Example/attachment content; mutable Dataset catalog metadata refreshes separately.
 - [x] Every Example belongs to the enclosing Dataset and duplicate IDs are rejected.
 - [x] LangSmith SDK model-field drift fails before publication instead of silently
   omitting a new field.
 - [x] Malformed head/manifest JSON, cross-dataset manifest references, and row-count
   mismatches fail as typed schema/integrity errors before SDK reconstruction.
-- [x] Dataset and example SDK fields round-trip through Parquet without changing
+- [x] Strict Pydantic Dataset and Example SDK fields round-trip without changing
   IDs, timestamps, schemas, transformations, metadata, splits, or lineage.
+- [x] Equivalent timestamp offsets collapse to one version identity and naive
+  timestamps fail before publication.
+- [x] A version tag has at most one owner and selected-version transfers synchronize
+  moved tag pointers.
+- [x] Redirecting an authenticated manifest to another valid Parquet object fails.
+- [x] Cloud/replica transfers stream Examples; attachment publication uses bounded
+  chunks; DuckDB staging is disk-backed and memory-capped.
+- [x] A global offline `examples list --as-of` skips unrelated histories that do
+  not contain the requested version.
 - [x] Attachment bytes are content-addressed and reconstructed with their name and
   MIME type.
 - [x] A dataset name cannot silently replace a different dataset ID in one store.

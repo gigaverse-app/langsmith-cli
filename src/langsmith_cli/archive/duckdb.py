@@ -42,6 +42,7 @@ ARCHIVE_PARQUET_COPY_OPTIONS = (
 
 class DuckConnection(Protocol):
     def execute(self, query: str, parameters: object | None = None) -> Any: ...
+    def fetchmany(self, size: int = 1) -> list[tuple[Any, ...]]: ...
 
 
 def configure_duckdb_resources(
@@ -64,14 +65,23 @@ def configure_duckdb_resources(
 @contextmanager
 def archive_duckdb_connection(
     staging_directory: Path | None = None,
+    *,
+    database_path: Path | None = None,
 ) -> Iterator[DuckConnection]:
-    """Open DuckDB with a unique spill directory and deterministic cleanup."""
+    """Open DuckDB with a unique spill directory and deterministic cleanup.
+
+    Most archive transforms use an in-memory catalog. Callers ingesting an
+    unbounded stream can opt into a temporary on-disk database so buffered table
+    pages remain evictable under DuckDB's memory limit.
+    """
     import duckdb
 
     with tempfile.TemporaryDirectory(
         prefix="langsmith-duckdb-", dir=staging_directory
     ) as connection_staging:
-        connection = duckdb.connect()
+        connection = duckdb.connect(
+            str(database_path) if database_path is not None else ":memory:"
+        )
         try:
             configure_duckdb_resources(connection, Path(connection_staging))
             yield connection
