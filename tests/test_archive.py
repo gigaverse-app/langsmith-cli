@@ -386,22 +386,21 @@ def test_streaming_dedup_holds_across_row_groups_and_snapshots(
             for suffix in ids
         ]
 
-    common = dict(
-        project_id="f47ac10b-58cc-4372-a567-0e02b2c3d479",
-        project_name="dev/rowgroups",
-        trace_date=date(2024, 7, 3),
-    )
     sync_project_day(
         FakeRunsClient(_runs(["0", "1", "2"], "primary")),
         store,
         phase=ArchivePhase.PRIMARY,
-        **common,
+        project_id="f47ac10b-58cc-4372-a567-0e02b2c3d479",
+        project_name="dev/rowgroups",
+        trace_date=date(2024, 7, 3),
     )
     manifest = sync_project_day(
         FakeRunsClient(_runs(["1", "2", "3"], "reconciliation")),
         store,
         phase=ArchivePhase.RECONCILIATION,
-        **common,
+        project_id="f47ac10b-58cc-4372-a567-0e02b2c3d479",
+        project_name="dev/rowgroups",
+        trace_date=date(2024, 7, 3),
     )
     assert manifest.canonical_run_count == 4
     archived = query_archive_runs(ArchiveRunQuery(project="dev/rowgroups", limit=0))
@@ -429,11 +428,6 @@ def test_legacy_struct_raw_still_canonicalizes_through_the_sql_path(
     archive_uri = str(tmp_path / "archive")
     monkeypatch.setenv("LANGSMITH_ARCHIVE_URI", archive_uri)
     store = create_store(archive_uri)
-    common = dict(
-        project_id="f47ac10b-58cc-4372-a567-0e02b2c3d479",
-        project_name="dev/legacy",
-        trace_date=date(2024, 7, 3),
-    )
 
     def _legacy_serialize(run: Run) -> bytes:
         payload = run.model_dump(mode="python")
@@ -448,7 +442,9 @@ def test_legacy_struct_raw_still_canonicalizes_through_the_sql_path(
             FakeRunsClient([create_run(inputs={"deep": {"legacy": True}})]),
             store,
             phase=ArchivePhase.PRIMARY,
-            **common,
+            project_id="f47ac10b-58cc-4372-a567-0e02b2c3d479",
+            project_name="dev/legacy",
+            trace_date=date(2024, 7, 3),
         )
     manifest = sync_project_day(
         FakeRunsClient(
@@ -462,7 +458,9 @@ def test_legacy_struct_raw_still_canonicalizes_through_the_sql_path(
         ),
         store,
         phase=ArchivePhase.RECONCILIATION,
-        **common,
+        project_id="f47ac10b-58cc-4372-a567-0e02b2c3d479",
+        project_name="dev/legacy",
+        trace_date=date(2024, 7, 3),
     )
     assert manifest.canonical_run_count == 2
     archived = query_archive_runs(ArchiveRunQuery(project="dev/legacy", limit=0))
@@ -479,17 +477,21 @@ def test_empty_primary_with_late_reconciliation_seals_the_late_rows(
     archive_uri = str(tmp_path / "archive")
     monkeypatch.setenv("LANGSMITH_ARCHIVE_URI", archive_uri)
     store = create_store(archive_uri)
-    common = dict(
+    sync_project_day(
+        FakeRunsClient([]),
+        store,
+        phase=ArchivePhase.PRIMARY,
         project_id="f47ac10b-58cc-4372-a567-0e02b2c3d479",
         project_name="dev/late-day",
         trace_date=date(2024, 7, 3),
     )
-    sync_project_day(FakeRunsClient([]), store, phase=ArchivePhase.PRIMARY, **common)
     manifest = sync_project_day(
         FakeRunsClient([create_run(outputs={"late": True})]),
         store,
         phase=ArchivePhase.RECONCILIATION,
-        **common,
+        project_id="f47ac10b-58cc-4372-a567-0e02b2c3d479",
+        project_name="dev/late-day",
+        trace_date=date(2024, 7, 3),
     )
     assert manifest.sealed is True
     assert manifest.canonical_run_count == 1

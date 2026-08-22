@@ -155,31 +155,100 @@ def _serialize_run_line(run: Run) -> bytes:
     return line.encode("utf-8") + b"\n"
 
 
+def _uuid_text(value: Any) -> str | None:
+    """Canonical text for an id however the source chunk yielded it.
+
+    arrow.uuid extension chunks yield uuid.UUID instances from to_pylist(), plain
+    fixed-binary chunks yield bytes, and text raw already yields strings.
+    """
+    import uuid
+
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    if isinstance(value, uuid.UUID):
+        return str(value)
+    return str(uuid.UUID(bytes=bytes(value)))
+
+
+def _storage_type(data_type: Any) -> Any:
+    """Portable Parquet type for archive interchange.
+
+    Extension types (DuckDB's arrow.json, arrow.uuid) collapse to their storage —
+    recursively, because real trace fields nest them inside maps and structs
+    (observed in-cluster: map<string, extension<arrow.json>> vs map<string, string>
+    refused to unify). UUIDs (DuckDB infers them from UUID-shaped JSON strings and
+    Parquet renders them as 16-byte fixed binary) become canonical text: a
+    re-serialized binares column loses the UUID annotation, and readers then match
+    nothing when comparing ids to strings.
+    """
+    import pyarrow
+
+    if isinstance(data_type, pyarrow.BaseExtensionType):
+        return _storage_type(data_type.storage_type)
+    if pyarrow.types.is_fixed_size_binary(data_type) and data_type.byte_width == 16:
+        return pyarrow.string()
+    if pyarrow.types.is_list(data_type):
+        return pyarrow.list_(_storage_type(data_type.value_type))
+    if pyarrow.types.is_large_list(data_type):
+        return pyarrow.large_list(_storage_type(data_type.value_type))
+    if pyarrow.types.is_map(data_type):
+        return pyarrow.map_(
+            _storage_type(data_type.key_type), _storage_type(data_type.item_type)
+        )
+    if pyarrow.types.is_struct(data_type):
+        return pyarrow.struct(
+            [
+                pyarrow.field(
+                    child.name, _storage_type(child.type), nullable=child.nullable
+                )
+                for child in data_type
+            ]
+        )
+    return data_type
+
+
 def _storage_schema(schema: Any) -> Any:
-    """Replace extension-typed fields (e.g. DuckDB's arrow.json) with their storage type."""
     import pyarrow
 
     return pyarrow.schema(
-        field.with_type(field.type.storage_type)
-        if isinstance(field.type, pyarrow.BaseExtensionType)
-        else field
-        for field in schema
+        field.with_type(_storage_type(field.type)) for field in schema
     )
+
+
+def _storage_column(column: Any, target_type: Any) -> Any:
+
+    import pyarrow
+
+    if column.type.equals(target_type):
+        return column
+    if pyarrow.types.is_string(target_type) and (
+        pyarrow.types.is_fixed_size_binary(column.type)
+        or (
+            isinstance(column.type, pyarrow.BaseExtensionType)
+            and pyarrow.types.is_fixed_size_binary(column.type.storage_type)
+        )
+    ):
+        formatted = [_uuid_text(value) for value in column.to_pylist()]
+        return pyarrow.chunked_array([pyarrow.array(formatted, type=target_type)])
+    if isinstance(column.type, pyarrow.BaseExtensionType):
+        column = pyarrow.chunked_array(
+            [chunk.storage for chunk in column.chunks],
+            type=column.type.storage_type,
+        )
+    return column.cast(target_type)
 
 
 def _storage_table(table: Any) -> Any:
     import pyarrow
 
-    columns = []
-    for index, field in enumerate(table.schema):
-        column = table.column(index)
-        if isinstance(field.type, pyarrow.BaseExtensionType):
-            column = pyarrow.chunked_array(
-                [chunk.storage for chunk in column.chunks],
-                type=field.type.storage_type,
-            )
-        columns.append(column)
-    return pyarrow.table(columns, schema=_storage_schema(table.schema))
+    schema = _storage_schema(table.schema)
+    columns = [
+        _storage_column(table.column(index), field.type)
+        for index, field in enumerate(schema)
+    ]
+    return pyarrow.table(columns, schema=schema)
 
 
 def _combine_parquet_parts(part_paths: list[Path], target: Path) -> None:
@@ -384,7 +453,7 @@ def _conform_table(table: Any, unified: Any) -> Any:
     arrays = []
     for field in unified:
         if field.name in table.schema.names:
-            arrays.append(table.column(field.name).cast(field.type))
+            arrays.append(_storage_column(table.column(field.name), field.type))
         else:
             arrays.append(pyarrow.nulls(table.num_rows, type=field.type))
     return pyarrow.table(arrays, schema=unified)
@@ -413,7 +482,11 @@ def _canonicalize_streaming(
         for group_index in range(source_file.num_row_groups):
             column = source_file.read_row_group(group_index, columns=["id"])
             ids.extend(
-                value for value in column.column("id").to_pylist() if value is not None
+                text
+                for text in (
+                    _uuid_text(value) for value in column.column("id").to_pylist()
+                )
+                if text is not None
             )
         if len(ids) != len(set(ids)):
             raise ValueError(f"Snapshot contains duplicate run IDs: {uri}")
