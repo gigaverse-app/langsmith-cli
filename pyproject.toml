@@ -1,7 +1,7 @@
 [project]
 name = "langsmith-cli"
 # IMPORTANT: When bumping this version, also update .claude-plugin/plugin.json
-version = "0.11.0"
+version = "0.11.1"
 description = "Context-efficient CLI for LangSmith. Built for humans and agents."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -43,10 +43,11 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/aviadr1/langsmith-cli"
-Repository = "https://github.com/aviadr1/langsmith-cli"
-Issues = "https://github.com/aviadr1/langsmith-cli/issues"
-Documentation = "https://github.com/aviadr1/langsmith-cli#readme"
+Homepage = "https://github.com/gigaverse-app/langsmith-cli"
+Repository = "https://github.com/gigaverse-app/langsmith-cli"
+Issues = "https://github.com/gigaverse-app/langsmith-cli/issues"
+Documentation = "https://github.com/gigaverse-app/langsmith-cli#readme"
+Changelog = "https://github.com/gigaverse-app/langsmith-cli/releases"
 
 [dependency-groups]
 dev = [
