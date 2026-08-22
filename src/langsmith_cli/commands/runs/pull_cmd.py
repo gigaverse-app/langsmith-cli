@@ -59,8 +59,6 @@ def pull_runs(
     from langsmith_cli.local_traces.transfer import materialize_traces
     from langsmith_cli.time_parsing import parse_time_range
 
-    if destination != "local":
-        raise click.ClickException(f"Unsupported trace destination: {destination}")
     configure_logger_streams(ctx, ctx.obj["logger"])
     since_dt, before_dt = parse_time_range(since=since, before=before, last=last)
     selection = TraceSelection(

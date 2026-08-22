@@ -295,6 +295,47 @@ def test_empty_cloud_pull_is_a_successful_noop(
     assert list(tmp_path.rglob("*")) == []
 
 
+def test_pull_human_output_and_archive_filter_failure(
+    runner, mock_client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LANGSMITH_CLI_RUN_CACHE_DIR", str(tmp_path))
+    mock_client.list_runs.return_value = [_run(FIRST_RUN_ID, "human")]
+
+    human = runner.invoke(
+        cli,
+        [
+            "runs",
+            "pull",
+            "--source",
+            "cloud",
+            "--to",
+            "local",
+            "--project",
+            PROJECT_NAME,
+        ],
+    )
+    unsupported = runner.invoke(
+        cli,
+        [
+            "runs",
+            "pull",
+            "--source",
+            "archive",
+            "--to",
+            "local",
+            "--project",
+            PROJECT_NAME,
+            "--filter",
+            'eq(name, "x")',
+        ],
+    )
+
+    assert human.exit_code == 0, human.output
+    assert "Added 1 run(s) from cloud" in human.output
+    assert unsupported.exit_code != 0
+    assert "Archive pulls do not support raw FQL filters" in unsupported.output
+
+
 def test_source_and_archive_alias_conflict_fails_fast(runner, mock_client) -> None:
     result = runner.invoke(cli, ["runs", "list", "--source", "local", "--archive"])
 

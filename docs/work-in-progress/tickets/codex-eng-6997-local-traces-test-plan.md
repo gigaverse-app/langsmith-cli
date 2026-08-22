@@ -50,7 +50,7 @@ never populate, refresh, or evict the cache.
 - [x] No duplicate test function names exist in touched test modules.
 - [x] CLI startup has no material regression: median import was 239.6 ms versus
   235.4 ms on `origin/main`, and DuckDB remains absent from startup imports.
-- [x] Ruff, Pyright, targeted coverage (88% across the new local-trace slice),
+- [x] Ruff, Pyright, targeted coverage (over 90% across the new local-trace slice),
   and the full suite pass (`1,360 passed` on a native POSIX temp root after
   rebasing onto current `main`).
 - [x] A real temporary-directory CLI scenario records Parquet files, row counts,

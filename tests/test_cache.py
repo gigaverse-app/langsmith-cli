@@ -143,6 +143,97 @@ def test_cache_download_rejects_legacy_options_it_cannot_honor(
     mock_client.assert_not_called()
 
 
+def test_cache_download_applies_supported_selection_filters(
+    runner, mock_client, cache_root: Path
+) -> None:
+    quoted_name = 'quoted"name'
+    run = create_run(
+        id_str=FIRST_RUN_ID,
+        name=quoted_name,
+        run_type="chain",
+        metadata={"team": "production"},
+        session_id=PROJECT_ID,
+    )
+    mock_client.list_runs.return_value = [run]
+
+    exact = runner.invoke(
+        cli,
+        [
+            "--json",
+            "runs",
+            "cache",
+            "download",
+            "--project",
+            PROJECT_NAME,
+            "--filter",
+            'has(tags, "important")',
+            "--run-type",
+            "chain",
+            "--name-pattern",
+            quoted_name,
+        ],
+    )
+    wildcard = runner.invoke(
+        cli,
+        [
+            "runs",
+            "cache",
+            "download",
+            "--project",
+            PROJECT_NAME,
+            "--name-pattern",
+            "*quoted*",
+            "--metadata",
+            "team=prod*",
+        ],
+    )
+
+    assert exact.exit_code == 0, exact.output
+    selection_filter = mock_client.list_runs.call_args_list[0].kwargs["filter"]
+    assert 'has(tags, "important")' in selection_filter
+    assert 'eq(run_type, "chain")' in selection_filter
+    assert 'eq(name, "quoted\\"name")' in selection_filter
+    assert wildcard.exit_code == 0, wildcard.output
+    assert f"{PROJECT_NAME}: added" in wildcard.output
+    assert list(cache_root.rglob("*.jsonl")) == []
+
+
+def test_cache_download_fails_for_project_id_and_mixed_project_expansion(
+    runner, mock_client
+) -> None:
+    project_id_result = runner.invoke(
+        cli,
+        [
+            "runs",
+            "cache",
+            "download",
+            "--project-id",
+            PROJECT_ID,
+        ],
+    )
+    assert project_id_result.exit_code != 0
+    assert "requires a project name" in project_id_result.output
+
+    other_project_id = "f47ac10b-58cc-4372-a567-0e02b2c3d480"
+    mock_client.list_runs.side_effect = [
+        [_run(FIRST_RUN_ID, "selected")],
+        [
+            create_run(
+                id_str=SECOND_RUN_ID,
+                name="wrong project",
+                session_id=other_project_id,
+            )
+        ],
+    ]
+    mixed_result = runner.invoke(
+        cli,
+        ["runs", "cache", "download", "--project", PROJECT_NAME],
+    )
+
+    assert mixed_result.exit_code != 0
+    assert "do not identify exactly one project" in mixed_result.output
+
+
 def test_cache_grep_delegates_to_runs_list_local(runner, cache_root: Path) -> None:
     append_runs_to_cache(
         PROJECT_NAME,
@@ -190,6 +281,68 @@ def test_cache_list_schema_repair_and_clear_commands(runner, cache_root: Path) -
         "run_count": 1,
     }
     assert parse_json_output(cleared.output)["removed_run_count"] == 1
+
+
+def test_cache_human_and_alternate_output_paths(
+    runner, cache_root: Path, tmp_path: Path
+) -> None:
+    empty = runner.invoke(cli, ["runs", "cache", "list"])
+    assert empty.exit_code == 0
+    assert "No local traces" in empty.output
+
+    append_runs_to_cache(
+        PROJECT_NAME,
+        [_run(FIRST_RUN_ID, "schema", outputs={"answer": "yes"})],
+    )
+    table = runner.invoke(cli, ["runs", "cache", "list"])
+    count = runner.invoke(cli, ["runs", "cache", "list", "--count"])
+    yaml_result = runner.invoke(cli, ["runs", "cache", "list", "--format", "yaml"])
+    output_path = tmp_path / "cache-projects.json"
+    written = runner.invoke(
+        cli,
+        [
+            "runs",
+            "cache",
+            "list",
+            "--format",
+            "json",
+            "--output",
+            str(output_path),
+        ],
+    )
+    repaired = runner.invoke(cli, ["runs", "cache", "repair"])
+    schema = runner.invoke(
+        cli,
+        [
+            "runs",
+            "cache",
+            "schema",
+            "--project",
+            PROJECT_NAME,
+            "--include",
+            "outputs",
+        ],
+    )
+    missing_schema = runner.invoke(
+        cli,
+        ["runs", "cache", "schema", "--project", "not-cached"],
+    )
+    cleared = runner.invoke(
+        cli, ["runs", "cache", "clear", "--project", PROJECT_NAME, "--yes"]
+    )
+
+    assert table.exit_code == 0
+    assert PROJECT_NAME in table.output
+    assert count.output.strip() == "1"
+    assert yaml_result.exit_code == 0
+    assert "project_name:" in yaml_result.output
+    assert written.exit_code == 0
+    assert PROJECT_NAME in output_path.read_text(encoding="utf-8")
+    assert "Healthy: 1 logical run" in repaired.output
+    assert "outputs:" in schema.output
+    assert missing_schema.exit_code != 0
+    assert "No cache found" in missing_schema.output
+    assert "Evicted 1 run" in cleared.output
 
 
 def test_cache_dir_reports_shared_root(runner, cache_root: Path) -> None:
