@@ -711,6 +711,27 @@ def test_duckdb_resources_are_bounded_and_unique_to_each_project_staging_area(
         second.close()
 
 
+def test_duckdb_connections_do_not_preserve_insertion_order(tmp_path: Path) -> None:
+    """
+    Insertion-order preservation blocks spilling for the canonicalization
+    union+window pipeline, so DuckDB holds the whole project-day in memory and real
+    Gigaverse days OOM even at a 2.0 GiB bound (1.9 GiB/2.0 GiB used, in-cluster).
+    Row order is semantically irrelevant here: every archive read query orders
+    explicitly (ORDER BY start_time) and dedup ranks explicitly by snapshot_rank,
+    so the archive only ever relies on declared ordering.
+    """
+    import duckdb
+
+    connection = duckdb.connect()
+    try:
+        configure_duckdb_resources(connection, tmp_path / "project-a")
+        assert connection.execute(
+            "SELECT current_setting('preserve_insertion_order')"
+        ).fetchone() == (False,)
+    finally:
+        connection.close()
+
+
 def test_duckdb_memory_limit_is_environment_configurable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -40,6 +40,13 @@ def configure_duckdb_resources(
     spill_directory.mkdir(parents=True, exist_ok=True)
     connection.execute("SET memory_limit = ?", [duckdb_memory_limit()])
     connection.execute("SET temp_directory = ?", [str(spill_directory)])
+    # Insertion-order preservation blocks spilling for the canonicalization
+    # union+window pipeline, holding a whole project-day in memory (real days OOMed
+    # a 2.0 GiB bound in-cluster). The archive never relies on implicit row order:
+    # reads order explicitly (ORDER BY start_time) and dedup ranks explicitly by
+    # snapshot_rank. Tested by
+    # test_duckdb_connections_do_not_preserve_insertion_order.
+    connection.execute("SET preserve_insertion_order = false")
 
 
 @contextmanager
