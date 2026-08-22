@@ -711,6 +711,87 @@ def test_duckdb_resources_are_bounded_and_unique_to_each_project_staging_area(
         second.close()
 
 
+def test_archive_parquet_writers_bound_row_group_bytes() -> None:
+    """
+    Trace rows carry multi-megabyte JSON text (inputs/outputs), so a default
+    row-count-sized row group buffers gigabytes before flushing — the buffer cannot
+    spill, and real project-days OOMed a 1 GiB bound in-cluster even with
+    insertion-order preservation off. Every archive COPY must use the shared
+    byte-bounded options.
+    """
+    import inspect
+
+    from langsmith_cli.archive import sync as sync_module
+    from langsmith_cli.archive.duckdb import ARCHIVE_PARQUET_COPY_OPTIONS
+
+    assert "ROW_GROUP_SIZE_BYTES" in ARCHIVE_PARQUET_COPY_OPTIONS
+    assert "FORMAT PARQUET" in ARCHIVE_PARQUET_COPY_OPTIONS
+    source = inspect.getsource(sync_module)
+    assert "(FORMAT PARQUET" not in source, (
+        "archive COPY statements must use ARCHIVE_PARQUET_COPY_OPTIONS, "
+        "not inline Parquet options"
+    )
+
+
+def test_duckdb_connections_do_not_preserve_insertion_order(tmp_path: Path) -> None:
+    """
+    Insertion-order preservation blocks spilling for the canonicalization
+    union+window pipeline, so DuckDB holds the whole project-day in memory and real
+    Gigaverse days OOM even at a 2.0 GiB bound (1.9 GiB/2.0 GiB used, in-cluster).
+    Row order is semantically irrelevant here: every archive read query orders
+    explicitly (ORDER BY start_time) and dedup ranks explicitly by snapshot_rank,
+    so the archive only ever relies on declared ordering.
+    """
+    import duckdb
+
+    connection = duckdb.connect()
+    try:
+        configure_duckdb_resources(connection, tmp_path / "project-a")
+        assert connection.execute(
+            "SELECT current_setting('preserve_insertion_order')"
+        ).fetchone() == (False,)
+    finally:
+        connection.close()
+
+
+def test_duckdb_memory_limit_is_environment_configurable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Operators must be able to raise the per-connection bound without a code change.
+
+    The 1 GiB default OOMed real Gigaverse dev/production daily syncs inside a
+    Kubernetes pod (DuckDB "failed to allocate ... 916.1 MiB/1.0 GiB used" during
+    canonicalization); the pod owner knows its memory budget, the library does not.
+    """
+    import duckdb
+
+    monkeypatch.setenv("LANGSMITH_ARCHIVE_DUCKDB_MEMORY_LIMIT", "1.5 GiB")
+    connection = duckdb.connect()
+    try:
+        configure_duckdb_resources(connection, tmp_path / "project-a")
+        assert connection.execute(
+            "SELECT current_setting('memory_limit')"
+        ).fetchone() == ("1.5 GiB",)
+    finally:
+        connection.close()
+
+
+def test_duckdb_memory_limit_rejects_garbage_at_configuration_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A typo in the override must fail loudly when the connection is configured, not corrupt a sync later."""
+    import duckdb
+
+    monkeypatch.setenv("LANGSMITH_ARCHIVE_DUCKDB_MEMORY_LIMIT", "lots-of-ram")
+    connection = duckdb.connect()
+    try:
+        with pytest.raises(duckdb.Error):
+            configure_duckdb_resources(connection, tmp_path / "project-a")
+    finally:
+        connection.close()
+
+
 def test_s3_store_propagates_non_concurrency_service_errors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
