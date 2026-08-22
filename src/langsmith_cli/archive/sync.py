@@ -134,9 +134,22 @@ def _write_runs_parquet(
             filter=filter_,
             limit=None,
         ):
+            payload = run.model_dump(mode="python")
+            # Pre-serialize nested payload fields as JSON text so read_json_auto
+            # infers flat VARCHAR columns — the same shape Bulk Export v2 produces
+            # and canonicalization already unifies. STRUCT inference materializes
+            # payload-shaped nested columns whose memory scales with payload
+            # complexity; a real project-day OOMed a 2.5 GiB DuckDB bound here.
+            # Tested by test_runs_snapshot_stores_payloads_as_text_not_inferred_structs.
+            for column in ARCHIVE_JSON_COLUMNS:
+                value = payload.get(column)
+                if value is not None:
+                    payload[column] = json.dumps(
+                        value, ensure_ascii=False, default=_archive_json_default
+                    )
             rows.write(
                 json.dumps(
-                    run.model_dump(mode="python"),
+                    payload,
                     ensure_ascii=False,
                     default=_archive_json_default,
                 )

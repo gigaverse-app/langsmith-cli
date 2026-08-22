@@ -258,3 +258,53 @@ def test_reconciliation_deduplicates_and_is_idempotent(
     )
     assert count_result.exit_code == 0, count_result.output
     assert count_result.output.strip() == "2"
+
+
+def test_runs_snapshot_stores_payloads_as_text_not_inferred_structs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    read_json_auto STRUCT inference materializes trace payloads as typed nested
+    columns, and its memory scales with payload complexity: a real project-day
+    OOMed a 2.5 GiB DuckDB bound inside _write_runs_parquet before canonicalization
+    ever ran. The CLI serializes the JSONL itself, so nested payload fields must be
+    pre-serialized JSON text — the same VARCHAR shape Bulk Export v2 produces,
+    which canonicalization already unifies. Snapshot memory then scales with row
+    size, not payload nesting depth.
+    """
+    import duckdb
+
+    archive_uri = str(tmp_path / "archive")
+    monkeypatch.setenv("LANGSMITH_ARCHIVE_URI", archive_uri)
+    store = create_store(archive_uri)
+    nested_run = create_run(
+        inputs={"deep": {"x": [1, 2, {"y": "z"}]}},
+        outputs={"answer": {"content": "ok"}},
+        tags=["t1", "t2"],
+    )
+    manifest = sync_project_day(
+        FakeRunsClient([nested_run]),
+        store,
+        project_id="f47ac10b-58cc-4372-a567-0e02b2c3d479",
+        project_name="dev/nested",
+        trace_date=date(2024, 7, 3),
+        phase=ArchivePhase.PRIMARY,
+    )
+    assert manifest.primary is not None
+    raw_path = Path(store.base_uri) / manifest.primary.raw_key
+    connection = duckdb.connect()
+    try:
+        described = {
+            str(row[0]): str(row[1])
+            for row in connection.execute(
+                f"DESCRIBE SELECT * FROM read_parquet('{raw_path.as_posix()}')"
+            ).fetchall()
+        }
+    finally:
+        connection.close()
+    for column in ("inputs", "outputs", "tags"):
+        assert "STRUCT" not in described[column], (column, described[column])
+    # Semantic preservation: canonical readers still see the full nested value.
+    archived = query_archive_runs(ArchiveRunQuery(project="dev/nested", limit=0))
+    assert archived[0].inputs == {"deep": {"x": [1, 2, {"y": "z"}]}}
+    assert archived[0].tags == ["t1", "t2"]
