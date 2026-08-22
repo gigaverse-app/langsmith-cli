@@ -32,6 +32,7 @@ dependencies = [
     "boto3>=1.35.0",
     "click>=8.0",
     "duckdb>=1.4.0",
+    "pyarrow>=17.0.0",
     "langdetect>=1.0.9",
     "langsmith>=0.8.5",
     "platformdirs>=4.0",

@@ -149,6 +149,34 @@ def _serialize_run_line(run: Run) -> bytes:
     return line.encode("utf-8") + b"\n"
 
 
+def _combine_parquet_parts(part_paths: list[Path], target: Path) -> None:
+    """
+    Concatenate Parquet parts into one file, one row group at a time.
+
+    Pieces are inferred independently, so a column that is all-null in one piece may
+    carry a narrower type there; the unified schema promotes such columns and every
+    row group is cast to it before writing. Working memory is bounded by one decoded
+    row group (parts are written with byte-bounded row groups), not by the day.
+    """
+    import pyarrow
+    import pyarrow.parquet
+
+    part_files = [pyarrow.parquet.ParquetFile(str(part)) for part in part_paths]
+    unified = pyarrow.unify_schemas(
+        [part.schema_arrow for part in part_files], promote_options="permissive"
+    )
+    writer = pyarrow.parquet.ParquetWriter(str(target), unified, compression="zstd")
+    try:
+        for part in part_files:
+            for group_index in range(part.num_row_groups):
+                table = part.read_row_group(group_index)
+                writer.write_table(table.select(unified.names).cast(unified))
+    finally:
+        writer.close()
+        for part in part_files:
+            part.close()
+
+
 def _write_runs_parquet(
     client: RunsExportClient, manifest: ArchiveManifest, target: Path
 ) -> int:
@@ -207,14 +235,13 @@ def _write_runs_parquet(
                     )
                     part_paths.append(part_path)
                     piece_path.unlink(missing_ok=True)
-                part_list = (
-                    "[" + ", ".join(_sql_string(str(part)) for part in part_paths) + "]"
-                )
-                connection.execute(
-                    f"COPY (SELECT * FROM read_parquet({part_list}, "
-                    "union_by_name=true)) "
-                    f"TO {_sql_string(str(target))} " + ARCHIVE_PARQUET_COPY_OPTIONS
-                )
+                # Deliberately NOT a DuckDB COPY: any SQL scan streams fixed
+                # 2048-row chunks whose memory scales with row width, so combining
+                # a whale day re-inflates the working set the pieces just bounded
+                # (observed in-cluster: the combine OOMed a 1 GiB bound after every
+                # piece converted cleanly). Row-group-wise concatenation decodes at
+                # most one ROW_GROUP_SIZE_BYTES-bounded group at a time.
+                _combine_parquet_parts(part_paths, target)
         return run_count
     finally:
         if piece is not None:
