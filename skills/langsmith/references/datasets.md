@@ -58,7 +58,8 @@ langsmith-cli --json datasets get <dataset-id-or-name> [OPTIONS]
 
 **Options:**
 - `--source [cloud|archive|local]` - Read from one backend (default: `cloud`)
-- `--as-of TEXT` - Replica version tag or ISO timestamp (default: `latest`)
+- `--as-of TEXT` - Archive/local version tag or ISO timestamp (default: `latest`);
+  cloud Dataset metadata has no versioned read API, so non-latest cloud values fail
 - `--archive-uri TEXT` - Archive root; defaults to `LANGSMITH_ARCHIVE_URI`
 - `--local-dir DIRECTORY` - Override the platform-local dataset cache
 - `--fields TEXT` - Comma-separated field names to include
@@ -100,8 +101,12 @@ langsmith-cli --json datasets pull my-evals --to archive --all-versions
 langsmith-cli --json datasets pull my-evals --source archive --to local
 ```
 
-Repeated pulls of the same exact version are idempotent. Use `--archive-uri` when
-the command needs the archive; local data defaults to the OS cache directory.
+Repeated pulls of the same exact version are idempotent only when the canonical
+Dataset/Example/attachment content matches; divergent content at the same timestamp
+fails. Parquet and attachments are content-addressed and digest-verified, while a
+compare-and-swap head safely merges concurrent pulls of independent versions. Use
+`--archive-uri` when the command needs the archive; local data defaults to the OS
+cache directory.
 
 ### `datasets versions`
 

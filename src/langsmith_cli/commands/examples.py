@@ -1,5 +1,9 @@
 import click
-from langsmith_cli.dataset_replica.models import ReplicaSource
+from langsmith_cli.dataset_replica.cli import (
+    replica_repository,
+    replica_source_options,
+)
+from langsmith_cli.dataset_replica.models import ReplicaSource, parse_datetime
 from langsmith_cli.utils import (
     ConsoleProtocol,
     LazyConsole,
@@ -44,14 +48,7 @@ def examples():
 
 
 @examples.command("list")
-@click.option(
-    "--source",
-    type=click.Choice([item.value for item in ReplicaSource]),
-    default=ReplicaSource.CLOUD.value,
-    show_default=True,
-)
-@click.option("--archive-uri", envvar="LANGSMITH_ARCHIVE_URI")
-@click.option("--local-dir", type=click.Path(file_okay=False))
+@replica_source_options()
 @click.option("--dataset", help="Dataset ID or Name.")
 @click.option("--example-ids", help="Specific example IDs (comma-separated).")
 @click.option("--limit", default=20, help="Limit number of examples (default 20).")
@@ -142,7 +139,11 @@ def list_examples(
             raise click.ClickException(
                 "--filter is currently available only for --source cloud"
             )
-        repository = _replica_repository(source, archive_uri, local_dir)
+        if inline_s3_urls is not None:
+            raise click.ClickException(
+                "--inline-s3-urls is only supported for --source cloud"
+            )
+        repository = replica_repository(source, archive_uri, local_dir)
         dataset_refs = (
             [dataset]
             if dataset is not None
@@ -232,14 +233,7 @@ def list_examples(
 @examples.command("get")
 @click.argument("example_id")
 @click.option("--as-of", help="Dataset version tag or ISO timestamp.")
-@click.option(
-    "--source",
-    type=click.Choice([item.value for item in ReplicaSource]),
-    default=ReplicaSource.CLOUD.value,
-    show_default=True,
-)
-@click.option("--archive-uri", envvar="LANGSMITH_ARCHIVE_URI")
-@click.option("--local-dir", type=click.Path(file_okay=False))
+@replica_source_options()
 @click.option("--include-attachments", is_flag=True)
 @fields_option()
 @output_option()
@@ -263,10 +257,20 @@ def get_example(
     logger.debug(f"Fetching example: example_id={example_id}, as_of={as_of}")
 
     if source is ReplicaSource.CLOUD:
+        cloud_as_of = None
+        if as_of is not None:
+            try:
+                cloud_as_of = parse_datetime(as_of)
+            except ValueError as exc:
+                raise click.ClickException(
+                    "Cloud examples get --as-of requires an ISO timestamp; "
+                    "version tags require dataset context and are supported by "
+                    "archive/local replica reads"
+                ) from exc
         client = get_or_create_client(ctx)
-        example = client.read_example(example_id, as_of=as_of)
+        example = client.read_example(example_id, as_of=cloud_as_of)
     else:
-        repository = _replica_repository(source, archive_uri, local_dir)
+        repository = replica_repository(source, archive_uri, local_dir)
         example = repository.read_example(
             example_id,
             as_of=as_of,
@@ -289,22 +293,6 @@ def get_example(
     output_single_item(
         ctx, data, console, output=output, render_fn=render_example_details
     )
-
-
-def _replica_repository(source, archive_uri, local_dir):
-    from langsmith_cli.dataset_replica.repository import DatasetReplicaError
-    from langsmith_cli.dataset_replica.service import repository_for
-
-    try:
-        return repository_for(
-            source, archive_uri=archive_uri, local_directory=local_dir
-        )
-    except KeyError as exc:
-        raise click.ClickException(
-            "Archive reads require --archive-uri or LANGSMITH_ARCHIVE_URI"
-        ) from exc
-    except (DatasetReplicaError, ValueError, OSError) as exc:
-        raise click.ClickException(str(exc)) from exc
 
 
 @examples.command("create")

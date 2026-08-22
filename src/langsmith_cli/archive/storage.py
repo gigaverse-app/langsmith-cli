@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 from pathlib import PurePosixPath
 import tempfile
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 from urllib.parse import urlparse
 
 
@@ -34,6 +34,10 @@ class ArchiveStore(Protocol):
     def object_uri(self, key: str) -> str: ...
 
 
+class BinaryWriter(Protocol):
+    def write(self, content: bytes, /) -> int: ...
+
+
 class ConcurrentArchiveWriteError(RuntimeError):
     """A stale writer attempted to replace a newer archive metadata object."""
 
@@ -54,20 +58,23 @@ class LocalArchiveStore:
 
         _validate_store_key(key)
         target = self.root / key
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, target)
+
+        def copy_source(destination: BinaryWriter) -> None:
+            with source.open("rb") as input_file:
+                shutil.copyfileobj(input_file, destination)
+
+        _atomic_local_write(target, copy_source)
 
     def put_bytes(self, key: str, content: bytes) -> None:
         _validate_store_key(key)
         target = self.root / key
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(content)
+        _atomic_local_write(target, lambda destination: destination.write(content))
 
     def put_text(self, key: str, content: str) -> None:
         _validate_store_key(key)
         target = self.root / key
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
+        encoded = content.encode("utf-8")
+        _atomic_local_write(target, lambda destination: destination.write(encoded))
 
     def get_text(self, key: str) -> str:
         _validate_store_key(key)
@@ -109,24 +116,8 @@ class LocalArchiveStore:
                 raise ConcurrentArchiveWriteError(
                     f"Archive metadata changed concurrently: {key}"
                 )
-            temporary_path: Path | None = None
-            try:
-                with tempfile.NamedTemporaryFile(
-                    mode="w",
-                    encoding="utf-8",
-                    dir=target.parent,
-                    prefix=f".{target.name}.",
-                    suffix=".tmp",
-                    delete=False,
-                ) as temporary:
-                    temporary.write(content)
-                    temporary.flush()
-                    os.fsync(temporary.fileno())
-                    temporary_path = Path(temporary.name)
-                os.replace(temporary_path, target)
-            finally:
-                if temporary_path is not None and temporary_path.exists():
-                    temporary_path.unlink()
+            encoded = content.encode("utf-8")
+            _atomic_local_write(target, lambda destination: destination.write(encoded))
 
     def exists(self, key: str) -> bool:
         _validate_store_key(key)
@@ -316,6 +307,32 @@ def _content_version(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
+def _atomic_local_write(target: Path, writer: Callable[[BinaryWriter], object]) -> None:
+    """Replace one local object atomically after its complete bytes are durable.
+
+    INVARIANT: a reader sees either the previous complete object or the next
+    complete object. It never observes the temporary bytes being streamed.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w+b",
+            dir=target.parent,
+            prefix=f".{target.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary:
+            writer(temporary)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+            temporary_path = Path(temporary.name)
+        os.replace(temporary_path, target)
+    finally:
+        if temporary_path is not None and temporary_path.exists():
+            temporary_path.unlink()
+
+
 @contextmanager
 def _exclusive_file_lock(path: Path) -> Iterator[None]:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -328,10 +345,10 @@ def _exclusive_file_lock(path: Path) -> Iterator[None]:
             import msvcrt
 
             try:
-                msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+                msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK, 1)
             except OSError as exc:
                 raise ConcurrentArchiveWriteError(
-                    f"Archive metadata is being published concurrently: {path.name}"
+                    f"Archive metadata lock failed: {path.name}"
                 ) from exc
             try:
                 yield
@@ -342,12 +359,10 @@ def _exclusive_file_lock(path: Path) -> Iterator[None]:
 
         import fcntl
 
-        try:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            raise ConcurrentArchiveWriteError(
-                f"Archive metadata is being published concurrently: {path.name}"
-            ) from exc
+        # Wait for the tiny critical section instead of making callers spin and
+        # potentially starve the lock holder. Freshness is still enforced by the
+        # content-version comparison performed after this lock is acquired.
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         try:
             yield
         finally:

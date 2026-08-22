@@ -8,12 +8,16 @@ from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
 
 from langsmith_cli.archive.storage import create_store
+from langsmith_cli.dataset_resolution import resolve_dataset
 from langsmith_cli.dataset_replica.models import (
     ReplicaDestination,
     ReplicaSource,
     ReplicaWriteResult,
 )
-from langsmith_cli.dataset_replica.repository import DatasetReplicaRepository
+from langsmith_cli.dataset_replica.repository import (
+    DatasetReplicaConfigurationError,
+    DatasetReplicaRepository,
+)
 
 if TYPE_CHECKING:
     from langsmith import Client
@@ -42,11 +46,28 @@ def repository_for(
     archive_uri: str | None,
     local_directory: str | None,
 ) -> DatasetReplicaRepository:
-    if source in (ReplicaSource.LOCAL, ReplicaDestination.LOCAL):
+    if source is ReplicaSource.LOCAL or source is ReplicaDestination.LOCAL:
         uri = local_directory or str(default_local_dataset_directory())
+    elif source is ReplicaSource.ARCHIVE or source is ReplicaDestination.ARCHIVE:
+        if archive_uri is not None:
+            uri = archive_uri
+        elif "LANGSMITH_ARCHIVE_URI" in os.environ:
+            uri = os.environ["LANGSMITH_ARCHIVE_URI"]
+        else:
+            raise DatasetReplicaConfigurationError(
+                "Archive operations require --archive-uri or LANGSMITH_ARCHIVE_URI"
+            )
     else:
-        uri = archive_uri or os.environ["LANGSMITH_ARCHIVE_URI"]
-    return DatasetReplicaRepository(create_store(uri))
+        raise DatasetReplicaConfigurationError(
+            "Cloud is not a readable replica repository"
+        )
+    try:
+        store = create_store(uri)
+    except (OSError, ValueError) as exc:
+        raise DatasetReplicaConfigurationError(
+            f"Invalid {source.value} replica location"
+        ) from exc
+    return DatasetReplicaRepository(store)
 
 
 def pull_dataset(
@@ -60,7 +81,9 @@ def pull_dataset(
     archive_uri: str | None,
     local_directory: str | None,
 ) -> list[ReplicaWriteResult]:
-    if source.value == destination.value:
+    if (
+        source is ReplicaSource.ARCHIVE and destination is ReplicaDestination.ARCHIVE
+    ) or (source is ReplicaSource.LOCAL and destination is ReplicaDestination.LOCAL):
         raise ValueError("Dataset source and destination must differ")
     target = repository_for(
         destination,
@@ -127,8 +150,6 @@ def _pull_from_cloud(
     as_of: str,
     all_versions: bool,
 ) -> list[ReplicaWriteResult]:
-    from langsmith_cli.commands.datasets import resolve_dataset
-
     dataset = resolve_dataset(client, dataset_name_or_id)
     available_versions = list(client.list_dataset_versions(dataset_id=dataset.id))
     versions = (

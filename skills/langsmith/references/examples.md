@@ -21,6 +21,7 @@ langsmith-cli --json examples list [OPTIONS]
 - `--splits TEXT` - Comma-separated list of splits (e.g., "train,test")
 - `--as-of TEXT` - Version tag or ISO timestamp
 - `--inline-s3-urls`, `--no-inline-s3-urls` - Include or omit S3 URLs inline
+  (cloud only; explicit use with archive/local fails instead of being ignored)
 - `--include-attachments`, `--no-include-attachments` - Include or omit attachments
 - `--exclude TEXT` - Exclude items containing substring (repeatable)
 - `--fields TEXT` - Comma-separated field names to include
@@ -74,7 +75,8 @@ langsmith-cli --json examples get <example-id> [OPTIONS]
 - `example-id` (required) - Example UUID
 
 **Options:**
-- `--as-of TEXT` - Version tag or ISO timestamp
+- `--as-of TEXT` - Archive/local version tag or ISO timestamp; cloud `get`
+  accepts ISO timestamps only because the SDK requires a `datetime`
 - `--source [cloud|archive|local]` - Read from one backend (default: `cloud`)
 - `--archive-uri TEXT` - Archive root; defaults to `LANGSMITH_ARCHIVE_URI`
 - `--local-dir DIRECTORY` - Override the platform-local dataset cache

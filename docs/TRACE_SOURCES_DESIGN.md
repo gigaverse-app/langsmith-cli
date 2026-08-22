@@ -641,7 +641,11 @@ from a complete copied history.
 **A replica is identified by source namespace plus Dataset ID, never by name.** The
 destination catalog stores origin workspace/source, source dataset ID, fetched
 version, content digest, and transfer time outside the Dataset object. Dataset and
-Example IDs are preserved in local/archive replicas; names remain lookup labels.
+Example IDs are preserved in local/archive replicas; names remain mutable lookup
+labels in the head and are deliberately excluded from immutable content identity.
+LangSmith's DatasetVersion freezes Example membership/content, while the Dataset
+envelope is observed at transfer time; the CLI does not claim a historical Dataset
+metadata API that LangSmith itself does not expose.
 
 | Situation | Decision |
 |---|---|
@@ -669,8 +673,8 @@ fast-forward replica.
 | 2 | Read the full Dataset object, version/tag records, and all examples at that `as_of` |
 | 3 | Fetch attachment bytes, validate media/name/digest metadata, and reject expiring URLs as stored content |
 | 4 | Validate every strict SDK object and cross-reference Dataset/Example IDs |
-| 5 | Write immutable dataset/example/version Parquet plus content-addressed attachment blobs |
-| 6 | Reopen and round-trip all typed records; conditionally publish the destination head |
+| 5 | Write content-addressed dataset/example Parquet, content-addressed attachment blobs, and one uniquely staged immutable manifest |
+| 6 | Verify object digests, then compare-and-swap the destination head; on contention, reread and merge independent versions |
 | 7 | Optionally materialize linked source traces as a separate, auditable phase |
 
 The dataset transaction is all-or-nothing. The optional trace phase has its own
@@ -685,15 +689,23 @@ Dataset replicas are separate from the trace cache while sharing DuckDB as the
 reader:
 
 ```text
-<langsmith-cli user cache>/datasets/v1/local/
-  active.json
-  datasets/<origin-namespace>/<dataset-id>/
-    versions/<version-digest>/dataset.parquet
-    versions/<version-digest>/examples-*.parquet
-    versions/<version-digest>/version.parquet
-  attachments/sha256/<digest>
-  staging/
+<replica-root>/
+  datasets/
+    heads/<dataset-id>.json
+    <dataset-id>/versions/<sha256(as-of)>/
+      objects/
+        dataset-<sha256>.parquet
+        examples-<sha256>.parquet
+      manifests/<publication-uuid>.json
+    blobs/<attachment-sha256>
+  .locks/<head-key-sha256>.lock        # local backend only
 ```
+
+The head is the only reachability boundary. Writers may leave unreachable staged
+objects after losing a race, but they cannot overwrite the bytes selected by the
+winning head: Parquet/blob keys are content-addressed and manifests are unique.
+Local writes stream to an adjacent temporary file, `fsync`, and atomically replace
+the target. Readers verify every Parquet and attachment digest before deserializing.
 
 Parquet remains the typed query format for Dataset/Example/version rows. Attachments
 are content-addressed binary blobs because wrapping arbitrary media in Parquet would
@@ -1121,6 +1133,13 @@ federation.**
 | S12 | `source_run_id` is optional lineage and never substitutes for copied trace content | Dataset/trace transfer boundary |
 | S13 | Pull/add preserves unrelated local traces; compaction preserves the logical trace inventory | Cache manager parity checks |
 | S14 | Attachment bytes and all historical dataset versions remain addressable for every published archive version | Dataset manifest validation |
+| S15 | `(Dataset ID, as_of)` identifies exactly one canonical Dataset/Example/attachment snapshot | Content digest comparison before idempotent return |
+| S16 | A published head references only complete immutable objects from one manifest, including under concurrent writers | Content-addressed objects, unique manifests, and head CAS |
+| S17 | Concurrent writers of independent versions merge by rereading the winning head; they never discard an already-published version | Bounded head-CAS retry loop |
+| S18 | Every replicated Example has the same `dataset_id` as its Dataset and example IDs are unique within a snapshot | Pre-publication cross-reference validation |
+| S19 | SDK contract additions/removals fail before read or publication rather than silently dropping fields | Runtime model-field-set assertion plus contract test |
+| S20 | Dataset names can change without changing stable Dataset identity or rewriting immutable version content | Mutable head label plus ID-based storage keys |
+| S21 | Catalog JSON, manifest cross-references, row counts, Dataset/Example IDs, and object digests are validated before SDK reconstruction | Replica schema and integrity boundary |
 
 # Appendix B: resolved follow-up decisions
 

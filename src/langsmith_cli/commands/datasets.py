@@ -4,7 +4,15 @@ import os
 from typing import TYPE_CHECKING, Any, TypedDict
 
 import click
+from langsmith_cli.dataset_replica.cli import (
+    replica_repository,
+    replica_source_options,
+)
 from langsmith_cli.dataset_replica.models import ReplicaDestination, ReplicaSource
+from langsmith_cli.dataset_resolution import (
+    DatasetResolutionError,
+    resolve_dataset as resolve_dataset_strict,
+)
 from langsmith_cli.utils import (
     ConsoleProtocol,
     LazyConsole,
@@ -21,7 +29,6 @@ from langsmith_cli.utils import (
     get_or_create_client,
     is_json_context,
     json_dumps,
-    resolve_by_name_or_id,
     sort_by_option,
     sort_items,
     parse_fields_option,
@@ -39,6 +46,14 @@ if TYPE_CHECKING:
     from langsmith.schemas import Dataset
 
 console = LazyConsole()
+
+
+def resolve_dataset(client: Client, name_or_id: str) -> Dataset:
+    """Translate pure Dataset identity failures at the Click view boundary."""
+    try:
+        return resolve_dataset_strict(client, name_or_id)
+    except DatasetResolutionError as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 class DatasetPushRow(TypedDict):
@@ -81,14 +96,7 @@ def datasets():
 
 
 @datasets.command("list")
-@click.option(
-    "--source",
-    type=click.Choice([item.value for item in ReplicaSource]),
-    default=ReplicaSource.CLOUD.value,
-    show_default=True,
-)
-@click.option("--archive-uri", envvar="LANGSMITH_ARCHIVE_URI")
-@click.option("--local-dir", type=click.Path(file_okay=False))
+@replica_source_options()
 @click.option("--dataset-ids", help="Specific dataset IDs (comma-separated).")
 @click.option("--limit", default=20, help="Limit number of datasets (default 20).")
 @click.option("--data-type", help="Filter by dataset type (kv, chat, llm).")
@@ -160,7 +168,7 @@ def list_datasets(
             list_kwargs["dataset_ids"] = dataset_ids_list
         datasets_list = list(client.list_datasets(**list_kwargs))
     else:
-        repository = _replica_repository(source, archive_uri, local_dir)
+        repository = replica_repository(source, archive_uri, local_dir)
         datasets_list = repository.list_datasets()
         if dataset_ids_list is not None:
             selected_ids = set(dataset_ids_list)
@@ -239,14 +247,7 @@ def list_datasets(
 
 @datasets.command("get")
 @click.argument("dataset_id")
-@click.option(
-    "--source",
-    type=click.Choice([item.value for item in ReplicaSource]),
-    default=ReplicaSource.CLOUD.value,
-    show_default=True,
-)
-@click.option("--archive-uri", envvar="LANGSMITH_ARCHIVE_URI")
-@click.option("--local-dir", type=click.Path(file_okay=False))
+@replica_source_options()
 @click.option("--as-of", default="latest", show_default=True)
 @fields_option()
 @output_option()
@@ -260,10 +261,15 @@ def get_dataset(ctx, dataset_id, source, archive_uri, local_dir, as_of, fields, 
     logger.debug(f"Fetching dataset: dataset_id={dataset_id}")
 
     if source is ReplicaSource.CLOUD:
+        if as_of != "latest":
+            raise click.ClickException(
+                "--as-of is only supported for --source archive or local on "
+                "datasets get; cloud Dataset metadata has no versioned read API"
+            )
         client = get_or_create_client(ctx)
-        dataset = client.read_dataset(dataset_id=dataset_id)
+        dataset = resolve_dataset(client, dataset_id)
     else:
-        repository = _replica_repository(source, archive_uri, local_dir)
+        repository = replica_repository(source, archive_uri, local_dir)
         dataset = repository.read_dataset(dataset_id, as_of)
 
     data = filter_fields(dataset, fields)
@@ -380,19 +386,6 @@ def push_dataset(ctx, file_path, dataset):
     )
 
 
-def resolve_dataset(
-    client: Client,
-    name_or_id: str,
-) -> Dataset:
-    """Resolve a dataset by name or UUID, with smart UUID auto-detection."""
-    return resolve_by_name_or_id(
-        name_or_id,
-        read_by_name=lambda n: client.read_dataset(dataset_name=n),
-        read_by_id=lambda i: client.read_dataset(dataset_id=i),
-        entity_name="Dataset",
-    )
-
-
 @datasets.command("delete")
 @click.argument("name_or_id")
 @confirm_option()
@@ -424,14 +417,7 @@ def delete_dataset(ctx, name_or_id, confirm):
 
 @datasets.command("versions")
 @click.argument("dataset")
-@click.option(
-    "--source",
-    type=click.Choice([item.value for item in ReplicaSource]),
-    default=ReplicaSource.CLOUD.value,
-    show_default=True,
-)
-@click.option("--archive-uri", envvar="LANGSMITH_ARCHIVE_URI")
-@click.option("--local-dir", type=click.Path(file_okay=False))
+@replica_source_options()
 @fields_option()
 @output_option()
 @click.pass_context
@@ -445,7 +431,7 @@ def list_dataset_versions(ctx, dataset, source, archive_uri, local_dir, fields, 
         resolved = resolve_dataset(client, dataset)
         versions = list(client.list_dataset_versions(dataset_id=resolved.id))
     else:
-        repository = _replica_repository(source, archive_uri, local_dir)
+        repository = replica_repository(source, archive_uri, local_dir)
         versions = repository.list_versions(dataset)
 
     def build_versions_table(items):
@@ -469,14 +455,7 @@ def list_dataset_versions(ctx, dataset, source, archive_uri, local_dir, fields, 
 
 
 @datasets.command("status")
-@click.option(
-    "--source",
-    type=click.Choice([ReplicaSource.ARCHIVE.value, ReplicaSource.LOCAL.value]),
-    default=ReplicaSource.LOCAL.value,
-    show_default=True,
-)
-@click.option("--archive-uri", envvar="LANGSMITH_ARCHIVE_URI")
-@click.option("--local-dir", type=click.Path(file_okay=False))
+@replica_source_options(include_cloud=False, default=ReplicaSource.LOCAL)
 @output_option()
 @click.pass_context
 def dataset_replica_status(ctx, source, archive_uri, local_dir, output):
@@ -484,7 +463,7 @@ def dataset_replica_status(ctx, source, archive_uri, local_dir, output):
     source = ReplicaSource(source)
     logger = ctx.obj["logger"]
     configure_logger_streams(ctx, logger, output=output)
-    repository = _replica_repository(source, archive_uri, local_dir)
+    repository = replica_repository(source, archive_uri, local_dir)
     payload = [
         {
             "dataset_id": item.dataset_id,
@@ -525,12 +504,7 @@ def dataset_replica_status(ctx, source, archive_uri, local_dir, output):
 
 @datasets.command("pull")
 @click.argument("dataset")
-@click.option(
-    "--source",
-    type=click.Choice([item.value for item in ReplicaSource]),
-    default=ReplicaSource.CLOUD.value,
-    show_default=True,
-)
+@replica_source_options()
 @click.option(
     "--to",
     "destination",
@@ -539,8 +513,6 @@ def dataset_replica_status(ctx, source, archive_uri, local_dir, output):
 )
 @click.option("--as-of", default="latest", show_default=True)
 @click.option("--all-versions", is_flag=True)
-@click.option("--archive-uri", envvar="LANGSMITH_ARCHIVE_URI")
-@click.option("--local-dir", type=click.Path(file_okay=False))
 @click.pass_context
 def pull_dataset_command(
     ctx,
@@ -575,10 +547,6 @@ def pull_dataset_command(
             archive_uri=archive_uri,
             local_directory=local_dir,
         )
-    except KeyError as exc:
-        raise click.ClickException(
-            "Archive operations require --archive-uri or LANGSMITH_ARCHIVE_URI"
-        ) from exc
     except (DatasetReplicaError, ValueError, OSError) as exc:
         raise click.ClickException(str(exc)) from exc
     payload = [write_result_payload(result) for result in results]
@@ -590,16 +558,3 @@ def pull_dataset_command(
         f"Replicated {len(results)} version(s) of '{dataset}' "
         f"to {destination.value} ({created} new)"
     )
-
-
-def _replica_repository(source, archive_uri, local_dir):
-    from langsmith_cli.dataset_replica.service import repository_for
-
-    try:
-        return repository_for(
-            source, archive_uri=archive_uri, local_directory=local_dir
-        )
-    except KeyError as exc:
-        raise click.ClickException(
-            "Archive reads require --archive-uri or LANGSMITH_ARCHIVE_URI"
-        ) from exc

@@ -77,7 +77,10 @@ class SnapshotManifestPayload(TypedDict):
     dataset_name: str
     version: VersionPayload
     dataset_key: str
+    dataset_sha256: str
     examples_key: str
+    examples_sha256: str
+    content_digest: str
     example_count: int
     attachment_count: int
     published_at: str
