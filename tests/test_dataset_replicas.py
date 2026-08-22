@@ -409,6 +409,26 @@ def test_repository_configuration_failures_are_typed(
         )
 
 
+def test_cli_replica_errors_are_structured_for_agents_and_humans(
+    runner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """INVARIANT: typed replica errors cross the shared CLI boundary cleanly."""
+    monkeypatch.delenv("LANGSMITH_ARCHIVE_URI", raising=False)
+
+    json_result = runner.invoke(
+        cli, ["--json", "datasets", "status", "--source", "archive"]
+    )
+    human_result = runner.invoke(cli, ["datasets", "status", "--source", "archive"])
+
+    assert json_result.exit_code == 1
+    assert json.loads(json_result.output)["error"] == (
+        "DatasetReplicaConfigurationError"
+    )
+    assert human_result.exit_code == 1
+    assert "Error:" in human_result.output
+    assert "--archive-uri" in human_result.output
+
+
 def test_historical_example_lookup_skips_datasets_without_that_version(
     tmp_path: Path,
 ) -> None:
