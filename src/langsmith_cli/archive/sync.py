@@ -149,32 +149,66 @@ def _serialize_run_line(run: Run) -> bytes:
     return line.encode("utf-8") + b"\n"
 
 
+def _storage_schema(schema: Any) -> Any:
+    """Replace extension-typed fields (e.g. DuckDB's arrow.json) with their storage type."""
+    import pyarrow
+
+    return pyarrow.schema(
+        field.with_type(field.type.storage_type)
+        if isinstance(field.type, pyarrow.BaseExtensionType)
+        else field
+        for field in schema
+    )
+
+
+def _storage_table(table: Any) -> Any:
+    import pyarrow
+
+    columns = []
+    for index, field in enumerate(table.schema):
+        column = table.column(index)
+        if isinstance(field.type, pyarrow.BaseExtensionType):
+            column = pyarrow.chunked_array(
+                [chunk.storage for chunk in column.chunks],
+                type=field.type.storage_type,
+            )
+        columns.append(column)
+    return pyarrow.table(columns, schema=_storage_schema(table.schema))
+
+
 def _combine_parquet_parts(part_paths: list[Path], target: Path) -> None:
     """
     Concatenate Parquet parts into one file, one row group at a time.
 
     Pieces are inferred independently, so a column that is all-null in one piece may
-    carry a narrower type there; the unified schema promotes such columns and every
-    row group is cast to it before writing. Working memory is bounded by one decoded
-    row group (parts are written with byte-bounded row groups), not by the day.
+    carry a different type there (DuckDB writes it as the arrow.json extension type
+    while pieces with values carry plain string). Extension types are stripped to
+    their storage type — lossless, the storage IS the JSON text — before permissive
+    schema unification, and every row group is cast to the unified schema. Working
+    memory is bounded by one decoded row group (parts are written with byte-bounded
+    row groups), not by the day.
     """
+    import contextlib
+
     import pyarrow
     import pyarrow.parquet
 
-    part_files = [pyarrow.parquet.ParquetFile(str(part)) for part in part_paths]
-    unified = pyarrow.unify_schemas(
-        [part.schema_arrow for part in part_files], promote_options="permissive"
-    )
-    writer = pyarrow.parquet.ParquetWriter(str(target), unified, compression="zstd")
-    try:
+    with contextlib.ExitStack() as stack:
+        part_files = [
+            stack.enter_context(pyarrow.parquet.ParquetFile(str(part)))
+            for part in part_paths
+        ]
+        unified = pyarrow.unify_schemas(
+            [_storage_schema(part.schema_arrow) for part in part_files],
+            promote_options="permissive",
+        )
+        writer = stack.enter_context(
+            pyarrow.parquet.ParquetWriter(str(target), unified, compression="zstd")
+        )
         for part in part_files:
             for group_index in range(part.num_row_groups):
-                table = part.read_row_group(group_index)
+                table = _storage_table(part.read_row_group(group_index))
                 writer.write_table(table.select(unified.names).cast(unified))
-    finally:
-        writer.close()
-        for part in part_files:
-            part.close()
 
 
 def _write_runs_parquet(

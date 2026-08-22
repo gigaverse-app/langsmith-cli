@@ -331,6 +331,10 @@ def test_oversized_days_are_staged_and_converted_in_bounded_pieces(
             id_str=f"12345678-1234-5678-1234-56781234567{index}",
             inputs={"deep": {"index": index}},
             outputs={"answer": f"value-{index}"},
+            # One piece carries a real error while the others are all-null, so the
+            # per-piece inferred types disagree (JSON extension vs string) — the
+            # exact mismatch the combine's schema unification must absorb.
+            error="boom" if index == 1 else None,
         )
         for index in range(3)
     ]
