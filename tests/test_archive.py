@@ -348,7 +348,7 @@ def test_oversized_days_are_staged_and_converted_in_bounded_pieces(
     )
     assert manifest.canonical_run_count == 3
     archived = query_archive_runs(ArchiveRunQuery(project="dev/pieces", limit=0))
-    assert {run.outputs["answer"] for run in archived} == {
+    assert {(run.outputs or {}).get("answer") for run in archived} == {
         "value-0",
         "value-1",
         "value-2",

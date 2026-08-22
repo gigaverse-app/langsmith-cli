@@ -436,8 +436,12 @@ def _canonicalize_streaming(
             for group_index in range(source_file.num_row_groups):
                 table = _storage_table(source_file.read_row_group(group_index))
                 if winner_ids is not None and index != winner_index:
-                    keep = pyarrow.compute.invert(
-                        pyarrow.compute.is_in(table.column("id"), value_set=winner_ids)
+                    # pyarrow's bundled stubs omit several pyarrow.compute kernels.
+                    contained = pyarrow.compute.is_in(  # pyright: ignore[reportAttributeAccessIssue]
+                        table.column("id"), value_set=winner_ids
+                    )
+                    keep = pyarrow.compute.invert(  # pyright: ignore[reportAttributeAccessIssue]
+                        contained
                     )
                     table = table.filter(pyarrow.compute.fill_null(keep, True))
                 if table.num_rows:
