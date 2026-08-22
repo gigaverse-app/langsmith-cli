@@ -347,6 +347,110 @@ def _write_bulk_parquet(
     return snapshot.export_id, snapshot.run_count
 
 
+def _open_parquet_source(uri: str) -> Any:
+    """ParquetFile over a local path or s3:// URI through pyarrow filesystems."""
+    import pyarrow.fs
+    import pyarrow.parquet
+
+    if uri.startswith("s3://"):
+        filesystem, path = pyarrow.fs.FileSystem.from_uri(uri)
+        return pyarrow.parquet.ParquetFile(filesystem.open_input_file(path))
+    path = uri[len("file://") :] if uri.startswith("file://") else uri
+    return pyarrow.parquet.ParquetFile(path)
+
+
+def _payload_columns_are_text(schema: Any) -> bool:
+    import pyarrow
+
+    for field in schema:
+        if field.name not in ARCHIVE_JSON_COLUMNS:
+            continue
+        field_type = field.type
+        if isinstance(field_type, pyarrow.BaseExtensionType):
+            field_type = field_type.storage_type
+        if not (
+            pyarrow.types.is_string(field_type)
+            or pyarrow.types.is_large_string(field_type)
+            or pyarrow.types.is_null(field_type)
+        ):
+            return False
+    return True
+
+
+def _conform_table(table: Any, unified: Any) -> Any:
+    """Project onto the unified schema, adding null columns a source never had."""
+    import pyarrow
+
+    arrays = []
+    for field in unified:
+        if field.name in table.schema.names:
+            arrays.append(table.column(field.name).cast(field.type))
+        else:
+            arrays.append(pyarrow.nulls(table.num_rows, type=field.type))
+    return pyarrow.table(arrays, schema=unified)
+
+
+def _canonicalize_streaming(
+    source_files: list[Any], source_uris: list[str], target: Path
+) -> int:
+    """
+    Union-and-dedupe one project-day row-group-by-row-group.
+
+    The SQL union+window canonicalization streams fixed 2048-row chunks whose
+    memory scales with row width, so whale days OOMed a 1 GiB bound after raw
+    conversion was already piece-bounded (in-cluster stack: _canonicalize). The
+    dedup decision only needs run IDs: the highest-rank snapshot (reconciliation)
+    is copied through, lower ranks drop rows whose IDs it already covers, and the
+    working set is one decoded row group plus one day of IDs.
+    """
+    import pyarrow
+    import pyarrow.compute
+    import pyarrow.parquet
+
+    ids_per_source: list[list[str]] = []
+    for source_file, uri in zip(source_files, source_uris):
+        ids: list[str] = []
+        for group_index in range(source_file.num_row_groups):
+            column = source_file.read_row_group(group_index, columns=["id"])
+            ids.extend(
+                value for value in column.column("id").to_pylist() if value is not None
+            )
+        if len(ids) != len(set(ids)):
+            raise ValueError(f"Snapshot contains duplicate run IDs: {uri}")
+        ids_per_source.append(ids)
+
+    winner_index = len(source_files) - 1
+    winner_ids = (
+        pyarrow.array(sorted(set(ids_per_source[winner_index])))
+        if len(source_files) > 1
+        else None
+    )
+    unified = pyarrow.unify_schemas(
+        [_storage_schema(source.schema_arrow) for source in source_files],
+        promote_options="permissive",
+    )
+    written = 0
+    writer = pyarrow.parquet.ParquetWriter(str(target), unified, compression="zstd")
+    try:
+        for index, source_file in enumerate(source_files):
+            for group_index in range(source_file.num_row_groups):
+                table = _storage_table(source_file.read_row_group(group_index))
+                if winner_ids is not None and index != winner_index:
+                    keep = pyarrow.compute.invert(
+                        pyarrow.compute.is_in(table.column("id"), value_set=winner_ids)
+                    )
+                    table = table.filter(pyarrow.compute.fill_null(keep, True))
+                if table.num_rows:
+                    writer.write_table(_conform_table(table, unified))
+                    written += table.num_rows
+    finally:
+        writer.close()
+    metadata_rows = pyarrow.parquet.ParquetFile(str(target)).metadata.num_rows
+    if metadata_rows != written:
+        raise ValueError("Canonical row count mismatch after write")
+    return written
+
+
 def _canonicalize(store: ArchiveStore, manifest: ArchiveManifest, target: Path) -> int:
     sources: list[tuple[str, int]] = []
     if manifest.primary is not None:
@@ -356,6 +460,26 @@ def _canonicalize(store: ArchiveStore, manifest: ArchiveManifest, target: Path) 
     if not sources:
         raise ValueError("Cannot canonicalize a manifest without snapshots")
 
+    import contextlib
+
+    with contextlib.ExitStack() as stack:
+        source_files = []
+        for uri, _rank in sources:
+            source_files.append(stack.enter_context(_open_parquet_source(uri)))
+        if all(
+            _payload_columns_are_text(source.schema_arrow) for source in source_files
+        ):
+            return _canonicalize_streaming(
+                source_files, [uri for uri, _ in sources], target
+            )
+    # Legacy raw generations carry inferred STRUCT/LIST payload columns that need
+    # SQL normalization; they predate byte-bounded staging and are rare
+    # (re-canonicalizing an already-sealed day), so the memory-heavy path is kept
+    # only for them.
+    return _canonicalize_duckdb(sources, target)
+
+
+def _canonicalize_duckdb(sources: list[tuple[str, int]], target: Path) -> int:
     with archive_duckdb_connection(target.parent) as connection:
         configure_duckdb_s3(connection, [uri for uri, _ in sources])
         selects: list[str] = []
