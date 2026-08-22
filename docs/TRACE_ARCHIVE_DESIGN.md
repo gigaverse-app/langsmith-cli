@@ -176,11 +176,25 @@ Arbitrary SDK `bytes` values are preserved as tagged base64 objects with
 materialized at the JSON-to-Parquet boundary. This keeps non-UTF-8 media payloads
 without weakening UTF-8 validation for the surrounding trace document.
 
-Canonical nested fields (`inputs`, `outputs`, `extra`, `events`, `tags`,
-`feedback_stats`, and `parent_run_ids`) are JSON text. Runs API JSONL inference
-produces DuckDB `STRUCT`/`LIST` values while Bulk Export v2 supplies JSON `VARCHAR`;
-canonicalization converts both forms before union. This prevents provider changes or
-different object keys on adjacent days from producing incompatible Parquet schemas.
+Canonical schema v2 separates arbitrary payloads from shape-stable query dimensions:
+
+| Physical type | Run fields | Reason |
+| --- | --- | --- |
+| JSON text | `inputs`, `outputs`, `extra`, `events`, `feedback_stats` | Values are arbitrary provider/application documents; inferred children are unbounded. |
+| `list<string>` | `tags`, `parent_run_ids` | Both are documented homogeneous lists and useful filter/topology dimensions. |
+| `map<string, bigint>` | prompt/completion token details | Providers may add token categories without changing the Parquet schema. |
+| `map<string, decimal(38,18)>` | prompt/completion cost details | Cost categories remain open-ended while values retain decimal precision. |
+| `map<string, string>` | extracted `extra.metadata` | Metadata keys stay queryable without per-key columns; the authoritative heterogeneous object remains intact in `extra`. |
+
+Metadata map values use their stable textual representation (plain strings, decimal
+or boolean text, and compact JSON for nested values). Queries can cast a selected
+value when numeric comparison is required. Runs API JSONL and Bulk Export v2 are
+normalized to these types before canonical union.
+
+Manifest schema v1 remains readable. Readers normalize each published generation to
+v2 independently before cross-day `UNION ALL BY NAME`, so old JSON-text tags and
+parent IDs cannot dictate the type of new list columns. The next publication for an
+unsealed v1 day upgrades its manifest and canonical Parquet atomically to v2.
 
 The bucket owner may expire `raw/` after a repair/audit window. Canonical objects and
 manifests are retained according to the organization's policy.
@@ -276,7 +290,9 @@ routing, explicit-project failures, progress behavior, and status output.
 Bulk Export and the Runs API encode a few equivalent values differently. Bulk may
 pad inferred nested objects with null keys, add one JSON layer to LangChain's reserved
 `inputs.input`, omit the derived `child_run_ids`, and return unzoned UTC event times.
-The archive reader safely normalizes the latter three. It deliberately preserves
+It also emits tags/topology lists as JSON text and omits usage-detail maps. Canonical
+schema v2 normalizes those physical differences before publication; the archive
+reader safely normalizes the remaining SDK differences. It deliberately preserves
 nested nulls because the live CLI promises not to coerce or discard them. Parquet
 schema union cannot always distinguish an absent object member from an explicit null,
 so raw JSON is not universally byte-identical; semantic comparison must treat missing

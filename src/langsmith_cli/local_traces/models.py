@@ -9,7 +9,11 @@ from pathlib import PurePosixPath
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 
-LOCAL_TRACE_SCHEMA_VERSION = 1
+# v2: fragments store queryable dimensions (tags, parent_run_ids, token/cost
+# details, extra.metadata) as typed Parquet lists/maps instead of JSON text.
+# v1 fragments cannot union with v2 under one DuckDB scan, and local is a
+# disposable replica: old catalogs are rejected and re-pulled, never migrated.
+LOCAL_TRACE_SCHEMA_VERSION = 2
 
 
 class TraceSource(str, Enum):

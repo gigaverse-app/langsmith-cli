@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, time, timezone
+from decimal import Decimal
 import json
 from pathlib import Path
 from typing import Any, Iterator
+from uuid import UUID
 
 import pytest
 from langsmith.schemas import Run
@@ -13,7 +15,11 @@ from langsmith.schemas import Run
 from conftest import create_run, parse_json_output
 from langsmith_cli.archive.config import load_archive_config
 from langsmith_cli.archive.models import ArchivePhase
-from langsmith_cli.archive.query import ArchiveRunQuery, query_archive_runs
+from langsmith_cli.archive.query import (
+    ArchiveRunQuery,
+    count_archive_runs,
+    query_archive_runs,
+)
 from langsmith_cli.archive.storage import create_store
 from langsmith_cli.archive.sync import due_trace_dates, sync_project_day
 from langsmith_cli.main import cli
@@ -27,6 +33,9 @@ class FakeRunsClient:
     def list_runs(self, **kwargs: Any) -> Iterator[Run]:
         self.calls += 1
         return iter(self.runs)
+
+
+TYPED_DIMENSIONS_PARENT_ID = "22345678-1234-5678-1234-567812345678"
 
 
 def test_route_config_selects_exactly_one_destination(tmp_path: Path) -> None:
@@ -311,6 +320,300 @@ def test_runs_snapshot_stores_payloads_as_text_not_inferred_structs(
     assert archived[0].tags == ["t1", "t2"]
 
 
+def test_canonical_schema_v2_uses_stable_queryable_types(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """INVARIANT: query dimensions have one shape-independent Parquet type."""
+    import duckdb
+
+    archive_uri = str(tmp_path / "archive")
+    monkeypatch.setenv("LANGSMITH_ARCHIVE_URI", archive_uri)
+    store = create_store(archive_uri)
+    run = create_run(
+        tags=["production", "billing"],
+        metadata={
+            "environment": "production",
+            "attempt": 3,
+            "temperature": 0.25,
+            "enabled": True,
+            "deployment": {"region": "us-east-1"},
+            "nothing": None,
+            "price": Decimal("1.25"),
+            "moment": datetime(2024, 7, 3, 9, 27, 16, tzinfo=timezone.utc),
+            "clock": time(9, 27, 16),
+            "correlation_id": UUID(TYPED_DIMENSIONS_PARENT_ID),
+            "phase": ArchivePhase.PRIMARY,
+        },
+        inputs={"arbitrary": {"shape": [1, {"two": 2}]}},
+        outputs={"answer": {"nested": True}},
+    ).model_copy(
+        update={
+            "parent_run_ids": [UUID(TYPED_DIMENSIONS_PARENT_ID)],
+            "prompt_token_details": {"cache_read": 7, "audio": 2},
+            "completion_token_details": {"reasoning": 11},
+            "prompt_cost_details": {"cache_read": Decimal("0.0000012")},
+            "completion_cost_details": {"reasoning": Decimal("0.0000045")},
+        }
+    )
+
+    manifest = sync_project_day(
+        FakeRunsClient([run]),
+        store,
+        project_id="f47ac10b-58cc-4372-a567-0e02b2c3d479",
+        project_name="dev/typed-dimensions",
+        trace_date=date(2024, 7, 3),
+        phase=ArchivePhase.PRIMARY,
+    )
+
+    assert manifest.schema_version == 2
+    assert manifest.canonical_key is not None
+    canonical_path = Path(store.base_uri) / manifest.canonical_key
+    connection = duckdb.connect()
+    try:
+        described = {
+            str(row[0]): str(row[1])
+            for row in connection.execute(
+                f"DESCRIBE SELECT * FROM read_parquet('{canonical_path.as_posix()}')"
+            ).fetchall()
+        }
+        dimensions = connection.execute(
+            "SELECT list_contains(tags, 'production'), "
+            "list_contains(parent_run_ids, ?), metadata['environment'], "
+            "metadata['attempt'], metadata['deployment'], "
+            "prompt_token_details['cache_read'], "
+            "completion_cost_details['reasoning'], metadata "
+            f"FROM read_parquet('{canonical_path.as_posix()}')",
+            [TYPED_DIMENSIONS_PARENT_ID],
+        ).fetchone()
+    finally:
+        connection.close()
+
+    assert described["tags"] == "VARCHAR[]"
+    assert described["parent_run_ids"] == "VARCHAR[]"
+    assert described["metadata"] == "MAP(VARCHAR, VARCHAR)"
+    assert described["prompt_token_details"] == "MAP(VARCHAR, BIGINT)"
+    assert described["completion_token_details"] == "MAP(VARCHAR, BIGINT)"
+    assert described["prompt_cost_details"] == "MAP(VARCHAR, DECIMAL(38,18))"
+    assert described["completion_cost_details"] == "MAP(VARCHAR, DECIMAL(38,18))"
+    for payload_column in ("inputs", "outputs", "extra", "feedback_stats", "events"):
+        assert described[payload_column] == "VARCHAR"
+    assert dimensions == (
+        True,
+        True,
+        "production",
+        "3",
+        '{"region":"us-east-1"}',
+        7,
+        Decimal("0.000004500000000000"),
+        {
+            "environment": "production",
+            "attempt": "3",
+            "temperature": "0.25",
+            "enabled": "true",
+            "deployment": '{"region":"us-east-1"}',
+            "nothing": None,
+            "price": "1.25",
+            "moment": "2024-07-03T09:27:16+00:00",
+            "clock": "09:27:16",
+            "correlation_id": TYPED_DIMENSIONS_PARENT_ID,
+            "phase": "primary",
+        },
+    )
+
+    archived = query_archive_runs(
+        ArchiveRunQuery(project="dev/typed-dimensions", tags=("production",), limit=0)
+    )
+    assert archived[0].tags == ["production", "billing"]
+    assert archived[0].parent_run_ids == [UUID(TYPED_DIMENSIONS_PARENT_ID)]
+    assert archived[0].prompt_token_details == {"cache_read": 7, "audio": 2}
+    assert archived[0].completion_cost_details == {
+        "reasoning": Decimal("0.000004500000000000")
+    }
+
+
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        ({"metadata": "not-an-object"}, "must be an object"),
+        ({"metadata": {7: "not-a-string-key"}}, "keys must be strings"),
+    ],
+)
+def test_runs_api_snapshot_rejects_invalid_metadata_contracts(
+    tmp_path: Path,
+    extra: dict[object, object],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        sync_project_day(
+            FakeRunsClient([create_run(extra=extra)]),
+            create_store(str(tmp_path / "archive")),
+            project_id="f47ac10b-58cc-4372-a567-0e02b2c3d479",
+            project_name="dev/invalid-metadata",
+            trace_date=date(2024, 7, 3),
+            phase=ArchivePhase.PRIMARY,
+        )
+
+
+def test_streaming_schema_guard_rejects_noncanonical_dimension_types() -> None:
+    import pyarrow
+
+    from langsmith_cli.archive.sync import _query_dimensions_are_typed
+
+    canonical = {
+        "tags": pyarrow.list_(pyarrow.string()),
+        "parent_run_ids": pyarrow.list_(pyarrow.string()),
+        "prompt_token_details": pyarrow.map_(pyarrow.string(), pyarrow.int64()),
+        "completion_token_details": pyarrow.map_(pyarrow.string(), pyarrow.int64()),
+        "prompt_cost_details": pyarrow.map_(
+            pyarrow.string(), pyarrow.decimal128(38, 18)
+        ),
+        "completion_cost_details": pyarrow.map_(
+            pyarrow.string(), pyarrow.decimal128(38, 18)
+        ),
+        "metadata": pyarrow.map_(pyarrow.string(), pyarrow.string()),
+    }
+    invalid_types = (
+        ("tags", pyarrow.list_(pyarrow.int64())),
+        ("prompt_token_details", pyarrow.string()),
+        ("prompt_token_details", pyarrow.map_(pyarrow.int64(), pyarrow.int64())),
+        ("prompt_token_details", pyarrow.map_(pyarrow.string(), pyarrow.float64())),
+    )
+
+    for column, data_type in invalid_types:
+        invalid = {**canonical, column: data_type}
+        assert _query_dimensions_are_typed(pyarrow.schema(invalid)) is False
+
+
+def test_mixed_v1_v2_archive_days_query_through_one_normalized_relation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """INVARIANT: schema upgrades never strand already-published project-days."""
+    import duckdb
+
+    archive_uri = str(tmp_path / "archive")
+    monkeypatch.setenv("LANGSMITH_ARCHIVE_URI", archive_uri)
+    store = create_store(archive_uri)
+    project_id = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+    legacy_run = create_run(
+        tags=["shared", "legacy"],
+        metadata={"environment": "legacy", "attempt": 1},
+    ).model_copy(
+        update={
+            "parent_run_ids": [UUID(TYPED_DIMENSIONS_PARENT_ID)],
+            "prompt_token_details": {"cache_read": 5},
+            "completion_token_details": {"reasoning": 8},
+            "prompt_cost_details": {"cache_read": Decimal("0.000001")},
+            "completion_cost_details": {"reasoning": Decimal("0.000004")},
+        }
+    )
+    legacy_manifest = sync_project_day(
+        FakeRunsClient([legacy_run]),
+        store,
+        project_id=project_id,
+        project_name="dev/mixed-schema",
+        trace_date=date(2024, 7, 3),
+        phase=ArchivePhase.PRIMARY,
+    )
+    assert legacy_manifest.canonical_key is not None
+    current_path = Path(store.base_uri) / legacy_manifest.canonical_key
+    legacy_path = current_path.with_suffix(".legacy.parquet")
+    connection = duckdb.connect()
+    try:
+        connection.execute(
+            "COPY (SELECT * EXCLUDE (tags, parent_run_ids, metadata, "
+            "prompt_token_details, completion_token_details, "
+            "prompt_cost_details, completion_cost_details), "
+            "CAST(to_json(tags) AS VARCHAR) AS tags, "
+            "CAST(to_json(parent_run_ids) AS VARCHAR) AS parent_run_ids, "
+            "CAST(to_json(prompt_token_details) AS VARCHAR) "
+            "AS prompt_token_details, "
+            "CAST(to_json(completion_token_details) AS VARCHAR) "
+            "AS completion_token_details, "
+            "CAST(to_json(prompt_cost_details) AS VARCHAR) "
+            "AS prompt_cost_details, "
+            "CAST(to_json(completion_cost_details) AS VARCHAR) "
+            "AS completion_cost_details "
+            f"FROM read_parquet('{current_path.as_posix()}')) "
+            f"TO '{legacy_path.as_posix()}' (FORMAT PARQUET)"
+        )
+    finally:
+        connection.close()
+    legacy_path.replace(current_path)
+    manifest_key = (
+        Path(store.base_uri)
+        / "manifests"
+        / f"project_id={project_id}"
+        / "date=2024-07-03.json"
+    )
+    manifest_payload = json.loads(manifest_key.read_text(encoding="utf-8"))
+    manifest_payload["schema_version"] = 1
+    manifest_key.write_text(json.dumps(manifest_payload), encoding="utf-8")
+
+    current_run = create_run(
+        id_str="32345678-1234-5678-1234-567812345678",
+        tags=["shared", "current"],
+        metadata={"environment": "current", "attempt": 2},
+    )
+    sync_project_day(
+        FakeRunsClient([current_run]),
+        store,
+        project_id=project_id,
+        project_name="dev/mixed-schema",
+        trace_date=date(2024, 7, 4),
+        phase=ArchivePhase.PRIMARY,
+    )
+
+    query = ArchiveRunQuery(project="dev/mixed-schema", tags=("shared",), limit=0)
+    archived = query_archive_runs(query)
+    assert {str(run.id) for run in archived} == {
+        str(legacy_run.id),
+        str(current_run.id),
+    }
+    assert count_archive_runs(query) == 2
+    legacy = next(run for run in archived if run.id == legacy_run.id)
+    assert legacy.tags == ["shared", "legacy"]
+    assert legacy.parent_run_ids == [UUID(TYPED_DIMENSIONS_PARENT_ID)]
+    assert legacy.prompt_token_details == {"cache_read": 5}
+
+
+def test_reconciliation_upgrades_an_unsealed_v1_manifest_to_v2(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive_uri = str(tmp_path / "archive")
+    monkeypatch.setenv("LANGSMITH_ARCHIVE_URI", archive_uri)
+    store = create_store(archive_uri)
+    project_id = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+    primary = sync_project_day(
+        FakeRunsClient([create_run()]),
+        store,
+        project_id=project_id,
+        project_name="dev/upgrade-schema",
+        trace_date=date(2024, 7, 3),
+        phase=ArchivePhase.PRIMARY,
+    )
+    manifest_path = (
+        Path(store.base_uri)
+        / "manifests"
+        / f"project_id={project_id}"
+        / "date=2024-07-03.json"
+    )
+    payload = primary.to_dict()
+    payload["schema_version"] = 1
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    reconciled = sync_project_day(
+        FakeRunsClient([create_run()]),
+        store,
+        project_id=project_id,
+        project_name="dev/upgrade-schema",
+        trace_date=date(2024, 7, 3),
+        phase=ArchivePhase.RECONCILIATION,
+    )
+
+    assert reconciled.schema_version == 2
+    assert reconciled.sealed is True
+
+
 def test_oversized_days_are_staged_and_converted_in_bounded_pieces(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -373,6 +676,13 @@ def test_streaming_dedup_holds_across_row_groups_and_snapshots(
     from langsmith_cli.archive import sync as sync_module
 
     monkeypatch.setattr(sync_module, "STAGING_PIECE_MAX_BYTES", 1)
+
+    def _legacy_sql_path_is_forbidden(*args: object, **kwargs: object) -> int:
+        raise AssertionError("canonical v2 raw must stay on the bounded streaming path")
+
+    monkeypatch.setattr(
+        sync_module, "_canonicalize_duckdb", _legacy_sql_path_is_forbidden
+    )
     archive_uri = str(tmp_path / "archive")
     monkeypatch.setenv("LANGSMITH_ARCHIVE_URI", archive_uri)
     store = create_store(archive_uri)
@@ -429,6 +739,13 @@ def test_legacy_struct_raw_still_canonicalizes_through_the_sql_path(
     monkeypatch.setenv("LANGSMITH_ARCHIVE_URI", archive_uri)
     store = create_store(archive_uri)
 
+    def _v2_streaming_path_is_forbidden(*args: object, **kwargs: object) -> int:
+        raise AssertionError("legacy inferred payloads require SQL normalization")
+
+    monkeypatch.setattr(
+        sync_module, "_canonicalize_streaming", _v2_streaming_path_is_forbidden
+    )
+
     def _legacy_serialize(run: Run) -> bytes:
         payload = run.model_dump(mode="python")
         line = json.dumps(
@@ -438,6 +755,7 @@ def test_legacy_struct_raw_still_canonicalizes_through_the_sql_path(
 
     with monkeypatch.context() as legacy:
         legacy.setattr(sync_module, "_serialize_run_line", _legacy_serialize)
+        legacy.setattr(sync_module, "_runs_api_snapshot_select", lambda source: source)
         sync_project_day(
             FakeRunsClient([create_run(inputs={"deep": {"legacy": True}})]),
             store,

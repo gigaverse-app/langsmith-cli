@@ -34,7 +34,12 @@ from langsmith_cli.archive.query import (
 )
 from langsmith_cli.archive.query import _normalize_run_payload
 from langsmith_cli.archive.storage import create_store
-from langsmith_cli.archive.sync import ARCHIVE_JSON_COLUMNS, sync_project_day
+from langsmith_cli.archive.sync import (
+    ARCHIVE_JSON_COLUMNS,
+    ARCHIVE_STRING_LIST_COLUMNS,
+    BULK_EXPORT_JSON_COLUMNS,
+    sync_project_day,
+)
 from langsmith_cli.main import cli
 
 
@@ -54,15 +59,15 @@ def test_archive_json_columns_are_one_explicit_provider_schema_contract() -> Non
         "outputs",
         "feedback_stats",
         "events",
-        "tags",
-        "parent_run_ids",
     )
+    assert ARCHIVE_STRING_LIST_COLUMNS == ("tags", "parent_run_ids")
 
 
 def _bulk_v2_payload(run: Run) -> dict[str, object]:
     """Encode a Run like Bulk Export v2's JSON-valued Parquet columns."""
-    payload = cast(dict[str, object], run.model_dump(mode="json"))
-    for field in ARCHIVE_JSON_COLUMNS:
+    dumped = cast(dict[str, object], run.model_dump(mode="json"))
+    payload = {field: dumped[field] for field in BULK_EXPORT_FIELDS if field in dumped}
+    for field in BULK_EXPORT_JSON_COLUMNS:
         if field in payload and payload[field] is not None:
             payload[field] = json.dumps(payload[field])
     return payload
@@ -1023,9 +1028,17 @@ def test_bulk_reconciliation_unifies_runs_api_and_v2_json_column_types(
     tmp_path: Path, monkeypatch, runner
 ) -> None:
     """A Bulk v2 reconciliation must replace native Runs API rows by run ID."""
-    primary_run = create_run(outputs={"version": "runs-api"}, tags=["primary"])
+    primary_run = create_run(
+        outputs={"version": "runs-api"},
+        tags=["primary"],
+        metadata={"provider": "runs-api", "attempt": 1},
+    )
     reconciled_run = primary_run.model_copy(
-        update={"outputs": {"version": "bulk-v2"}, "tags": ["reconciled"]}
+        update={
+            "outputs": {"version": "bulk-v2"},
+            "tags": ["reconciled"],
+            "extra": {"metadata": {"provider": "bulk-v2", "attempt": 2}},
+        }
     )
     late_child = create_run(
         id_str="62345678-1234-5678-1234-567812345678",
@@ -1034,7 +1047,8 @@ def test_bulk_reconciliation_unifies_runs_api_and_v2_json_column_types(
         outputs={"late": True},
     ).model_copy(
         update={
-            "events": [{"name": "start", "time": "2026-08-19T21:59:53.948395+00:00"}]
+            "events": [{"name": "start", "time": "2026-08-19T21:59:53.948395+00:00"}],
+            "parent_run_ids": [primary_run.id],
         }
     )
     json_rows = tmp_path / "bulk-mixed.json"
@@ -1073,6 +1087,22 @@ def test_bulk_reconciliation_unifies_runs_api_and_v2_json_column_types(
     )
 
     assert manifest.canonical_run_count == 2
+    assert manifest.schema_version == 2
+    assert manifest.canonical_key is not None
+    import duckdb
+
+    canonical_path = Path(store.base_uri) / manifest.canonical_key
+    connection = duckdb.connect()
+    try:
+        extracted_provider = connection.execute(
+            "SELECT metadata['provider'] "
+            f"FROM read_parquet('{canonical_path.as_posix()}') "
+            "WHERE CAST(id AS VARCHAR) = ?",
+            [str(primary_run.id)],
+        ).fetchone()
+    finally:
+        connection.close()
+    assert extracted_provider == ("bulk-v2",)
     archived = query_archive_runs(ArchiveRunQuery(project="dev/agent", limit=0))
     assert {str(run.id) for run in archived} == {
         str(primary_run.id),
@@ -1081,6 +1111,7 @@ def test_bulk_reconciliation_unifies_runs_api_and_v2_json_column_types(
     root = next(run for run in archived if run.id == primary_run.id)
     assert root.outputs == {"version": "bulk-v2"}
     assert root.tags == ["reconciled"]
+    assert root.extra == {"metadata": {"provider": "bulk-v2", "attempt": 2}}
     archived_root, archived_children = read_archived_run(
         str(primary_run.id),
         follow_children=True,
@@ -1088,6 +1119,7 @@ def test_bulk_reconciliation_unifies_runs_api_and_v2_json_column_types(
     )
     assert [child.id for child in archived_children] == [late_child.id]
     assert archived_root.child_run_ids == [late_child.id]
+    assert archived_children[0].parent_run_ids == [primary_run.id]
     assert archived_children[0].model_dump(mode="json")["events"] == [
         {"name": "start", "time": "2026-08-19T21:59:53.948395+00:00"}
     ]

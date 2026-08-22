@@ -13,21 +13,30 @@ if TYPE_CHECKING:
     from langsmith.schemas import Run
 
 
-# Canonical Parquet stores nested provider fields as JSON text. Runs API JSONL is
-# inferred as STRUCT/LIST while Bulk Export v2 emits VARCHAR for the same fields;
-# this one contract keeps every fragment provider- and source-compatible.
+# Canonical Parquet keeps arbitrary payloads as JSON text and promotes only
+# shape-stable, queryable dimensions to native lists/maps. This explicit taxonomy
+# prevents provider keys from becoming inferred STRUCT children, and one contract
+# keeps every fragment provider- and source-compatible.
 ARCHIVE_JSON_OBJECT_COLUMNS = (
     "extra",
     "inputs",
     "outputs",
     "feedback_stats",
 )
-ARCHIVE_JSON_LIST_COLUMNS = (
-    "events",
-    "tags",
-    "parent_run_ids",
-)
+ARCHIVE_JSON_LIST_COLUMNS = ("events",)
 ARCHIVE_JSON_COLUMNS = ARCHIVE_JSON_OBJECT_COLUMNS + ARCHIVE_JSON_LIST_COLUMNS
+ARCHIVE_STRING_LIST_COLUMNS = ("tags", "parent_run_ids")
+BULK_EXPORT_JSON_COLUMNS = ARCHIVE_JSON_COLUMNS + ARCHIVE_STRING_LIST_COLUMNS
+ARCHIVE_INTEGER_MAP_COLUMNS = (
+    "prompt_token_details",
+    "completion_token_details",
+)
+ARCHIVE_DECIMAL_MAP_COLUMNS = (
+    "prompt_cost_details",
+    "completion_cost_details",
+)
+ARCHIVE_TYPED_MAP_COLUMNS = ARCHIVE_INTEGER_MAP_COLUMNS + ARCHIVE_DECIMAL_MAP_COLUMNS
+ARCHIVE_METADATA_COLUMN = "metadata"
 
 
 def normalize_event_time(value: object) -> object:
@@ -47,6 +56,13 @@ def normalize_event_time(value: object) -> object:
 
 def normalize_run_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Normalize provider-specific Parquet values to the LangSmith Run contract."""
+    # ``metadata`` is a physical query accelerator extracted from ``extra``; the
+    # strict SDK Run contract continues to receive the authoritative full object.
+    payload.pop(ARCHIVE_METADATA_COLUMN, None)
+    # Managed Bulk Export omits attachments. UNION BY NAME materializes that
+    # absence as NULL, while the SDK contract expects the field omitted/defaulted.
+    if "attachments" in payload and payload["attachments"] is None:
+        payload.pop("attachments")
     for field in (
         "id",
         "trace_id",
@@ -65,6 +81,7 @@ def normalize_run_payload(payload: dict[str, Any]) -> dict[str, Any]:
     expected_json_types = {
         **dict.fromkeys(ARCHIVE_JSON_OBJECT_COLUMNS, dict),
         **dict.fromkeys(ARCHIVE_JSON_LIST_COLUMNS, list),
+        **dict.fromkeys(ARCHIVE_STRING_LIST_COLUMNS, list),
     }
     for field, expected_type in expected_json_types.items():
         value = payload[field] if field in payload else None
@@ -147,7 +164,10 @@ def parquet_where_clause(query: RunQuery) -> tuple[str, list[object]]:
             "parent_run_id IS NULL" if query.is_root else "parent_run_id IS NOT NULL"
         )
     for tag in query.tags:
-        clauses.append("json_contains(CAST(tags AS JSON), to_json(?))")
+        # Every reader path materializes ``tags`` as a native VARCHAR[] (typed v2
+        # fragments directly; v1 archive generations through the normalized view),
+        # so list predicates push down into Parquet instead of re-parsing JSON.
+        clauses.append("list_contains(tags, ?)")
         parameters.append(tag)
     if query.text is not None:
         # Field identifiers come only from RunQuery's explicit allowlist. Every user
