@@ -48,6 +48,118 @@ def _run(run_id: str, name: str, *, outputs: dict[str, str] | None = None):
     )
 
 
+def test_local_trace_models_reject_invalid_identity_time_and_catalog_state() -> None:
+    """Every persisted boundary fails fast instead of normalizing invalid state."""
+    from pydantic import ValidationError
+
+    from langsmith_cli.local_traces.models import (
+        TraceCatalog,
+        TraceFragment,
+        TraceSelection,
+    )
+
+    naive = datetime(2026, 8, 22, 12, 0)
+    with pytest.raises(ValidationError, match="timezone-aware"):
+        TracePullRequest.model_validate(
+            _pull_request().model_dump() | {"requested_at": naive}
+        )
+    with pytest.raises(ValidationError, match="originate outside local"):
+        TracePullRequest.model_validate(
+            _pull_request().model_dump() | {"source": TraceSource.LOCAL}
+        )
+    with pytest.raises(ValidationError, match="stable project ID and name"):
+        TracePullRequest.model_validate(
+            _pull_request().model_dump() | {"project_id": ""}
+        )
+    with pytest.raises(ValidationError, match="since must be earlier"):
+        TracePullRequest.model_validate(
+            _pull_request().model_dump() | {"since": OBSERVED_AT, "before": OBSERVED_AT}
+        )
+
+    valid_selection = {
+        "source": TraceSource.CLOUD,
+        "project_name": PROJECT_NAME,
+        "requested_at": OBSERVED_AT,
+    }
+    with pytest.raises(ValidationError, match="timezone-aware"):
+        TraceSelection.model_validate(valid_selection | {"requested_at": naive})
+    with pytest.raises(ValidationError, match="non-negative"):
+        TraceSelection.model_validate(valid_selection | {"limit": -1})
+    with pytest.raises(ValidationError, match="destination"):
+        TraceSelection.model_validate(valid_selection | {"source": TraceSource.LOCAL})
+    with pytest.raises(ValidationError, match="exact project name"):
+        TraceSelection.model_validate(valid_selection | {"project_name": ""})
+    with pytest.raises(ValidationError, match="since must be earlier"):
+        TraceSelection.model_validate(
+            valid_selection | {"since": OBSERVED_AT, "before": OBSERVED_AT}
+        )
+
+    valid_fragment = {
+        "key": "traces/fragments/fragment.parquet",
+        "sha256": "a" * 64,
+        "content_digest": "b" * 64,
+        "row_count": 1,
+        "project_id": PROJECT_ID,
+        "project_name": PROJECT_NAME,
+        "origin": TraceSource.CLOUD,
+        "observed_at": OBSERVED_AT,
+    }
+    with pytest.raises(ValidationError, match="lowercase SHA-256"):
+        TraceFragment.model_validate(valid_fragment | {"sha256": "INVALID"})
+    with pytest.raises(ValidationError, match="at least one row"):
+        TraceFragment.model_validate(valid_fragment | {"row_count": 0})
+    with pytest.raises(ValidationError, match="timezone-aware"):
+        TraceFragment.model_validate(valid_fragment | {"observed_at": naive})
+    fragment = TraceFragment.model_validate(valid_fragment)
+    with pytest.raises(ValidationError, match="Unsupported local trace catalog"):
+        TraceCatalog(schema_version=2)
+    with pytest.raises(ValidationError, match="duplicate fragments"):
+        TraceCatalog(fragments=(fragment, fragment))
+
+
+def test_empty_addition_records_pull_without_creating_a_fragment(
+    tmp_path: Path,
+) -> None:
+    repository = LocalTraceRepository(tmp_path)
+
+    result = repository.add_runs(_pull_request(), [])
+
+    assert result.added_run_count == 0
+    assert result.fragment_count == 0
+    assert len(repository.read_catalog().pulls) == 1
+
+
+def test_repository_fail_fast_and_eviction_edges(tmp_path: Path) -> None:
+    repository = LocalTraceRepository(tmp_path)
+    with pytest.raises(LookupError, match="Local run not found"):
+        repository.get(FIRST_RUN_ID, follow_children=False)
+    with pytest.raises(ValueError, match="session_id does not match"):
+        repository.add_runs(
+            _pull_request(),
+            [
+                create_run(
+                    id_str=FIRST_RUN_ID,
+                    session_id="f47ac10b-58cc-4372-a567-0e02b2c3d480",
+                )
+            ],
+        )
+
+    repository.add_runs(_pull_request(), [_run(FIRST_RUN_ID, "stored")])
+    assert repository.query(RunQuery(project_name_pattern="prod/*", limit=None)) == []
+    assert repository.query(RunQuery(project_name_regex="^prod/", limit=None)) == []
+    evicted = repository.evict()
+    repeated = repository.evict()
+    assert evicted.remaining_run_count == 0
+    assert repeated.removed_run_count == 0
+
+    missing_repository = LocalTraceRepository(tmp_path / "missing")
+    missing_repository.add_runs(_pull_request(), [_run(FIRST_RUN_ID, "missing")])
+    fragment = missing_repository.read_catalog().fragments[0]
+    (tmp_path / "missing" / fragment.key).unlink()
+    with pytest.raises(ValueError, match="fragment is missing"):
+        missing_repository.query(RunQuery(limit=None))
+
+
 class _ArchiveRunsClient:
     def __init__(self, runs: list[Run]) -> None:
         self._runs = runs
