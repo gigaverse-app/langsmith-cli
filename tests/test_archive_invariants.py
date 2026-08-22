@@ -711,6 +711,28 @@ def test_duckdb_resources_are_bounded_and_unique_to_each_project_staging_area(
         second.close()
 
 
+def test_archive_parquet_writers_bound_row_group_bytes() -> None:
+    """
+    Trace rows carry multi-megabyte JSON text (inputs/outputs), so a default
+    row-count-sized row group buffers gigabytes before flushing — the buffer cannot
+    spill, and real project-days OOMed a 1 GiB bound in-cluster even with
+    insertion-order preservation off. Every archive COPY must use the shared
+    byte-bounded options.
+    """
+    import inspect
+
+    from langsmith_cli.archive import sync as sync_module
+    from langsmith_cli.archive.duckdb import ARCHIVE_PARQUET_COPY_OPTIONS
+
+    assert "ROW_GROUP_SIZE_BYTES" in ARCHIVE_PARQUET_COPY_OPTIONS
+    assert "FORMAT PARQUET" in ARCHIVE_PARQUET_COPY_OPTIONS
+    source = inspect.getsource(sync_module)
+    assert "(FORMAT PARQUET" not in source, (
+        "archive COPY statements must use ARCHIVE_PARQUET_COPY_OPTIONS, "
+        "not inline Parquet options"
+    )
+
+
 def test_duckdb_connections_do_not_preserve_insertion_order(tmp_path: Path) -> None:
     """
     Insertion-order preservation blocks spilling for the canonicalization

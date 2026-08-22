@@ -23,6 +23,7 @@ from langsmith_cli.archive.models import (
     PhaseStatus,
 )
 from langsmith_cli.archive.duckdb import (
+    ARCHIVE_PARQUET_COPY_OPTIONS,
     archive_duckdb_connection,
     configure_duckdb_s3,
 )
@@ -149,14 +150,12 @@ def _write_runs_parquet(
                 connection.execute(
                     "COPY (SELECT * FROM read_json_auto("
                     f"{_sql_string(str(rows_path))}, maximum_object_size=104857600)) "
-                    f"TO {_sql_string(str(target))} "
-                    "(FORMAT PARQUET, COMPRESSION ZSTD)"
+                    f"TO {_sql_string(str(target))} " + ARCHIVE_PARQUET_COPY_OPTIONS
                 )
             else:
                 connection.execute(
                     "COPY (SELECT CAST(NULL AS VARCHAR) AS id WHERE false) "
-                    f"TO {_sql_string(str(target))} "
-                    "(FORMAT PARQUET, COMPRESSION ZSTD)"
+                    f"TO {_sql_string(str(target))} " + ARCHIVE_PARQUET_COPY_OPTIONS
                 )
         return run_count
     finally:
@@ -196,15 +195,14 @@ def _write_bulk_parquet(
                 raise ValueError("Bulk export contains duplicate run IDs")
             connection.execute(
                 f"COPY (SELECT * FROM {source}) TO {_sql_string(str(target))} "
-                "(FORMAT PARQUET, COMPRESSION ZSTD)"
+                + ARCHIVE_PARQUET_COPY_OPTIONS
             )
         else:
             if snapshot.file_uris:
                 raise ValueError("Empty bulk export unexpectedly published files")
             connection.execute(
                 "COPY (SELECT CAST(NULL AS VARCHAR) AS id WHERE false) "
-                f"TO {_sql_string(str(target))} "
-                "(FORMAT PARQUET, COMPRESSION ZSTD)"
+                f"TO {_sql_string(str(target))} " + ARCHIVE_PARQUET_COPY_OPTIONS
             )
     return snapshot.export_id, snapshot.run_count
 
@@ -262,7 +260,7 @@ def _canonicalize(store: ArchiveStore, manifest: ArchiveManifest, target: Path) 
         )
         connection.execute(
             f"COPY ({query}) TO {_sql_string(str(target))} "
-            "(FORMAT PARQUET, COMPRESSION ZSTD)"
+            + ARCHIVE_PARQUET_COPY_OPTIONS
         )
         # Verify the artifact we will upload instead of rerunning the remote union
         # and window function. This is one local scan and proves canonical IDs are

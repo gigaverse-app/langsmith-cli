@@ -28,6 +28,18 @@ def duckdb_memory_limit() -> str:
     return configured or DUCKDB_MEMORY_LIMIT
 
 
+# Trace rows carry multi-megabyte JSON text (inputs/outputs), so DuckDB's default
+# row-COUNT-sized row groups buffer gigabytes before flushing, and that buffer cannot
+# spill (real project-days OOMed a 1 GiB bound in-cluster). Bounding row groups by
+# BYTES keeps the write buffer proportional to this constant instead of to payload
+# width. Effective only with preserve_insertion_order=false, which
+# configure_duckdb_resources also sets.
+# Tested by test_archive_parquet_writers_bound_row_group_bytes.
+ARCHIVE_PARQUET_COPY_OPTIONS = (
+    "(FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE_BYTES '128MB')"
+)
+
+
 class DuckConnection(Protocol):
     def execute(self, query: str, parameters: object | None = None) -> Any: ...
 
