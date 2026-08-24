@@ -25,6 +25,8 @@ from langsmith_cli.archive.models import (
 )
 from langsmith_cli.archive.parquet import (
     ARCHIVE_DECIMAL_MAP_COLUMNS,
+    ARCHIVE_DIMENSION_COLUMNS,
+    ARCHIVE_DIMENSION_SQL_TYPES,
     ARCHIVE_INTEGER_MAP_COLUMNS,
     ARCHIVE_JSON_COLUMNS,
     ARCHIVE_JSON_LIST_COLUMNS,
@@ -33,11 +35,14 @@ from langsmith_cli.archive.parquet import (
     ARCHIVE_STRING_LIST_COLUMNS,
     ARCHIVE_TYPED_MAP_COLUMNS,
     BULK_EXPORT_JSON_COLUMNS,
+    json_dimension_projection,
 )
 from langsmith_cli.archive.duckdb import (
     ARCHIVE_PARQUET_COPY_OPTIONS,
     archive_duckdb_connection,
     configure_duckdb_s3,
+    source_column_names,
+    sql_string,
 )
 from langsmith_cli.archive.repository import (
     ManifestSnapshot,
@@ -80,8 +85,9 @@ class RunsExportClient(Protocol):
     def list_runs(self, **kwargs: Any) -> Iterator[Run]: ...
 
 
-def _sql_string(value: str) -> str:
-    return "'" + value.replace("'", "''") + "'"
+# Bare alias: existing call sites throughout this module keep working while the
+# one implementation lives beside the connection helpers it belongs with.
+_sql_string = sql_string
 
 
 def _archive_json_default(value: object) -> object:
@@ -221,18 +227,15 @@ def _runs_api_snapshot_select(source: str) -> str:
     )
     expressions = [
         *(
-            f"CAST({column} AS VARCHAR[]) AS {column}"
+            # The v2 writer stages these as native JSON lists; a plain cast
+            # types them without a JSON round-trip.
+            f"CAST({column} AS {ARCHIVE_DIMENSION_SQL_TYPES[column]}) AS {column}"
             for column in ARCHIVE_STRING_LIST_COLUMNS
         ),
         *(
-            f"CASE WHEN {column} IS NULL THEN NULL::MAP(VARCHAR, BIGINT) "
-            f"ELSE CAST(CAST({column} AS JSON) AS MAP(VARCHAR, BIGINT)) END AS {column}"
-            for column in ARCHIVE_INTEGER_MAP_COLUMNS
-        ),
-        *(
-            f"CASE WHEN {column} IS NULL THEN NULL::MAP(VARCHAR, DECIMAL(38,18)) "
-            f"ELSE CAST(CAST({column} AS JSON) AS MAP(VARCHAR, DECIMAL(38,18))) END AS {column}"
-            for column in ARCHIVE_DECIMAL_MAP_COLUMNS
+            f"CAST(CAST({column} AS JSON) "
+            f"AS {ARCHIVE_DIMENSION_SQL_TYPES[column]}) AS {column}"
+            for column in ARCHIVE_TYPED_MAP_COLUMNS
         ),
         f"map(CAST({_STAGING_METADATA_KEYS} AS VARCHAR[]), "
         f"CAST({_STAGING_METADATA_VALUES} AS VARCHAR[])) AS {ARCHIVE_METADATA_COLUMN}",
@@ -241,39 +244,10 @@ def _runs_api_snapshot_select(source: str) -> str:
 
 
 def _bulk_snapshot_select(source: str, columns: set[str]) -> str:
-    typed_columns = (
-        *ARCHIVE_STRING_LIST_COLUMNS,
-        *ARCHIVE_TYPED_MAP_COLUMNS,
-        ARCHIVE_METADATA_COLUMN,
+    excluded, expressions = json_dimension_projection(
+        columns, metadata_column_is_canonical=False
     )
-    excluded = ", ".join(column for column in typed_columns if column in columns)
-    expressions = [
-        *(
-            f"CASE WHEN {column} IS NULL THEN NULL::VARCHAR[] "
-            f"ELSE CAST(CAST({column} AS JSON) AS VARCHAR[]) END AS {column}"
-            if column in columns
-            else f"NULL::VARCHAR[] AS {column}"
-            for column in ARCHIVE_STRING_LIST_COLUMNS
-        ),
-        *(
-            f"CAST(CAST({column} AS JSON) AS MAP(VARCHAR, BIGINT)) AS {column}"
-            if column in columns
-            else f"NULL::MAP(VARCHAR, BIGINT) AS {column}"
-            for column in ARCHIVE_INTEGER_MAP_COLUMNS
-        ),
-        *(
-            f"CAST(CAST({column} AS JSON) AS MAP(VARCHAR, DECIMAL(38,18))) AS {column}"
-            if column in columns
-            else f"NULL::MAP(VARCHAR, DECIMAL(38,18)) AS {column}"
-            for column in ARCHIVE_DECIMAL_MAP_COLUMNS
-        ),
-    ]
-    expressions.append(
-        "coalesce(CAST(json_extract(CAST(extra AS JSON), '$.metadata') "
-        "AS MAP(VARCHAR, VARCHAR)), map()::MAP(VARCHAR, VARCHAR)) "
-        f"AS {ARCHIVE_METADATA_COLUMN}"
-    )
-    exclude_sql = f" EXCLUDE ({excluded})" if excluded else ""
+    exclude_sql = f" EXCLUDE ({', '.join(excluded)})" if excluded else ""
     return f"(SELECT *{exclude_sql}, {', '.join(expressions)} FROM {source})"
 
 
@@ -535,13 +509,9 @@ def _write_bulk_parquet(
                 raise ValueError("Bulk export row count does not match Parquet")
             if counts[0] != counts[1]:
                 raise ValueError("Bulk export contains duplicate run IDs")
-            columns = {
-                str(row[0])
-                for row in connection.execute(
-                    f"DESCRIBE SELECT * FROM {source}"
-                ).fetchall()
-            }
-            source = _bulk_snapshot_select(source, columns)
+            source = _bulk_snapshot_select(
+                source, source_column_names(connection, source)
+            )
             connection.execute(
                 f"COPY (SELECT * FROM {source}) TO {_sql_string(str(target))} "
                 + ARCHIVE_PARQUET_COPY_OPTIONS
@@ -591,24 +561,21 @@ def _query_dimensions_are_typed(schema: Any) -> bool:
     import pyarrow
 
     fields = {field.name: field.type for field in schema}
-    for column in ARCHIVE_STRING_LIST_COLUMNS:
-        data_type = fields[column] if column in fields else None
-        if data_type is None or not pyarrow.types.is_list(data_type):
+    for column, target in _typed_dimension_types().items():
+        data_type = fields.get(column)
+        if data_type is None:
             return False
-        if not pyarrow.types.is_string(data_type.value_type):
-            return False
-    expected_maps = {
-        **dict.fromkeys(ARCHIVE_INTEGER_MAP_COLUMNS, pyarrow.int64()),
-        **dict.fromkeys(ARCHIVE_DECIMAL_MAP_COLUMNS, pyarrow.decimal128(38, 18)),
-        ARCHIVE_METADATA_COLUMN: pyarrow.string(),
-    }
-    for column, value_type in expected_maps.items():
-        data_type = fields[column] if column in fields else None
-        if data_type is None or not pyarrow.types.is_map(data_type):
+        if pyarrow.types.is_list(target):
+            if not pyarrow.types.is_list(data_type):
+                return False
+            if not pyarrow.types.is_string(data_type.value_type):
+                return False
+            continue
+        if not pyarrow.types.is_map(data_type):
             return False
         if not pyarrow.types.is_string(data_type.key_type):
             return False
-        if not data_type.item_type.equals(value_type):
+        if not data_type.item_type.equals(target.item_type):
             return False
     return True
 
@@ -641,11 +608,7 @@ def _dimensions_are_streamable(schema: Any) -> bool:
     import pyarrow
 
     fields = {field.name: field.type for field in schema}
-    for column in (
-        *ARCHIVE_STRING_LIST_COLUMNS,
-        *ARCHIVE_TYPED_MAP_COLUMNS,
-        ARCHIVE_METADATA_COLUMN,
-    ):
+    for column in ARCHIVE_DIMENSION_COLUMNS:
         data_type = fields.get(column)
         if data_type is None:
             continue
@@ -763,14 +726,13 @@ def _typed_dimensions_table(table: Any) -> Any:
                 continue
             if pyarrow.types.is_null(existing.type):
                 array: Any = pyarrow.nulls(table.num_rows, type=target_type)
-            elif pyarrow.types.is_string(
-                existing.type
-            ) or pyarrow.types.is_large_string(existing.type):
-                array = pyarrow.array(
-                    _parsed_dimension_values(column, existing.to_pylist()),
-                    type=target_type,
-                )
-            elif pyarrow.types.is_struct(existing.type):
+            elif (
+                # v1 JSON text and inferred STRUCTs both decode to Python values
+                # the same converters validate.
+                pyarrow.types.is_string(existing.type)
+                or pyarrow.types.is_large_string(existing.type)
+                or pyarrow.types.is_struct(existing.type)
+            ):
                 array = pyarrow.array(
                     _parsed_dimension_values(column, existing.to_pylist()),
                     type=target_type,
@@ -955,16 +917,12 @@ def _canonicalize_duckdb(sources: list[tuple[str, int]], target: Path) -> int:
             json_columns = tuple(
                 column for column in ARCHIVE_JSON_COLUMNS if column in columns
             )
-            typed_columns = tuple(
-                column
-                for column in (
-                    *ARCHIVE_STRING_LIST_COLUMNS,
-                    *ARCHIVE_TYPED_MAP_COLUMNS,
-                    ARCHIVE_METADATA_COLUMN,
-                )
-                if column in columns
+            # This canonicalizer may re-read its own typed output when a day is
+            # re-canonicalized, so an existing metadata column is canonical here.
+            dimension_excluded, dimension_expressions = json_dimension_projection(
+                columns, metadata_column_is_canonical=True
             )
-            excluded_columns = (*json_columns, *typed_columns)
+            excluded_columns = (*json_columns, *dimension_excluded)
             expressions = [
                 *(
                     f"CASE WHEN typeof({column}) = 'VARCHAR' "
@@ -972,41 +930,8 @@ def _canonicalize_duckdb(sources: list[tuple[str, int]], target: Path) -> int:
                     f"ELSE CAST(to_json({column}) AS VARCHAR) END AS {column}"
                     for column in json_columns
                 ),
-                *(
-                    f"CAST(CAST({column} AS JSON) AS VARCHAR[]) AS {column}"
-                    if column in columns
-                    else f"NULL::VARCHAR[] AS {column}"
-                    for column in ARCHIVE_STRING_LIST_COLUMNS
-                ),
-                *(
-                    f"CAST(CAST({column} AS JSON) AS MAP(VARCHAR, BIGINT)) AS {column}"
-                    if column in columns
-                    else f"NULL::MAP(VARCHAR, BIGINT) AS {column}"
-                    for column in ARCHIVE_INTEGER_MAP_COLUMNS
-                ),
-                *(
-                    f"CAST(CAST({column} AS JSON) "
-                    f"AS MAP(VARCHAR, DECIMAL(38,18))) AS {column}"
-                    if column in columns
-                    else f"NULL::MAP(VARCHAR, DECIMAL(38,18)) AS {column}"
-                    for column in ARCHIVE_DECIMAL_MAP_COLUMNS
-                ),
+                *dimension_expressions,
             ]
-            if ARCHIVE_METADATA_COLUMN in columns:
-                expressions.append(
-                    f"CAST({ARCHIVE_METADATA_COLUMN} AS MAP(VARCHAR, VARCHAR)) "
-                    f"AS {ARCHIVE_METADATA_COLUMN}"
-                )
-            elif "extra" in columns:
-                expressions.append(
-                    "coalesce(CAST(json_extract(CAST(extra AS JSON), '$.metadata') "
-                    "AS MAP(VARCHAR, VARCHAR)), map()::MAP(VARCHAR, VARCHAR)) "
-                    f"AS {ARCHIVE_METADATA_COLUMN}"
-                )
-            else:
-                expressions.append(
-                    f"map()::MAP(VARCHAR, VARCHAR) AS {ARCHIVE_METADATA_COLUMN}"
-                )
             exclude_sql = (
                 f" EXCLUDE ({', '.join(excluded_columns)})" if excluded_columns else ""
             )

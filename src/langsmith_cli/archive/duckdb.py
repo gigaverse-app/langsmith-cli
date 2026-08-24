@@ -59,6 +59,19 @@ class DuckConnection(Protocol):
     def fetchmany(self, size: int = 1) -> list[tuple[Any, ...]]: ...
 
 
+def sql_string(value: str) -> str:
+    """Quote one SQL string literal (paths/URIs interpolated into DDL/COPY)."""
+    return "'" + value.replace("'", "''") + "'"
+
+
+def source_column_names(connection: Any, source: str) -> set[str]:
+    """The column names one FROM-able source exposes, via DESCRIBE."""
+    return {
+        str(row[0])
+        for row in connection.execute(f"DESCRIBE SELECT * FROM {source}").fetchall()
+    }
+
+
 def configure_duckdb_resources(
     connection: DuckConnection,
     staging_directory: Path,

@@ -1082,14 +1082,29 @@ def test_typed_dimensions_table_repairs_absent_null_and_castable_columns() -> No
     )
 
 
-def test_dimension_edges_without_extra_or_with_extension_types(
+def test_extension_typed_dimension_falls_off_the_streaming_path() -> None:
+    import pyarrow
+
+    from langsmith_cli.archive import sync as sync_module
+
+    extension = getattr(pyarrow, "uuid", None)
+    if extension is None:
+        pytest.skip("this pyarrow build has no uuid extension type")
+    # A uuid-extension tags column strips to fixed binary: not a list, so the
+    # source must fall off the streaming path instead of miscasting.
+    assert (
+        sync_module._dimensions_are_streamable(pyarrow.schema({"tags": extension()}))
+        is False
+    )
+
+
+def test_dimension_edges_without_extra_column(
     tmp_path: Path,
 ) -> None:
     """
     Remaining migration edges: a row group with no ``extra`` column still gets
-    an empty metadata map; extension-typed dimension columns strip to their
-    storage type before the streamable check; and the SQL fallback synthesizes
-    an empty metadata map for sources carrying neither metadata nor extra.
+    an empty metadata map, and the SQL fallback synthesizes an empty metadata
+    map for sources carrying neither metadata nor extra.
     """
     import pyarrow
     import pyarrow.parquet
@@ -1098,17 +1113,6 @@ def test_dimension_edges_without_extra_or_with_extension_types(
 
     bare = pyarrow.table({"id": pyarrow.array(["a"], type=pyarrow.string())})
     assert sync_module._derived_metadata_values(bare) == [[]]
-
-    extension = getattr(pyarrow, "uuid", None)
-    if extension is not None:
-        # A uuid-extension tags column strips to fixed binary: not a list, so
-        # the source must fall off the streaming path instead of miscasting.
-        assert (
-            sync_module._dimensions_are_streamable(
-                pyarrow.schema({"tags": extension()})
-            )
-            is False
-        )
 
     source_path = tmp_path / "no-extra.parquet"
     pyarrow.parquet.write_table(

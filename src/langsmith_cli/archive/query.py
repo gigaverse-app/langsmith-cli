@@ -12,13 +12,12 @@ from langsmith_cli.archive.config import load_archive_config
 from langsmith_cli.archive.duckdb import (
     archive_duckdb_connection,
     configure_duckdb_s3,
+    source_column_names,
+    sql_string,
 )
 from langsmith_cli.archive.models import ARCHIVE_SCHEMA_VERSION
 from langsmith_cli.archive.parquet import (
-    ARCHIVE_DECIMAL_MAP_COLUMNS,
-    ARCHIVE_INTEGER_MAP_COLUMNS,
-    ARCHIVE_METADATA_COLUMN,
-    ARCHIVE_STRING_LIST_COLUMNS,
+    json_dimension_projection,
     normalize_run_payload,
     parquet_where_clause as _where_clause,
     validated_parquet_run as _validated_archive_run,
@@ -169,21 +168,11 @@ def _date_partition_overlaps(
     )
 
 
-def _sql_string(value: str) -> str:
-    return "'" + value.replace("'", "''") + "'"
-
-
 def _create_normalized_runs_view(
     connection: Any, sources: list[CanonicalArchiveSource]
 ) -> None:
     """Expose v1/v2 files through the current typed physical contract."""
     selects: list[str] = []
-    typed_columns = (
-        *ARCHIVE_STRING_LIST_COLUMNS,
-        *ARCHIVE_INTEGER_MAP_COLUMNS,
-        *ARCHIVE_DECIMAL_MAP_COLUMNS,
-        ARCHIVE_METADATA_COLUMN,
-    )
     current_uris = [
         source.uri
         for source in sources
@@ -196,43 +185,19 @@ def _create_normalized_runs_view(
     ]
     if current_uris:
         current = (
-            f"read_parquet([{', '.join(_sql_string(uri) for uri in current_uris)}], "
+            f"read_parquet([{', '.join(sql_string(uri) for uri in current_uris)}], "
             "union_by_name=true, hive_partitioning=false)"
         )
         # v2 is already the query contract. Keeping this projection as an identity
         # lets DuckDB push tag/list predicates and column projection into Parquet.
         selects.append(f"SELECT * FROM {current}")
     for uri in legacy_uris:
-        parquet = f"read_parquet({_sql_string(uri)}, hive_partitioning=false)"
-        columns = {
-            str(row[0])
-            for row in connection.execute(
-                f"DESCRIBE SELECT * FROM {parquet}"
-            ).fetchall()
-        }
-        excluded = [column for column in typed_columns if column in columns]
-        projection = [
-            f"CAST(CAST({column} AS JSON) AS VARCHAR[]) AS {column}"
-            if column in columns
-            else f"NULL::VARCHAR[] AS {column}"
-            for column in ARCHIVE_STRING_LIST_COLUMNS
-        ]
-        projection.extend(
-            f"CAST(CAST({column} AS JSON) AS MAP(VARCHAR, BIGINT)) AS {column}"
-            if column in columns
-            else f"NULL::MAP(VARCHAR, BIGINT) AS {column}"
-            for column in ARCHIVE_INTEGER_MAP_COLUMNS
-        )
-        projection.extend(
-            f"CAST(CAST({column} AS JSON) AS MAP(VARCHAR, DECIMAL(38,18))) AS {column}"
-            if column in columns
-            else f"NULL::MAP(VARCHAR, DECIMAL(38,18)) AS {column}"
-            for column in ARCHIVE_DECIMAL_MAP_COLUMNS
-        )
-        projection.append(
-            "coalesce(CAST(json_extract(CAST(extra AS JSON), '$.metadata') "
-            "AS MAP(VARCHAR, VARCHAR)), map()::MAP(VARCHAR, VARCHAR)) "
-            f"AS {ARCHIVE_METADATA_COLUMN}"
+        parquet = f"read_parquet({sql_string(uri)}, hive_partitioning=false)"
+        excluded, projection = json_dimension_projection(
+            source_column_names(connection, parquet),
+            # A v1 file never carries a canonical metadata column; any such
+            # column is provider noise, so re-derive from authoritative extra.
+            metadata_column_is_canonical=False,
         )
         exclude_sql = f" EXCLUDE ({', '.join(excluded)})" if excluded else ""
         selects.append(f"SELECT *{exclude_sql}, {', '.join(projection)} FROM {parquet}")
@@ -278,7 +243,11 @@ def query_archive_runs(
 def count_archive_runs(
     query: ArchiveRunQuery, *, config_path: str | None = None
 ) -> int:
-    """Count matching runs using Parquet metadata/predicate pushdown only."""
+    """Count matching runs without materializing them.
+
+    v2 sources stay on Parquet metadata/predicate pushdown; legacy v1 sources
+    pay a per-row JSON cast inside the normalized view before counting.
+    """
     sources = _canonical_sources(query, config_path)
     if not sources:
         return 0

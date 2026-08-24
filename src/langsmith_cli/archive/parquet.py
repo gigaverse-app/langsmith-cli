@@ -37,6 +37,63 @@ ARCHIVE_DECIMAL_MAP_COLUMNS = (
 )
 ARCHIVE_TYPED_MAP_COLUMNS = ARCHIVE_INTEGER_MAP_COLUMNS + ARCHIVE_DECIMAL_MAP_COLUMNS
 ARCHIVE_METADATA_COLUMN = "metadata"
+ARCHIVE_DIMENSION_COLUMNS = (
+    *ARCHIVE_STRING_LIST_COLUMNS,
+    *ARCHIVE_TYPED_MAP_COLUMNS,
+    ARCHIVE_METADATA_COLUMN,
+)
+
+# The single SQL spelling of each promoted dimension's physical type. Every
+# writer and reader path that projects onto the canonical contract builds its
+# CAST/NULL expressions from this map — adding a dimension means adding it to
+# the column tuples above and here, nowhere else.
+ARCHIVE_DIMENSION_SQL_TYPES: dict[str, str] = {
+    **dict.fromkeys(ARCHIVE_STRING_LIST_COLUMNS, "VARCHAR[]"),
+    **dict.fromkeys(ARCHIVE_INTEGER_MAP_COLUMNS, "MAP(VARCHAR, BIGINT)"),
+    **dict.fromkeys(ARCHIVE_DECIMAL_MAP_COLUMNS, "MAP(VARCHAR, DECIMAL(38,18))"),
+    ARCHIVE_METADATA_COLUMN: "MAP(VARCHAR, VARCHAR)",
+}
+
+
+def json_dimension_projection(
+    columns: set[str], *, metadata_column_is_canonical: bool
+) -> tuple[list[str], list[str]]:
+    """SQL that projects JSON-text/absent dimension columns onto canonical types.
+
+    One projection serves every path that meets v1-era or provider JSON text:
+    Bulk Export snapshots, legacy SQL canonicalization, and the query-time
+    normalized view. Returns ``(excluded_columns, expressions)`` for a
+    ``SELECT * EXCLUDE (...), <expressions> FROM ...``.
+
+    ``metadata_column_is_canonical`` controls an existing ``metadata`` column:
+    the SQL canonicalizer may re-read its own typed output (pass ``True`` to
+    cast it through), while provider sources never carry a canonical
+    ``metadata`` column (pass ``False`` to re-derive from ``extra``, keeping
+    the accelerator consistent with its authoritative source).
+    """
+    excluded = [column for column in ARCHIVE_DIMENSION_COLUMNS if column in columns]
+    expressions = [
+        f"CAST(CAST({column} AS JSON) AS {ARCHIVE_DIMENSION_SQL_TYPES[column]}) "
+        f"AS {column}"
+        if column in columns
+        else f"NULL::{ARCHIVE_DIMENSION_SQL_TYPES[column]} AS {column}"
+        for column in (*ARCHIVE_STRING_LIST_COLUMNS, *ARCHIVE_TYPED_MAP_COLUMNS)
+    ]
+    metadata_type = ARCHIVE_DIMENSION_SQL_TYPES[ARCHIVE_METADATA_COLUMN]
+    if metadata_column_is_canonical and ARCHIVE_METADATA_COLUMN in columns:
+        expressions.append(
+            f"CAST({ARCHIVE_METADATA_COLUMN} AS {metadata_type}) "
+            f"AS {ARCHIVE_METADATA_COLUMN}"
+        )
+    elif "extra" in columns:
+        expressions.append(
+            "coalesce(CAST(json_extract(CAST(extra AS JSON), '$.metadata') "
+            f"AS {metadata_type}), map()::{metadata_type}) "
+            f"AS {ARCHIVE_METADATA_COLUMN}"
+        )
+    else:
+        expressions.append(f"map()::{metadata_type} AS {ARCHIVE_METADATA_COLUMN}")
+    return excluded, expressions
 
 
 def normalize_event_time(value: object) -> object:
@@ -103,12 +160,7 @@ def normalize_run_payload(payload: dict[str, Any]) -> dict[str, Any]:
             if not isinstance(event, dict) or "time" not in event:
                 continue
             event["time"] = normalize_event_time(event["time"])
-    for details_field in (
-        "prompt_token_details",
-        "completion_token_details",
-        "prompt_cost_details",
-        "completion_cost_details",
-    ):
+    for details_field in ARCHIVE_TYPED_MAP_COLUMNS:
         if details_field not in payload:
             continue
         details = payload[details_field]
