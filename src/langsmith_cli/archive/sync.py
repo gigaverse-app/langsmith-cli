@@ -618,9 +618,7 @@ def _typed_dimension_types() -> dict[str, Any]:
     import pyarrow
 
     return {
-        **dict.fromkeys(
-            ARCHIVE_STRING_LIST_COLUMNS, pyarrow.list_(pyarrow.string())
-        ),
+        **dict.fromkeys(ARCHIVE_STRING_LIST_COLUMNS, pyarrow.list_(pyarrow.string())),
         **dict.fromkeys(
             ARCHIVE_INTEGER_MAP_COLUMNS,
             pyarrow.map_(pyarrow.string(), pyarrow.int64()),
@@ -665,10 +663,7 @@ def _dimensions_are_streamable(schema: Any) -> bool:
             ):
                 continue
             return False
-        if (
-            pyarrow.types.is_map(data_type)
-            or pyarrow.types.is_struct(data_type)
-        ):
+        if pyarrow.types.is_map(data_type) or pyarrow.types.is_struct(data_type):
             continue
         return False
     return True
@@ -695,12 +690,16 @@ def _decimal_map_value(value: object) -> Decimal | None:
         return Decimal(value)
     if isinstance(value, float):
         return Decimal(str(value))
+    if isinstance(value, str):
+        # The v1 writer serialized SDK Decimal costs as JSON strings.
+        try:
+            return Decimal(value)
+        except ArithmeticError as error:
+            raise ValueError("Archived cost detail value is not a number") from error
     raise ValueError("Archived cost detail value is not a number")
 
 
-def _parsed_dimension_values(
-    column: str, values: list[object]
-) -> list[object]:
+def _parsed_dimension_values(column: str, values: list[object]) -> list[object]:
     """Parse one row group's v1 JSON-text dimension values into typed shapes."""
     if column in ARCHIVE_STRING_LIST_COLUMNS:
         parsed_lists: list[object] = []
@@ -714,9 +713,7 @@ def _parsed_dimension_values(
     decimal_valued = column in ARCHIVE_DECIMAL_MAP_COLUMNS
     for value in values:
         decoded = (
-            json.loads(value, parse_float=Decimal)
-            if isinstance(value, str)
-            else value
+            json.loads(value, parse_float=Decimal) if isinstance(value, str) else value
         )
         if decoded is None:
             parsed_maps.append(None)
@@ -724,9 +721,7 @@ def _parsed_dimension_values(
         if not isinstance(decoded, dict):
             raise ValueError(f"Archived JSON field has an invalid type: {column}")
         converter = _decimal_map_value if decimal_valued else _integer_map_value
-        parsed_maps.append(
-            [(key, converter(item)) for key, item in decoded.items()]
-        )
+        parsed_maps.append([(key, converter(item)) for key, item in decoded.items()])
     return parsed_maps
 
 
@@ -737,7 +732,9 @@ def _derived_metadata_values(table: Any) -> list[object]:
     derived: list[object] = []
     for extra_text in table.column("extra").to_pylist():
         extra = json.loads(extra_text) if isinstance(extra_text, str) else None
-        metadata = extra.get(ARCHIVE_METADATA_COLUMN) if isinstance(extra, dict) else None
+        metadata = (
+            extra.get(ARCHIVE_METADATA_COLUMN) if isinstance(extra, dict) else None
+        )
         if not isinstance(metadata, dict):
             derived.append([])
             continue
@@ -766,9 +763,9 @@ def _typed_dimensions_table(table: Any) -> Any:
                 continue
             if pyarrow.types.is_null(existing.type):
                 array: Any = pyarrow.nulls(table.num_rows, type=target_type)
-            elif pyarrow.types.is_string(existing.type) or pyarrow.types.is_large_string(
+            elif pyarrow.types.is_string(
                 existing.type
-            ):
+            ) or pyarrow.types.is_large_string(existing.type):
                 array = pyarrow.array(
                     _parsed_dimension_values(column, existing.to_pylist()),
                     type=target_type,
@@ -780,9 +777,7 @@ def _typed_dimensions_table(table: Any) -> Any:
                 )
             else:
                 array = existing.cast(target_type)
-            table = table.set_column(
-                index, pyarrow.field(column, target_type), array
-            )
+            table = table.set_column(index, pyarrow.field(column, target_type), array)
         elif column == ARCHIVE_METADATA_COLUMN:
             table = table.append_column(
                 pyarrow.field(column, target_type),
@@ -922,9 +917,7 @@ def _canonicalize(store: ArchiveStore, manifest: ArchiveManifest, target: Path) 
         # columns and must never veto the bounded path for the day's real data —
         # an empty phase paired with a whale phase is exactly the day that OOMs
         # the SQL union.
-        occupied = [
-            source for source in source_files if source.metadata.num_rows
-        ]
+        occupied = [source for source in source_files if source.metadata.num_rows]
         if all(
             _payload_columns_are_text(source.schema_arrow)
             and _dimensions_are_streamable(source.schema_arrow)

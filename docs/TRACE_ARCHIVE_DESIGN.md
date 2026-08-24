@@ -194,7 +194,11 @@ normalized to these types before canonical union.
 Manifest schema v1 remains readable. Readers normalize each published generation to
 v2 independently before cross-day `UNION ALL BY NAME`, so old JSON-text tags and
 parent IDs cannot dictate the type of new list columns. The next publication for an
-unsealed v1 day upgrades its manifest and canonical Parquet atomically to v2.
+unsealed v1 day upgrades its manifest and canonical Parquet atomically to v2. The
+upgrade re-canonicalizes v1 text-dimension raw on the same row-group-bounded
+streaming path as v2 raw (dimension values are parsed per byte-bounded row group),
+so migrating an unsealed whale day never re-enters the day-scaled SQL union.
+Id-only empty snapshots likewise never demote a day off the streaming path.
 
 The bucket owner may expire `raw/` after a repair/audit window. Canonical objects and
 manifests are retained according to the organization's policy.

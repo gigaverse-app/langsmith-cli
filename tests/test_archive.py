@@ -815,3 +815,176 @@ def test_empty_primary_with_late_reconciliation_seals_the_late_rows(
     assert manifest.canonical_run_count == 1
     archived = query_archive_runs(ArchiveRunQuery(project="dev/late-day", limit=0))
     assert (archived[0].outputs or {})["late"] is True
+
+
+def test_empty_snapshot_does_not_route_the_day_through_the_sql_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Empty phases write an id-only Parquet carrying none of the typed dimension
+    columns. That absence must never veto the bounded streaming path for the
+    day's real snapshot: an empty phase paired with a whale phase is exactly the
+    day-scaled SQL union that OOMed every fixed production memory bound.
+    """
+    from langsmith_cli.archive import sync as sync_module
+
+    def _sql_path_is_forbidden(*args: object, **kwargs: object) -> int:
+        raise AssertionError("empty snapshots must stay on the bounded streaming path")
+
+    monkeypatch.setattr(sync_module, "_canonicalize_duckdb", _sql_path_is_forbidden)
+    archive_uri = str(tmp_path / "archive")
+    monkeypatch.setenv("LANGSMITH_ARCHIVE_URI", archive_uri)
+    store = create_store(archive_uri)
+    project_id = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+    sync_project_day(
+        FakeRunsClient([]),
+        store,
+        project_id=project_id,
+        project_name="dev/empty-phase",
+        trace_date=date(2024, 7, 3),
+        phase=ArchivePhase.PRIMARY,
+    )
+    manifest = sync_project_day(
+        FakeRunsClient([create_run(tags=["kept"], metadata={"attempt": 1})]),
+        store,
+        project_id=project_id,
+        project_name="dev/empty-phase",
+        trace_date=date(2024, 7, 3),
+        phase=ArchivePhase.RECONCILIATION,
+    )
+    assert manifest.canonical_run_count == 1
+    archived = query_archive_runs(
+        ArchiveRunQuery(project="dev/empty-phase", tags=("kept",), limit=0)
+    )
+    assert [run.tags for run in archived] == [["kept"]]
+    # Control: a day where every snapshot is empty still publishes (zero rows).
+    all_empty = sync_project_day(
+        FakeRunsClient([]),
+        store,
+        project_id=project_id,
+        project_name="dev/empty-phase",
+        trace_date=date(2024, 7, 4),
+        phase=ArchivePhase.PRIMARY,
+    )
+    assert all_empty.canonical_run_count == 0
+
+
+def test_unsealed_v1_text_raw_migrates_to_v2_on_the_bounded_streaming_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Feed the genuine migration input: raw staged by the v1 writer, which stored
+    tags/parent_run_ids as JSON text, token/cost details as inferred columns
+    (Decimal costs as JSON strings), and no metadata column. Resuming the
+    unsealed day must publish typed v2 without ever touching the day-scaled SQL
+    union — unsealed v1 days at deploy time include the whale days that
+    motivated the memory bounds.
+    """
+    from langsmith_cli.archive import sync as sync_module
+    from langsmith_cli.archive.sync import BULK_EXPORT_JSON_COLUMNS
+
+    archive_uri = str(tmp_path / "archive")
+    monkeypatch.setenv("LANGSMITH_ARCHIVE_URI", archive_uri)
+    store = create_store(archive_uri)
+    project_id = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+
+    def _v1_serialize(run: Run) -> bytes:
+        payload = run.model_dump(mode="python")
+        # The v1 taxonomy pre-serialized payloads AND tags/parent_run_ids as
+        # JSON text; token/cost details were left for read_json_auto inference.
+        for column in BULK_EXPORT_JSON_COLUMNS:
+            value = payload.get(column)
+            if value is not None:
+                payload[column] = json.dumps(
+                    value,
+                    ensure_ascii=False,
+                    default=sync_module._archive_json_default,
+                )
+        line = json.dumps(
+            payload, ensure_ascii=False, default=sync_module._archive_json_default
+        )
+        return line.encode("utf-8") + b"\n"
+
+    v1_run = create_run(
+        tags=["shared", "v1"],
+        metadata={"environment": "legacy", "attempt": 1},
+    ).model_copy(
+        update={
+            "parent_run_ids": [UUID(TYPED_DIMENSIONS_PARENT_ID)],
+            "prompt_token_details": {"cache_read": 5},
+            "completion_token_details": {"reasoning": 8},
+            "prompt_cost_details": {"cache_read": Decimal("0.000001")},
+            "completion_cost_details": {"reasoning": Decimal("0.000004")},
+        }
+    )
+    with monkeypatch.context() as v1:
+        v1.setattr(sync_module, "_serialize_run_line", _v1_serialize)
+        v1.setattr(sync_module, "_runs_api_snapshot_select", lambda source: source)
+        sync_project_day(
+            FakeRunsClient([v1_run]),
+            store,
+            project_id=project_id,
+            project_name="dev/migrate-v1",
+            trace_date=date(2024, 7, 3),
+            phase=ArchivePhase.PRIMARY,
+        )
+    manifest_path = (
+        Path(store.base_uri)
+        / "manifests"
+        / f"project_id={project_id}"
+        / "date=2024-07-03.json"
+    )
+    manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest_payload["schema_version"] = 1
+    manifest_path.write_text(json.dumps(manifest_payload), encoding="utf-8")
+
+    def _sql_path_is_forbidden(*args: object, **kwargs: object) -> int:
+        raise AssertionError("v1 text raw must migrate on the bounded streaming path")
+
+    monkeypatch.setattr(sync_module, "_canonicalize_duckdb", _sql_path_is_forbidden)
+    late_run = create_run(
+        id_str="32345678-1234-5678-1234-567812345678",
+        tags=["shared", "late"],
+        metadata={"environment": "current"},
+    )
+    reconciled = sync_project_day(
+        FakeRunsClient([late_run]),
+        store,
+        project_id=project_id,
+        project_name="dev/migrate-v1",
+        trace_date=date(2024, 7, 3),
+        phase=ArchivePhase.RECONCILIATION,
+    )
+    assert reconciled.schema_version == 2
+    assert reconciled.sealed is True
+    assert reconciled.canonical_run_count == 2
+    assert reconciled.canonical_key is not None
+
+    import pyarrow.parquet
+
+    canonical_schema = pyarrow.parquet.ParquetFile(
+        str(Path(store.base_uri) / reconciled.canonical_key)
+    ).schema_arrow
+    from langsmith_cli.archive.sync import _query_dimensions_are_typed
+
+    assert _query_dimensions_are_typed(canonical_schema) is True
+
+    archived = query_archive_runs(
+        ArchiveRunQuery(project="dev/migrate-v1", tags=("shared",), limit=0)
+    )
+    assert {str(run.id) for run in archived} == {str(v1_run.id), str(late_run.id)}
+    migrated = next(run for run in archived if run.id == v1_run.id)
+    assert migrated.tags == ["shared", "v1"]
+    assert migrated.parent_run_ids == [UUID(TYPED_DIMENSIONS_PARENT_ID)]
+    assert migrated.prompt_token_details == {"cache_read": 5}
+    assert migrated.completion_token_details == {"reasoning": 8}
+    assert migrated.prompt_cost_details == {"cache_read": Decimal("0.000001")}
+    assert migrated.completion_cost_details == {"reasoning": Decimal("0.000004")}
+    assert (migrated.extra or {})["metadata"] == {
+        "environment": "legacy",
+        "attempt": 1,
+    }
+    only_v1 = query_archive_runs(
+        ArchiveRunQuery(project="dev/migrate-v1", tags=("v1",), limit=0)
+    )
+    assert [run.id for run in only_v1] == [v1_run.id]
