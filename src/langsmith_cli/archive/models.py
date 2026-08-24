@@ -10,6 +10,10 @@ from typing import NotRequired, TypedDict
 from uuid import UUID
 
 
+ARCHIVE_SCHEMA_VERSION = 2
+SUPPORTED_ARCHIVE_SCHEMA_VERSIONS = frozenset({1, ARCHIVE_SCHEMA_VERSION})
+
+
 class ArchivePhase(str, Enum):
     PRIMARY = "primary"
     RECONCILIATION = "reconciliation"
@@ -142,7 +146,7 @@ class ArchiveManifest:
 
     def __post_init__(self) -> None:
         """Enforce structural invariants for both working and published manifests."""
-        if self.schema_version != 1:
+        if self.schema_version not in SUPPORTED_ARCHIVE_SCHEMA_VERSIONS:
             raise ValueError(
                 f"Unsupported archive schema version: {self.schema_version}"
             )

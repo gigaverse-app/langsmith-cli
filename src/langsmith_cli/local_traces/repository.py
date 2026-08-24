@@ -20,6 +20,7 @@ from langsmith_cli.archive.storage import (
 )
 from langsmith_cli.archive.sync import write_runs_parquet
 from langsmith_cli.local_traces.models import (
+    LOCAL_TRACE_SCHEMA_VERSION,
     TraceCacheWriteResult,
     TraceCatalog,
     TraceFragment,
@@ -39,6 +40,24 @@ FRAGMENT_PREFIX = "traces/fragments"
 MAX_CATALOG_PUBLICATION_ATTEMPTS = 16
 
 
+def _validated_catalog(content: str) -> TraceCatalog:
+    """Parse a stored catalog, discarding other-version generations wholesale.
+
+    Local traces are a disposable replica of cloud/archive truth. Fragments
+    written under another physical schema cannot union with current ones in one
+    DuckDB scan, so a version-mismatched catalog reads as empty: queries see
+    nothing, the next pull republishes a current-version catalog, and the old
+    fragment objects become unreachable garbage instead of poisoning reads.
+    """
+    payload = json.loads(content)
+    if (
+        isinstance(payload, dict)
+        and payload.get("schema_version") != LOCAL_TRACE_SCHEMA_VERSION
+    ):
+        return TraceCatalog()
+    return TraceCatalog.model_validate_json(content)
+
+
 class LocalTraceRepository:
     """Expose one additive logical inventory over immutable Parquet observations."""
 
@@ -49,7 +68,7 @@ class LocalTraceRepository:
     def read_catalog(self) -> TraceCatalog:
         if not self._store.exists(CATALOG_KEY):
             return TraceCatalog()
-        return TraceCatalog.model_validate_json(self._store.get_text(CATALOG_KEY))
+        return _validated_catalog(self._store.get_text(CATALOG_KEY))
 
     def add_runs(
         self, request: TracePullRequest, runs: Iterable[Run]
@@ -370,7 +389,7 @@ class LocalTraceRepository:
         if not self._store.exists(CATALOG_KEY):
             return TraceCatalog(), None
         snapshot = self._store.get_text_with_version(CATALOG_KEY)
-        return TraceCatalog.model_validate_json(snapshot.content), snapshot.version
+        return _validated_catalog(snapshot.content), snapshot.version
 
     def _query_catalog(self, catalog: TraceCatalog, query: RunQuery) -> list[Run]:
         fragments = self._matching_fragments(catalog, query)

@@ -240,6 +240,13 @@ schema with null members, while the Runs API may omit those members. Because the
 preserves explicit nested nulls, raw JSON is not universally byte-identical; compare
 missing and null object members as equivalent when validating provider parity.
 
+Canonical schema v2 stores `tags` and `parent_run_ids` as native string lists;
+prompt/completion token and cost breakdowns as typed maps; and a queryable
+`map<string,string>` projection of `extra.metadata`. Full `extra`, inputs, outputs,
+events, and feedback remain JSON text because their shapes are arbitrary. Existing
+v1 project-days remain queryable: readers normalize each generation before union,
+and the next write to an unsealed v1 day upgrades it to v2.
+
 See `docs/TRACE_ARCHIVE_DESIGN.md` for storage layout, reconciliation,
 deduplication, crash recovery, IAM boundaries, and efficiency decisions.
 

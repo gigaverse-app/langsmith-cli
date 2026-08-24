@@ -16,17 +16,33 @@ from uuid import uuid4
 from uuid import UUID
 
 from langsmith_cli.archive.models import (
+    ARCHIVE_SCHEMA_VERSION,
     ArchiveManifest,
     ArchivePhase,
     ArchiveProject,
     PhaseRecord,
     PhaseStatus,
 )
-from langsmith_cli.archive.parquet import ARCHIVE_JSON_COLUMNS
+from langsmith_cli.archive.parquet import (
+    ARCHIVE_DECIMAL_MAP_COLUMNS,
+    ARCHIVE_DIMENSION_COLUMNS,
+    ARCHIVE_DIMENSION_SQL_TYPES,
+    ARCHIVE_INTEGER_MAP_COLUMNS,
+    ARCHIVE_JSON_COLUMNS,
+    ARCHIVE_JSON_LIST_COLUMNS,
+    ARCHIVE_JSON_OBJECT_COLUMNS,
+    ARCHIVE_METADATA_COLUMN,
+    ARCHIVE_STRING_LIST_COLUMNS,
+    ARCHIVE_TYPED_MAP_COLUMNS,
+    BULK_EXPORT_JSON_COLUMNS,
+    json_dimension_projection,
+)
 from langsmith_cli.archive.duckdb import (
     ARCHIVE_PARQUET_COPY_OPTIONS,
     archive_duckdb_connection,
     configure_duckdb_s3,
+    source_column_names,
+    sql_string,
 )
 from langsmith_cli.archive.repository import (
     ManifestSnapshot,
@@ -42,12 +58,36 @@ if TYPE_CHECKING:
     from langsmith_cli.archive.bulk import BulkWindowExporter
 
 
+# The queryable-dimension taxonomy lives in archive.parquet, shared with the
+# local trace backend. Staging-only column names stay private to this writer.
+_STAGING_METADATA_KEYS = "_archive_metadata_keys"
+_STAGING_METADATA_VALUES = "_archive_metadata_values"
+
+# Re-exported for tests and the public sync surface (the taxonomy predates the
+# shared parquet module and existing imports reference it from here).
+__all__ = [
+    "ARCHIVE_DECIMAL_MAP_COLUMNS",
+    "ARCHIVE_INTEGER_MAP_COLUMNS",
+    "ARCHIVE_JSON_COLUMNS",
+    "ARCHIVE_JSON_LIST_COLUMNS",
+    "ARCHIVE_JSON_OBJECT_COLUMNS",
+    "ARCHIVE_METADATA_COLUMN",
+    "ARCHIVE_STRING_LIST_COLUMNS",
+    "ARCHIVE_TYPED_MAP_COLUMNS",
+    "BULK_EXPORT_JSON_COLUMNS",
+    "due_trace_dates",
+    "sync_project_day",
+    "write_runs_parquet",
+]
+
+
 class RunsExportClient(Protocol):
     def list_runs(self, **kwargs: Any) -> Iterator[Run]: ...
 
 
-def _sql_string(value: str) -> str:
-    return "'" + value.replace("'", "''") + "'"
+# Bare alias: existing call sites throughout this module keep working while the
+# one implementation lives beside the connection helpers it belongs with.
+_sql_string = sql_string
 
 
 def _archive_json_default(value: object) -> object:
@@ -88,7 +128,7 @@ def _new_manifest(
 ) -> ArchiveManifest:
     start = datetime.combine(trace_date, time.min, tzinfo=timezone.utc)
     return ArchiveManifest(
-        schema_version=1,
+        schema_version=ARCHIVE_SCHEMA_VERSION,
         project_id=project_id,
         project_name=project_name,
         trace_date=trace_date,
@@ -135,8 +175,80 @@ def _serialize_run_line(run: Run) -> bytes:
             payload[column] = json.dumps(
                 value, ensure_ascii=False, default=_archive_json_default
             )
+    for column in ARCHIVE_TYPED_MAP_COLUMNS:
+        value = payload[column]
+        if value is not None:
+            payload[column] = json.dumps(
+                value, ensure_ascii=False, default=_archive_json_default
+            )
+    extra = run.extra or {}
+    metadata_value = extra["metadata"] if "metadata" in extra else None
+    if metadata_value is not None and not isinstance(metadata_value, dict):
+        raise ValueError("Run extra.metadata must be an object")
+    metadata = metadata_value or {}
+    if any(not isinstance(key, str) for key in metadata):
+        raise ValueError("Run extra.metadata keys must be strings")
+    payload[_STAGING_METADATA_KEYS] = list(metadata)
+    payload[_STAGING_METADATA_VALUES] = [
+        _metadata_text(value) for value in metadata.values()
+    ]
     line = json.dumps(payload, ensure_ascii=False, default=_archive_json_default)
     return line.encode("utf-8") + b"\n"
+
+
+def _metadata_text(value: object) -> str | None:
+    """Stable textual map value; full-fidelity metadata remains in ``extra``."""
+    if value is None:
+        return None
+    if isinstance(value, Enum):
+        return _metadata_text(value.value)
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (UUID, Decimal)):
+        return str(value)
+    if isinstance(value, (datetime, date, time)):
+        return value.isoformat()
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        default=_archive_json_default,
+    )
+
+
+def _runs_api_snapshot_select(source: str) -> str:
+    excluded = ", ".join(
+        (
+            *ARCHIVE_STRING_LIST_COLUMNS,
+            *ARCHIVE_TYPED_MAP_COLUMNS,
+            _STAGING_METADATA_KEYS,
+            _STAGING_METADATA_VALUES,
+        )
+    )
+    expressions = [
+        *(
+            # The v2 writer stages these as native JSON lists; a plain cast
+            # types them without a JSON round-trip.
+            f"CAST({column} AS {ARCHIVE_DIMENSION_SQL_TYPES[column]}) AS {column}"
+            for column in ARCHIVE_STRING_LIST_COLUMNS
+        ),
+        *(
+            f"CAST(CAST({column} AS JSON) "
+            f"AS {ARCHIVE_DIMENSION_SQL_TYPES[column]}) AS {column}"
+            for column in ARCHIVE_TYPED_MAP_COLUMNS
+        ),
+        f"map(CAST({_STAGING_METADATA_KEYS} AS VARCHAR[]), "
+        f"CAST({_STAGING_METADATA_VALUES} AS VARCHAR[])) AS {ARCHIVE_METADATA_COLUMN}",
+    ]
+    return f"(SELECT * EXCLUDE ({excluded}), {', '.join(expressions)} FROM {source})"
+
+
+def _bulk_snapshot_select(source: str, columns: set[str]) -> str:
+    excluded, expressions = json_dimension_projection(
+        columns, metadata_column_is_canonical=False
+    )
+    exclude_sql = f" EXCLUDE ({', '.join(excluded)})" if excluded else ""
+    return f"(SELECT *{exclude_sql}, {', '.join(expressions)} FROM {source})"
 
 
 def _uuid_text(value: Any) -> str | None:
@@ -202,7 +314,6 @@ def _storage_schema(schema: Any) -> Any:
 
 
 def _storage_column(column: Any, target_type: Any) -> Any:
-
     import pyarrow
 
     if column.type.equals(target_type):
@@ -315,7 +426,9 @@ def write_runs_parquet(runs: Iterator[Run], target: Path) -> int:
                     f"TO {_sql_string(str(target))} " + ARCHIVE_PARQUET_COPY_OPTIONS
                 )
             elif len(piece_paths) == 1:
-                source = _read_json_source(piece_paths[0], piece_max_lines[0])
+                source = _runs_api_snapshot_select(
+                    _read_json_source(piece_paths[0], piece_max_lines[0])
+                )
                 connection.execute(
                     f"COPY (SELECT * FROM {source}) "
                     f"TO {_sql_string(str(target))} " + ARCHIVE_PARQUET_COPY_OPTIONS
@@ -323,7 +436,9 @@ def write_runs_parquet(runs: Iterator[Run], target: Path) -> int:
             else:
                 for piece_path, max_line in zip(piece_paths, piece_max_lines):
                     part_path = piece_path.with_suffix(".part")
-                    source = _read_json_source(piece_path, max_line)
+                    source = _runs_api_snapshot_select(
+                        _read_json_source(piece_path, max_line)
+                    )
                     connection.execute(
                         f"COPY (SELECT * FROM {source}) "
                         f"TO {_sql_string(str(part_path))} "
@@ -394,6 +509,9 @@ def _write_bulk_parquet(
                 raise ValueError("Bulk export row count does not match Parquet")
             if counts[0] != counts[1]:
                 raise ValueError("Bulk export contains duplicate run IDs")
+            source = _bulk_snapshot_select(
+                source, source_column_names(connection, source)
+            )
             connection.execute(
                 f"COPY (SELECT * FROM {source}) TO {_sql_string(str(target))} "
                 + ARCHIVE_PARQUET_COPY_OPTIONS
@@ -436,6 +554,223 @@ def _payload_columns_are_text(schema: Any) -> bool:
         ):
             return False
     return True
+
+
+def _query_dimensions_are_typed(schema: Any) -> bool:
+    """Return whether one raw generation already satisfies canonical v2 types."""
+    import pyarrow
+
+    fields = {field.name: field.type for field in schema}
+    for column, target in _typed_dimension_types().items():
+        data_type = fields.get(column)
+        if data_type is None:
+            return False
+        if pyarrow.types.is_list(target):
+            if not pyarrow.types.is_list(data_type):
+                return False
+            if not pyarrow.types.is_string(data_type.value_type):
+                return False
+            continue
+        if not pyarrow.types.is_map(data_type):
+            return False
+        if not pyarrow.types.is_string(data_type.key_type):
+            return False
+        if not data_type.item_type.equals(target.item_type):
+            return False
+    return True
+
+
+def _typed_dimension_types() -> dict[str, Any]:
+    """Canonical v2 Arrow type for every promoted queryable dimension."""
+    import pyarrow
+
+    return {
+        **dict.fromkeys(ARCHIVE_STRING_LIST_COLUMNS, pyarrow.list_(pyarrow.string())),
+        **dict.fromkeys(
+            ARCHIVE_INTEGER_MAP_COLUMNS,
+            pyarrow.map_(pyarrow.string(), pyarrow.int64()),
+        ),
+        **dict.fromkeys(
+            ARCHIVE_DECIMAL_MAP_COLUMNS,
+            pyarrow.map_(pyarrow.string(), pyarrow.decimal128(38, 18)),
+        ),
+        ARCHIVE_METADATA_COLUMN: pyarrow.map_(pyarrow.string(), pyarrow.string()),
+    }
+
+
+def _dimensions_are_streamable(schema: Any) -> bool:
+    """Return whether dimension columns are v2-typed, v1 JSON text, or absent.
+
+    Any such generation upgrades row-group-wise on the bounded streaming path;
+    only inferred scalar shapes that neither parse nor cast (e.g. a dimension
+    inferred as a bare number) still need SQL normalization.
+    """
+    import pyarrow
+
+    fields = {field.name: field.type for field in schema}
+    for column in ARCHIVE_DIMENSION_COLUMNS:
+        data_type = fields.get(column)
+        if data_type is None:
+            continue
+        if isinstance(data_type, pyarrow.BaseExtensionType):
+            data_type = data_type.storage_type
+        if (
+            pyarrow.types.is_null(data_type)
+            or pyarrow.types.is_string(data_type)
+            or pyarrow.types.is_large_string(data_type)
+        ):
+            continue
+        if column in ARCHIVE_STRING_LIST_COLUMNS:
+            if pyarrow.types.is_list(data_type) or pyarrow.types.is_large_list(
+                data_type
+            ):
+                continue
+            return False
+        if pyarrow.types.is_map(data_type) or pyarrow.types.is_struct(data_type):
+            continue
+        return False
+    return True
+
+
+def _integer_map_value(value: object) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError("Archived token detail value is not an integer")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    raise ValueError("Archived token detail value is not an integer")
+
+
+def _decimal_map_value(value: object) -> Decimal | None:
+    if value is None:
+        return None
+    if isinstance(value, Decimal):
+        return value
+    if isinstance(value, int) and not isinstance(value, bool):
+        return Decimal(value)
+    if isinstance(value, float):
+        return Decimal(str(value))
+    if isinstance(value, str):
+        # The v1 writer serialized SDK Decimal costs as JSON strings.
+        try:
+            return Decimal(value)
+        except ArithmeticError as error:
+            raise ValueError("Archived cost detail value is not a number") from error
+    raise ValueError("Archived cost detail value is not a number")
+
+
+def _parsed_dimension_values(column: str, values: list[object]) -> list[object]:
+    """Parse one row group's v1 JSON-text dimension values into typed shapes."""
+    if column in ARCHIVE_STRING_LIST_COLUMNS:
+        parsed_lists: list[object] = []
+        for value in values:
+            decoded = json.loads(value) if isinstance(value, str) else value
+            if decoded is not None and not isinstance(decoded, list):
+                raise ValueError(f"Archived JSON field has an invalid type: {column}")
+            parsed_lists.append(decoded)
+        return parsed_lists
+    parsed_maps: list[object] = []
+    decimal_valued = column in ARCHIVE_DECIMAL_MAP_COLUMNS
+    for value in values:
+        decoded = (
+            json.loads(value, parse_float=Decimal) if isinstance(value, str) else value
+        )
+        if decoded is None:
+            parsed_maps.append(None)
+            continue
+        if not isinstance(decoded, dict):
+            raise ValueError(f"Archived JSON field has an invalid type: {column}")
+        converter = _decimal_map_value if decimal_valued else _integer_map_value
+        parsed_maps.append([(key, converter(item)) for key, item in decoded.items()])
+    return parsed_maps
+
+
+def _derived_metadata_values(table: Any) -> list[object]:
+    """Derive the metadata accelerator map from v1 JSON-text ``extra`` rows."""
+    if "extra" not in table.schema.names:
+        return [[] for _ in range(table.num_rows)]
+    derived: list[object] = []
+    for extra_text in table.column("extra").to_pylist():
+        extra = json.loads(extra_text) if isinstance(extra_text, str) else None
+        metadata = (
+            extra.get(ARCHIVE_METADATA_COLUMN) if isinstance(extra, dict) else None
+        )
+        if not isinstance(metadata, dict):
+            derived.append([])
+            continue
+        derived.append(
+            [(str(key), _metadata_text(item)) for key, item in metadata.items()]
+        )
+    return derived
+
+
+def _typed_dimensions_table(table: Any) -> Any:
+    """Materialize canonical v2 dimension columns on one decoded row group.
+
+    v2 raw already carries these exact types and passes through untouched. v1
+    raw carries the same dimensions as JSON text (or omits them entirely) and is
+    parsed value-by-value; ``metadata`` is derived from ``extra`` exactly as the
+    v2 writers do. The working set stays one byte-bounded row group, preserving
+    the constant-memory invariant during v1→v2 migration of unsealed days.
+    """
+    import pyarrow
+
+    for column, target_type in _typed_dimension_types().items():
+        if column in table.schema.names:
+            index = table.schema.get_field_index(column)
+            existing = table.column(index)
+            if existing.type.equals(target_type):
+                continue
+            if pyarrow.types.is_null(existing.type):
+                array: Any = pyarrow.nulls(table.num_rows, type=target_type)
+            elif (
+                # v1 JSON text and inferred STRUCTs both decode to Python values
+                # the same converters validate.
+                pyarrow.types.is_string(existing.type)
+                or pyarrow.types.is_large_string(existing.type)
+                or pyarrow.types.is_struct(existing.type)
+            ):
+                array = pyarrow.array(
+                    _parsed_dimension_values(column, existing.to_pylist()),
+                    type=target_type,
+                )
+            else:
+                array = existing.cast(target_type)
+            table = table.set_column(index, pyarrow.field(column, target_type), array)
+        elif column == ARCHIVE_METADATA_COLUMN:
+            table = table.append_column(
+                pyarrow.field(column, target_type),
+                pyarrow.array(_derived_metadata_values(table), type=target_type),
+            )
+        else:
+            table = table.append_column(
+                pyarrow.field(column, target_type),
+                pyarrow.nulls(table.num_rows, type=target_type),
+            )
+    return table
+
+
+def _typed_schema(schema: Any) -> Any:
+    """The schema `_typed_dimensions_table` produces for one source schema."""
+    import pyarrow
+
+    targets = _typed_dimension_types()
+    fields = [
+        pyarrow.field(field.name, targets[field.name])
+        if field.name in targets
+        else field
+        for field in schema
+    ]
+    names = set(schema.names)
+    fields.extend(
+        pyarrow.field(column, target_type)
+        for column, target_type in targets.items()
+        if column not in names
+    )
+    return pyarrow.schema(fields)
 
 
 def _conform_table(table: Any, unified: Any) -> Any:
@@ -491,7 +826,10 @@ def _canonicalize_streaming(
         else None
     )
     unified = pyarrow.unify_schemas(
-        [_storage_schema(source.schema_arrow) for source in source_files],
+        [
+            _typed_schema(_storage_schema(source.schema_arrow))
+            for source in source_files
+        ],
         promote_options="permissive",
     )
     written = 0
@@ -499,7 +837,9 @@ def _canonicalize_streaming(
     try:
         for index, source_file in enumerate(source_files):
             for group_index in range(source_file.num_row_groups):
-                table = _storage_table(source_file.read_row_group(group_index))
+                table = _typed_dimensions_table(
+                    _storage_table(source_file.read_row_group(group_index))
+                )
                 if winner_ids is not None and index != winner_index:
                     # pyarrow's bundled stubs omit several pyarrow.compute kernels.
                     contained = pyarrow.compute.is_in(  # pyright: ignore[reportAttributeAccessIssue]
@@ -535,16 +875,23 @@ def _canonicalize(store: ArchiveStore, manifest: ArchiveManifest, target: Path) 
         source_files = []
         for uri, _rank in sources:
             source_files.append(stack.enter_context(_open_parquet_source(uri)))
+        # Empty snapshots are written id-only: they carry no payload or dimension
+        # columns and must never veto the bounded path for the day's real data —
+        # an empty phase paired with a whale phase is exactly the day that OOMs
+        # the SQL union.
+        occupied = [source for source in source_files if source.metadata.num_rows]
         if all(
-            _payload_columns_are_text(source.schema_arrow) for source in source_files
+            _payload_columns_are_text(source.schema_arrow)
+            and _dimensions_are_streamable(source.schema_arrow)
+            for source in occupied
         ):
             return _canonicalize_streaming(
                 source_files, [uri for uri, _ in sources], target
             )
-    # Legacy raw generations carry inferred STRUCT/LIST payload columns that need
-    # SQL normalization; they predate byte-bounded staging and are rare
-    # (re-canonicalizing an already-sealed day), so the memory-heavy path is kept
-    # only for them.
+    # Raw generations that predate byte-bounded staging carry inferred payload
+    # STRUCTs that still need SQL normalization; they are rare (re-canonicalizing
+    # an already-sealed day), so the memory-heavy path is kept only for them.
+    # v1 text-dimension raw upgrades on the streaming path above, never here.
     return _canonicalize_duckdb(sources, target)
 
 
@@ -570,19 +917,27 @@ def _canonicalize_duckdb(sources: list[tuple[str, int]], target: Path) -> int:
             json_columns = tuple(
                 column for column in ARCHIVE_JSON_COLUMNS if column in columns
             )
-            if json_columns:
-                excluded = ", ".join(json_columns)
-                normalized = ", ".join(
+            # This canonicalizer may re-read its own typed output when a day is
+            # re-canonicalized, so an existing metadata column is canonical here.
+            dimension_excluded, dimension_expressions = json_dimension_projection(
+                columns, metadata_column_is_canonical=True
+            )
+            excluded_columns = (*json_columns, *dimension_excluded)
+            expressions = [
+                *(
                     f"CASE WHEN typeof({column}) = 'VARCHAR' "
                     f"THEN CAST({column} AS VARCHAR) "
                     f"ELSE CAST(to_json({column}) AS VARCHAR) END AS {column}"
                     for column in json_columns
-                )
-                selects.append(
-                    f"SELECT * EXCLUDE ({excluded}), {normalized} FROM {view}"
-                )
-            else:
-                selects.append(f"SELECT * FROM {view}")
+                ),
+                *dimension_expressions,
+            ]
+            exclude_sql = (
+                f" EXCLUDE ({', '.join(excluded_columns)})" if excluded_columns else ""
+            )
+            selects.append(
+                f"SELECT *{exclude_sql}, {', '.join(expressions)} FROM {view}"
+            )
 
         union_sql = " UNION ALL BY NAME ".join(selects)
         query = (
@@ -657,6 +1012,9 @@ def sync_project_day(
         return manifest
     if manifest.sealed:
         raise ValueError("A sealed archive day is immutable")
+    # INVARIANT: every new canonical publication uses the current physical schema;
+    # v1 remains readable, but resuming an unsealed day upgrades it atomically.
+    manifest = replace(manifest, schema_version=ARCHIVE_SCHEMA_VERSION)
     excluded_export_ids = frozenset(
         record.generation_id
         for record in (manifest.primary, manifest.reconciliation)

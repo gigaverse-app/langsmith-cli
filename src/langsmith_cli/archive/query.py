@@ -2,17 +2,22 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from fnmatch import fnmatchcase
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from langsmith_cli.archive.config import load_archive_config
 from langsmith_cli.archive.duckdb import (
     archive_duckdb_connection,
     configure_duckdb_s3,
+    source_column_names,
+    sql_string,
 )
+from langsmith_cli.archive.models import ARCHIVE_SCHEMA_VERSION
 from langsmith_cli.archive.parquet import (
+    json_dimension_projection,
     normalize_run_payload,
     parquet_where_clause as _where_clause,
     validated_parquet_run as _validated_archive_run,
@@ -38,6 +43,12 @@ ArchiveRunQuery = RunQuery
 _normalize_run_payload = normalize_run_payload
 
 
+@dataclass(frozen=True)
+class CanonicalArchiveSource:
+    uri: str
+    schema_version: int
+
+
 def _project_matches(
     query: ArchiveRunQuery, project_id: str, project_name: str
 ) -> bool:
@@ -58,11 +69,13 @@ def _project_matches(
     return True
 
 
-def _canonical_uris(query: ArchiveRunQuery, config_path: str | None) -> list[str]:
+def _canonical_sources(
+    query: ArchiveRunQuery, config_path: str | None
+) -> list[CanonicalArchiveSource]:
     config = load_archive_config(config_path)
     since = ensure_aware_datetime(query.since)
     before = ensure_aware_datetime(query.before)
-    uris: list[str] = []
+    sources: list[CanonicalArchiveSource] = []
     exact = query.project or query.project_name or query.project_name_exact
     routes = (config.route_project(exact),) if exact is not None else config.routes
     for route in routes:
@@ -136,8 +149,13 @@ def _canonical_uris(query: ArchiveRunQuery, config_path: str | None) -> list[str
             # immediate, deterministic zero instead of referencing absent columns.
             if manifest.canonical_run_count == 0:
                 continue
-            uris.append(store.object_uri(manifest.canonical_key))
-    return sorted(set(uris))
+            sources.append(
+                CanonicalArchiveSource(
+                    uri=store.object_uri(manifest.canonical_key),
+                    schema_version=manifest.schema_version,
+                )
+            )
+    return sorted(set(sources), key=lambda source: source.uri)
 
 
 def _date_partition_overlaps(
@@ -150,26 +168,69 @@ def _date_partition_overlaps(
     )
 
 
+def _create_normalized_runs_view(
+    connection: Any, sources: list[CanonicalArchiveSource]
+) -> None:
+    """Expose v1/v2 files through the current typed physical contract."""
+    selects: list[str] = []
+    current_uris = [
+        source.uri
+        for source in sources
+        if source.schema_version == ARCHIVE_SCHEMA_VERSION
+    ]
+    legacy_uris = [
+        source.uri
+        for source in sources
+        if source.schema_version != ARCHIVE_SCHEMA_VERSION
+    ]
+    if current_uris:
+        current = (
+            f"read_parquet([{', '.join(sql_string(uri) for uri in current_uris)}], "
+            "union_by_name=true, hive_partitioning=false)"
+        )
+        # v2 is already the query contract. Keeping this projection as an identity
+        # lets DuckDB push tag/list predicates and column projection into Parquet.
+        selects.append(f"SELECT * FROM {current}")
+    for uri in legacy_uris:
+        parquet = f"read_parquet({sql_string(uri)}, hive_partitioning=false)"
+        excluded, projection = json_dimension_projection(
+            source_column_names(connection, parquet),
+            # A v1 file never carries a canonical metadata column; any such
+            # column is provider noise, so re-derive from authoritative extra.
+            metadata_column_is_canonical=False,
+        )
+        exclude_sql = f" EXCLUDE ({', '.join(excluded)})" if excluded else ""
+        selects.append(f"SELECT *{exclude_sql}, {', '.join(projection)} FROM {parquet}")
+    # INVARIANT: all cross-day unions happen only after each generation has been
+    # normalized independently, so a v1 VARCHAR can never dictate a v2 list/map.
+    connection.execute(
+        "CREATE TEMP VIEW canonical_archive_runs AS "
+        + " UNION ALL BY NAME ".join(selects)
+    )
+
+
 def query_archive_runs(
     query: ArchiveRunQuery, *, config_path: str | None = None
 ) -> list[Run]:
     """Return LangSmith Run contracts populated from canonical Parquet."""
-    uris = _canonical_uris(query, config_path)
-    if not uris:
+    sources = _canonical_sources(query, config_path)
+    if not sources:
         return []
 
     where, where_parameters = _where_clause(query)
-    parameters: list[object] = [uris, *where_parameters]
+    parameters: list[object] = list(where_parameters)
     limit = "" if query.limit is None or query.limit == 0 else " LIMIT ?"
     if limit:
         parameters.append(query.limit)
     sql = (
-        "SELECT * FROM read_parquet(?, union_by_name=true)"
-        f"{where} ORDER BY start_time DESC, CAST(id AS VARCHAR) ASC{limit}"
+        f"SELECT * FROM canonical_archive_runs{where} "
+        f"ORDER BY start_time DESC, CAST(id AS VARCHAR) ASC{limit}"
     )
 
     with archive_duckdb_connection() as connection:
+        uris = [source.uri for source in sources]
         configure_duckdb_s3(connection, uris)
+        _create_normalized_runs_view(connection, sources)
         cursor = connection.execute(sql, parameters)
         columns = [description[0] for description in cursor.description]
         runs: list[Run] = []
@@ -182,16 +243,22 @@ def query_archive_runs(
 def count_archive_runs(
     query: ArchiveRunQuery, *, config_path: str | None = None
 ) -> int:
-    """Count matching runs using Parquet metadata/predicate pushdown only."""
-    uris = _canonical_uris(query, config_path)
-    if not uris:
+    """Count matching runs without materializing them.
+
+    v2 sources stay on Parquet metadata/predicate pushdown; legacy v1 sources
+    pay a per-row JSON cast inside the normalized view before counting.
+    """
+    sources = _canonical_sources(query, config_path)
+    if not sources:
         return 0
     where, parameters = _where_clause(query)
     with archive_duckdb_connection() as connection:
+        uris = [source.uri for source in sources]
         configure_duckdb_s3(connection, uris)
+        _create_normalized_runs_view(connection, sources)
         row = connection.execute(
-            f"SELECT count(*) FROM read_parquet(?, union_by_name=true){where}",
-            [uris, *parameters],
+            f"SELECT count(*) FROM canonical_archive_runs{where}",
+            parameters,
         ).fetchone()
         if row is None:
             raise ValueError("DuckDB did not return an archive count")
@@ -208,7 +275,7 @@ def read_archived_run(
     before: datetime | None = None,
     config_path: str | None = None,
 ) -> tuple[Run, list[Run]]:
-    uris = _canonical_uris(
+    sources = _canonical_sources(
         ArchiveRunQuery(
             project=project,
             project_id=project_id,
@@ -218,14 +285,16 @@ def read_archived_run(
         ),
         config_path,
     )
-    if not uris:
+    if not sources:
         raise LookupError(f"Archived run not found: {run_id}")
     with archive_duckdb_connection() as connection:
+        uris = [source.uri for source in sources]
         configure_duckdb_s3(connection, uris)
+        _create_normalized_runs_view(connection, sources)
         cursor = connection.execute(
-            "SELECT * FROM read_parquet(?, union_by_name=true) "
+            "SELECT * FROM canonical_archive_runs "
             "WHERE CAST(id AS VARCHAR) = ? LIMIT 1",
-            [uris, run_id],
+            [run_id],
         )
         row = cursor.fetchone()
         if row is None:
@@ -235,10 +304,10 @@ def read_archived_run(
         children: list[Run] = []
         if follow_children:
             child_cursor = connection.execute(
-                "SELECT * FROM read_parquet(?, union_by_name=true) "
+                "SELECT * FROM canonical_archive_runs "
                 "WHERE CAST(trace_id AS VARCHAR) = ? AND CAST(id AS VARCHAR) != ? "
                 "ORDER BY start_time",
-                [uris, str(run.trace_id or run.id), run_id],
+                [str(run.trace_id or run.id), run_id],
             )
             child_columns = [description[0] for description in child_cursor.description]
             children = [

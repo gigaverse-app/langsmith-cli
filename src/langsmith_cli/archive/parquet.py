@@ -13,21 +13,87 @@ if TYPE_CHECKING:
     from langsmith.schemas import Run
 
 
-# Canonical Parquet stores nested provider fields as JSON text. Runs API JSONL is
-# inferred as STRUCT/LIST while Bulk Export v2 emits VARCHAR for the same fields;
-# this one contract keeps every fragment provider- and source-compatible.
+# Canonical Parquet keeps arbitrary payloads as JSON text and promotes only
+# shape-stable, queryable dimensions to native lists/maps. This explicit taxonomy
+# prevents provider keys from becoming inferred STRUCT children, and one contract
+# keeps every fragment provider- and source-compatible.
 ARCHIVE_JSON_OBJECT_COLUMNS = (
     "extra",
     "inputs",
     "outputs",
     "feedback_stats",
 )
-ARCHIVE_JSON_LIST_COLUMNS = (
-    "events",
-    "tags",
-    "parent_run_ids",
-)
+ARCHIVE_JSON_LIST_COLUMNS = ("events",)
 ARCHIVE_JSON_COLUMNS = ARCHIVE_JSON_OBJECT_COLUMNS + ARCHIVE_JSON_LIST_COLUMNS
+ARCHIVE_STRING_LIST_COLUMNS = ("tags", "parent_run_ids")
+BULK_EXPORT_JSON_COLUMNS = ARCHIVE_JSON_COLUMNS + ARCHIVE_STRING_LIST_COLUMNS
+ARCHIVE_INTEGER_MAP_COLUMNS = (
+    "prompt_token_details",
+    "completion_token_details",
+)
+ARCHIVE_DECIMAL_MAP_COLUMNS = (
+    "prompt_cost_details",
+    "completion_cost_details",
+)
+ARCHIVE_TYPED_MAP_COLUMNS = ARCHIVE_INTEGER_MAP_COLUMNS + ARCHIVE_DECIMAL_MAP_COLUMNS
+ARCHIVE_METADATA_COLUMN = "metadata"
+ARCHIVE_DIMENSION_COLUMNS = (
+    *ARCHIVE_STRING_LIST_COLUMNS,
+    *ARCHIVE_TYPED_MAP_COLUMNS,
+    ARCHIVE_METADATA_COLUMN,
+)
+
+# The single SQL spelling of each promoted dimension's physical type. Every
+# writer and reader path that projects onto the canonical contract builds its
+# CAST/NULL expressions from this map — adding a dimension means adding it to
+# the column tuples above and here, nowhere else.
+ARCHIVE_DIMENSION_SQL_TYPES: dict[str, str] = {
+    **dict.fromkeys(ARCHIVE_STRING_LIST_COLUMNS, "VARCHAR[]"),
+    **dict.fromkeys(ARCHIVE_INTEGER_MAP_COLUMNS, "MAP(VARCHAR, BIGINT)"),
+    **dict.fromkeys(ARCHIVE_DECIMAL_MAP_COLUMNS, "MAP(VARCHAR, DECIMAL(38,18))"),
+    ARCHIVE_METADATA_COLUMN: "MAP(VARCHAR, VARCHAR)",
+}
+
+
+def json_dimension_projection(
+    columns: set[str], *, metadata_column_is_canonical: bool
+) -> tuple[list[str], list[str]]:
+    """SQL that projects JSON-text/absent dimension columns onto canonical types.
+
+    One projection serves every path that meets v1-era or provider JSON text:
+    Bulk Export snapshots, legacy SQL canonicalization, and the query-time
+    normalized view. Returns ``(excluded_columns, expressions)`` for a
+    ``SELECT * EXCLUDE (...), <expressions> FROM ...``.
+
+    ``metadata_column_is_canonical`` controls an existing ``metadata`` column:
+    the SQL canonicalizer may re-read its own typed output (pass ``True`` to
+    cast it through), while provider sources never carry a canonical
+    ``metadata`` column (pass ``False`` to re-derive from ``extra``, keeping
+    the accelerator consistent with its authoritative source).
+    """
+    excluded = [column for column in ARCHIVE_DIMENSION_COLUMNS if column in columns]
+    expressions = [
+        f"CAST(CAST({column} AS JSON) AS {ARCHIVE_DIMENSION_SQL_TYPES[column]}) "
+        f"AS {column}"
+        if column in columns
+        else f"NULL::{ARCHIVE_DIMENSION_SQL_TYPES[column]} AS {column}"
+        for column in (*ARCHIVE_STRING_LIST_COLUMNS, *ARCHIVE_TYPED_MAP_COLUMNS)
+    ]
+    metadata_type = ARCHIVE_DIMENSION_SQL_TYPES[ARCHIVE_METADATA_COLUMN]
+    if metadata_column_is_canonical and ARCHIVE_METADATA_COLUMN in columns:
+        expressions.append(
+            f"CAST({ARCHIVE_METADATA_COLUMN} AS {metadata_type}) "
+            f"AS {ARCHIVE_METADATA_COLUMN}"
+        )
+    elif "extra" in columns:
+        expressions.append(
+            "coalesce(CAST(json_extract(CAST(extra AS JSON), '$.metadata') "
+            f"AS {metadata_type}), map()::{metadata_type}) "
+            f"AS {ARCHIVE_METADATA_COLUMN}"
+        )
+    else:
+        expressions.append(f"map()::{metadata_type} AS {ARCHIVE_METADATA_COLUMN}")
+    return excluded, expressions
 
 
 def normalize_event_time(value: object) -> object:
@@ -47,6 +113,13 @@ def normalize_event_time(value: object) -> object:
 
 def normalize_run_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Normalize provider-specific Parquet values to the LangSmith Run contract."""
+    # ``metadata`` is a physical query accelerator extracted from ``extra``; the
+    # strict SDK Run contract continues to receive the authoritative full object.
+    payload.pop(ARCHIVE_METADATA_COLUMN, None)
+    # Managed Bulk Export omits attachments. UNION BY NAME materializes that
+    # absence as NULL, while the SDK contract expects the field omitted/defaulted.
+    if "attachments" in payload and payload["attachments"] is None:
+        payload.pop("attachments")
     for field in (
         "id",
         "trace_id",
@@ -65,6 +138,7 @@ def normalize_run_payload(payload: dict[str, Any]) -> dict[str, Any]:
     expected_json_types = {
         **dict.fromkeys(ARCHIVE_JSON_OBJECT_COLUMNS, dict),
         **dict.fromkeys(ARCHIVE_JSON_LIST_COLUMNS, list),
+        **dict.fromkeys(ARCHIVE_STRING_LIST_COLUMNS, list),
     }
     for field, expected_type in expected_json_types.items():
         value = payload[field] if field in payload else None
@@ -86,12 +160,7 @@ def normalize_run_payload(payload: dict[str, Any]) -> dict[str, Any]:
             if not isinstance(event, dict) or "time" not in event:
                 continue
             event["time"] = normalize_event_time(event["time"])
-    for details_field in (
-        "prompt_token_details",
-        "completion_token_details",
-        "prompt_cost_details",
-        "completion_cost_details",
-    ):
+    for details_field in ARCHIVE_TYPED_MAP_COLUMNS:
         if details_field not in payload:
             continue
         details = payload[details_field]
@@ -147,7 +216,10 @@ def parquet_where_clause(query: RunQuery) -> tuple[str, list[object]]:
             "parent_run_id IS NULL" if query.is_root else "parent_run_id IS NOT NULL"
         )
     for tag in query.tags:
-        clauses.append("json_contains(CAST(tags AS JSON), to_json(?))")
+        # Every reader path materializes ``tags`` as a native VARCHAR[] (typed v2
+        # fragments directly; v1 archive generations through the normalized view),
+        # so list predicates push down into Parquet instead of re-parsing JSON.
+        clauses.append("list_contains(tags, ?)")
         parameters.append(tag)
     if query.text is not None:
         # Field identifiers come only from RunQuery's explicit allowlist. Every user

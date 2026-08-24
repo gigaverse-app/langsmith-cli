@@ -17,7 +17,11 @@ from conftest import create_run, parse_json_output, strip_ansi
 from langsmith_cli.archive.storage import LocalArchiveStore
 from langsmith_cli.archive.models import ArchivePhase
 from langsmith_cli.archive.sync import sync_project_day
-from langsmith_cli.local_traces.models import TracePullRequest, TraceSource
+from langsmith_cli.local_traces.models import (
+    LOCAL_TRACE_SCHEMA_VERSION,
+    TracePullRequest,
+    TraceSource,
+)
 from langsmith_cli.local_traces.repository import LocalTraceRepository
 from langsmith_cli.main import cli
 from langsmith_cli.trace_query import RunQuery
@@ -112,7 +116,7 @@ def test_local_trace_models_reject_invalid_identity_time_and_catalog_state() -> 
         TraceFragment.model_validate(valid_fragment | {"observed_at": naive})
     fragment = TraceFragment.model_validate(valid_fragment)
     with pytest.raises(ValidationError, match="Unsupported local trace catalog"):
-        TraceCatalog(schema_version=2)
+        TraceCatalog(schema_version=LOCAL_TRACE_SCHEMA_VERSION + 1)
     with pytest.raises(ValidationError, match="duplicate fragments"):
         TraceCatalog(fragments=(fragment, fragment))
 
@@ -766,3 +770,33 @@ def test_archive_and_local_share_supported_query_semantics(
     local_ids = [str(run.id) for run in repository.query(query)]
 
     assert archived_ids == local_ids == [FIRST_RUN_ID]
+
+
+def test_other_version_local_catalog_reads_empty_and_is_replaced_by_next_pull(
+    tmp_path: Path,
+) -> None:
+    """
+    Local traces are a disposable replica: a catalog written under another
+    physical schema version must read as empty (its fragments cannot union with
+    current ones in one DuckDB scan) and the next pull must atomically publish a
+    current-version catalog instead of crashing every command.
+    """
+    repository = LocalTraceRepository(tmp_path)
+    first = repository.add_runs(_pull_request(), [_run(FIRST_RUN_ID, "first")])
+    assert first.added_run_count == 1
+
+    catalog_path = tmp_path / "traces" / "catalog.json"
+    stale = json.loads(catalog_path.read_text(encoding="utf-8"))
+    stale["schema_version"] = LOCAL_TRACE_SCHEMA_VERSION - 1
+    catalog_path.write_text(json.dumps(stale), encoding="utf-8")
+
+    assert repository.read_catalog().fragments == ()
+    assert repository.query(RunQuery(limit=None)) == []
+
+    recovered = repository.add_runs(_pull_request(), [_run(SECOND_RUN_ID, "second")])
+    assert recovered.added_run_count == 1
+    catalog = repository.read_catalog()
+    assert catalog.schema_version == LOCAL_TRACE_SCHEMA_VERSION
+    assert [str(run.id) for run in repository.query(RunQuery(limit=None))] == [
+        SECOND_RUN_ID
+    ]
