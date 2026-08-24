@@ -11,7 +11,10 @@
 
 `--query` is server-side (fast, limited to first ~250 indexed chars).
 `--grep` is client-side (downloads runs first, searches all content, supports regex).
-`runs search <text>` uses server-side `--query` by default. Use `runs search <text> --in inputs|outputs|error` when you need field-scoped search; that intentionally switches to client-side grep.
+`runs search <text>` uses server-side `--query` against `--source cloud` by
+default. Select `--source archive` or `--source local` to run the same search
+through DuckDB over retained or explicitly materialized Parquet. Use
+`--in inputs|outputs|error` for field-scoped search.
 
 ## Content Search Examples
 

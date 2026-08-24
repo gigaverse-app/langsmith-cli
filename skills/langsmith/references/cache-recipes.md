@@ -1,201 +1,96 @@
-# Cache Recipes: Schema Discovery, Python & DuckDB Queries
+# Local Trace Cache Recipes
 
-## 1. Discover Schema Before Querying
+The local trace cache is an intermediate Parquet working set managed by the
+CLI. Use the normal `runs` facade with `--source local`; do not depend on the
+cache's fragment paths or catalog layout.
 
-Always discover the schema first — don't guess field names.
+## 1. Materialize Explicitly
 
-```bash
-# What's cached?
-langsmith-cli --json runs cache list --fields project_name,run_count,path
-
-# Search cached content without API calls
-langsmith-cli --json runs cache grep "pattern" --grep-in outputs --fields id,name,outputs
-
-# Discover the full schema (sample 20 runs by default)
-langsmith-cli --json runs cache schema --project dev/namedrop_service
-
-# Focus on inputs/outputs only
-langsmith-cli --json runs cache schema --project dev/namedrop_service --include inputs,outputs
-
-# Increase sample size if fields are sparsely populated (e.g., empty lists)
-langsmith-cli --json runs cache schema --project dev/namedrop_service --include outputs --sample-size 500
-```
-
-**Key insight:** Some fields (like `extracted_entities`) may be empty lists in most runs. Use `--sample-size 500` to find the few runs that populate them and reveal the full element schema.
-
-## 2. Get the Cache Directory
-
-All recipes below need the cache directory path:
+Reads never populate the cache. Pull exactly when you want a local working set:
 
 ```bash
-CACHE_DIR=$(langsmith-cli runs cache dir)
-# Files are named: ${CACHE_DIR}/<sanitized_project_name>.jsonl
-# Example: ${CACHE_DIR}/dev_namedrop_service.jsonl
+# From live LangSmith
+langsmith-cli --json runs pull --source cloud --to local \
+  --project dev/namedrop_service --last 7d
+
+# From retained S3 archive
+langsmith-cli --json runs pull --source archive --to local \
+  --project dev/namedrop_service --last 90d
 ```
 
-**Naming convention:** slashes become underscores, so `dev/namedrop_service` → `dev_namedrop_service.jsonl`.
+Pulls are additive and content-idempotent. Existing cached traces remain
+reachable, identical content is not republished, and newer observations of a
+run win when querying.
 
-## 3. Python One-Liners for JSONL Queries
+## 2. Query Through the Common Runs Facade
 
-### Extract specific nested fields
 ```bash
-python3 -c "
-import json
-for line in open('$(langsmith-cli runs cache dir)/dev_namedrop_service.jsonl'):
-    d = json.loads(line.strip())
-    out = d.get('outputs', {}).get('output', {})
-    entities = out.get('extracted_entities', [])
-    for e in entities:
-        print(json.dumps({'run_id': d['id'], 'name': e.get('canonical_full_name'), 'type': e.get('entity_type')}))
-"
+# List recent local runs
+langsmith-cli --json runs list --source local \
+  --project dev/namedrop_service --last 7d \
+  --fields id,name,status,start_time
+
+# Search full local inputs, outputs, and errors
+langsmith-cli --json runs search "Ivana Stradner" --source local \
+  --project dev/namedrop_service --fields id,name,outputs
+
+# Read one locally cached run and its trace children
+langsmith-cli --json runs get <run-id> --source local \
+  --project dev/namedrop_service --follow-children
+
+# Get the newest local failure
+langsmith-cli --json runs get-latest --source local \
+  --project dev/namedrop_service --failed --fields id,name,error
 ```
 
-### Sort runs by output size
+Cloud-only FQL is rejected for local queries rather than silently approximated.
+Use the shared structured options (`--project`, time bounds, status, run type,
+tags, roots, and text search) that the local DuckDB backend supports.
+
+## 3. Inspect and Discover
+
 ```bash
-python3 -c "
-import json
-runs = []
-seen = set()
-for line in open('$(langsmith-cli runs cache dir)/dev_namedrop_service.jsonl'):
-    d = json.loads(line.strip())
-    rid = d.get('id')
-    if rid in seen: continue
-    seen.add(rid)
-    out = d.get('outputs', {})
-    size = len(json.dumps(out, default=str))
-    runs.append((size, rid, d.get('name','?'), d.get('run_type','?')))
-runs.sort(reverse=True)
-for size, rid, name, rtype in runs[:20]:
-    print(f'{size:>8,} | {rtype:>8} | {name[:40]:40} | {rid}')
-"
+# Which projects are locally reachable?
+langsmith-cli --json runs cache list \
+  --fields project_name,run_count,fragment_count,origins
+
+# Discover nested input/output shape
+langsmith-cli --json runs cache schema \
+  --project dev/namedrop_service --include inputs --include outputs --sample 500
+
+# Compatibility grep; new workflows may prefer `runs search --source local`
+langsmith-cli --json runs cache grep "pattern" \
+  --project dev/namedrop_service --grep-in outputs --fields id,name,outputs
+
+# Cache root (for diagnostics, not direct querying)
+langsmith-cli runs cache dir
 ```
 
-### Find runs containing a specific entity/value
+The root contains an atomically published catalog and immutable Parquet
+fragments. Fragment paths are an implementation detail; querying them directly
+can miss reachable fragments or expose superseded observations.
+
+## 4. Evict Local Reachability
+
 ```bash
-python3 -c "
-import json
-target = 'Ivana Stradner'  # change this
-for line in open('$(langsmith-cli runs cache dir)/dev_namedrop_service.jsonl'):
-    d = json.loads(line.strip())
-    if target.lower() in json.dumps(d.get('outputs', {})).lower():
-        print(d['id'], d.get('name','?'), str(d.get('start_time',''))[:16])
-"
+# One project
+langsmith-cli --json runs cache clear --project dev/namedrop_service --yes
+
+# Everything local
+langsmith-cli --json runs cache clear --yes
 ```
 
-### Count entities per run
-```bash
-python3 -c "
-import json
-from collections import Counter
-entity_counts = Counter()
-for line in open('$(langsmith-cli runs cache dir)/dev_namedrop_service.jsonl'):
-    d = json.loads(line.strip())
-    out = d.get('outputs', {}).get('output', {})
-    for key in ['extracted_entities', 'extracted_terminology']:
-        for item in out.get(key, []):
-            name = item.get('canonical_full_name', '?')
-            entity_counts[name] += 1
-for name, count in entity_counts.most_common(30):
-    print(f'{count:>5} | {name}')
-"
-```
+Eviction updates the logical catalog atomically. The cache is intentionally not
+a durable store: reconstruct it from cloud or archive when needed.
 
-## 4. DuckDB for SQL Queries Over JSONL
+## 5. Choose the Right Backend
 
-DuckDB can query JSONL files directly with SQL — no data loading step needed.
+| Need | Source |
+|---|---|
+| Current authoritative operational data | `--source cloud` |
+| Durable retained history or recovery | `--source archive` |
+| Fast/offline repeated intermediate analysis | `--source local` |
 
-### Setup
-```bash
-pip install duckdb  # or: uv pip install duckdb
-```
-
-### Basic query with nested field extraction
-```python
-import duckdb
-
-cache_dir = "$(langsmith-cli runs cache dir)"
-result = duckdb.sql(f"""
-SELECT
-    id,
-    name,
-    run_type,
-    outputs->>'$.output.extracted_entities' as entities,
-    start_time
-FROM read_ndjson_auto('{cache_dir}/dev_namedrop_service.jsonl')
-WHERE json_array_length(outputs->'$.output.extracted_entities') > 0
-ORDER BY start_time DESC
-LIMIT 20
-""")
-print(result.df().to_string())
-```
-
-### Aggregate by model
-```python
-import duckdb
-
-cache_dir = "$(langsmith-cli runs cache dir)"
-result = duckdb.sql(f"""
-SELECT
-    json_extract_string(extra, '$.metadata.ls_model_name') as model,
-    COUNT(*) as runs,
-    AVG(total_tokens) as avg_tokens,
-    SUM(total_tokens) as total_tokens
-FROM read_ndjson_auto('{cache_dir}/dev_namedrop_service.jsonl')
-GROUP BY model
-ORDER BY runs DESC
-""")
-print(result.df().to_string())
-```
-
-### Unnest list fields (e.g., extracted entities)
-```python
-import duckdb
-
-cache_dir = "$(langsmith-cli runs cache dir)"
-result = duckdb.sql(f"""
-WITH runs AS (
-    SELECT
-        id as run_id,
-        start_time,
-        json_extract(outputs, '$.output.extracted_entities') as entities_json
-    FROM read_ndjson_auto('{cache_dir}/dev_namedrop_service.jsonl')
-    WHERE json_array_length(json_extract(outputs, '$.output.extracted_entities')) > 0
-)
-SELECT
-    run_id,
-    start_time,
-    json_extract_string(entity.value, '$.canonical_full_name') as entity_name,
-    json_extract_string(entity.value, '$.entity_type') as entity_type,
-    json_extract_string(entity.value, '$.llm_recognition') as llm_recognized
-FROM runs, json_each(runs.entities_json) as entity
-ORDER BY start_time DESC
-LIMIT 50
-""")
-print(result.df().to_string())
-```
-
-### Find runs by output size
-```python
-import duckdb
-
-cache_dir = "$(langsmith-cli runs cache dir)"
-result = duckdb.sql(f"""
-SELECT
-    id,
-    name,
-    run_type,
-    length(outputs::VARCHAR) as output_size,
-    start_time
-FROM read_ndjson_auto('{cache_dir}/dev_namedrop_service.jsonl')
-ORDER BY output_size DESC
-LIMIT 20
-""")
-print(result.df().to_string())
-```
-
-## 5. Workflow: Schema → Query
-
-1. **Discover schema:** `langsmith-cli --json runs cache schema --project <name> --include outputs --sample-size 500`
-2. **Identify the field paths** from the schema tree (e.g., `outputs.output.extracted_entities[].canonical_full_name`)
-3. **Query with Python or DuckDB** using those exact paths
-4. **Deduplicate** — cache files may contain duplicate run IDs; always dedupe by `id`
+Do not treat local cache presence as a claim of completeness. A pull records
+selected content; later cloud/archive changes are visible only after another
+explicit pull.

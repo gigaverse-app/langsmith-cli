@@ -22,6 +22,7 @@ from langsmith_cli.archive.models import (
     PhaseRecord,
     PhaseStatus,
 )
+from langsmith_cli.archive.parquet import ARCHIVE_JSON_COLUMNS
 from langsmith_cli.archive.duckdb import (
     ARCHIVE_PARQUET_COPY_OPTIONS,
     archive_duckdb_connection,
@@ -39,23 +40,6 @@ from langsmith_cli.archive.storage import ArchiveStore
 if TYPE_CHECKING:
     from langsmith.schemas import Run
     from langsmith_cli.archive.bulk import BulkWindowExporter
-
-
-# Canonical Parquet stores nested provider fields as JSON text. Runs API JSONL is
-# inferred as STRUCT/LIST while Bulk Export v2 emits VARCHAR for the same fields;
-# normalizing here keeps reconciliation and cross-day union schema-stable.
-ARCHIVE_JSON_OBJECT_COLUMNS = (
-    "extra",
-    "inputs",
-    "outputs",
-    "feedback_stats",
-)
-ARCHIVE_JSON_LIST_COLUMNS = (
-    "events",
-    "tags",
-    "parent_run_ids",
-)
-ARCHIVE_JSON_COLUMNS = ARCHIVE_JSON_OBJECT_COLUMNS + ARCHIVE_JSON_LIST_COLUMNS
 
 
 class RunsExportClient(Protocol):
@@ -293,10 +277,8 @@ def _read_json_source(piece_path: Path, max_line_bytes: int) -> str:
     )
 
 
-def _write_runs_parquet(
-    client: RunsExportClient, manifest: ArchiveManifest, target: Path
-) -> int:
-    filter_ = f'lt(start_time, "{manifest.window_end.isoformat()}")'
+def write_runs_parquet(runs: Iterator[Run], target: Path) -> int:
+    """Write strict SDK Runs through the archive's byte-bounded staging path."""
     piece_paths: list[Path] = []
     piece_max_lines: list[int] = []
     part_paths: list[Path] = []
@@ -304,12 +286,7 @@ def _write_runs_parquet(
     piece = None
     piece_bytes = 0
     try:
-        for run in client.list_runs(
-            project_id=manifest.project_id,
-            start_time=manifest.window_start,
-            filter=filter_,
-            limit=None,
-        ):
+        for run in runs:
             encoded = _serialize_run_line(run)
             if piece is None or (
                 piece_bytes and piece_bytes + len(encoded) > STAGING_PIECE_MAX_BYTES
@@ -369,6 +346,21 @@ def _write_runs_parquet(
             piece_path.unlink(missing_ok=True)
         for part_path in part_paths:
             part_path.unlink(missing_ok=True)
+
+
+def _write_runs_parquet(
+    client: RunsExportClient, manifest: ArchiveManifest, target: Path
+) -> int:
+    filter_ = f'lt(start_time, "{manifest.window_end.isoformat()}")'
+    return write_runs_parquet(
+        client.list_runs(
+            project_id=manifest.project_id,
+            start_time=manifest.window_start,
+            filter=filter_,
+            limit=None,
+        ),
+        target,
+    )
 
 
 def _write_bulk_parquet(

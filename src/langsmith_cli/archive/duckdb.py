@@ -60,13 +60,30 @@ class DuckConnection(Protocol):
 
 
 def configure_duckdb_resources(
-    connection: DuckConnection, staging_directory: Path
+    connection: DuckConnection,
+    staging_directory: Path,
+    *,
+    allowed_paths: list[Path] | None = None,
 ) -> None:
     """Bound memory and isolate spill files inside one connection boundary."""
     spill_directory = staging_directory / "duckdb-spill"
     spill_directory.mkdir(parents=True, exist_ok=True)
     connection.execute("SET memory_limit = ?", [duckdb_memory_limit()])
     connection.execute("SET temp_directory = ?", [str(spill_directory)])
+    # INVARIANT: naive Parquet TIMESTAMP values represent LangSmith UTC. Pinning
+    # DuckDB prevents host timezone from changing comparisons against aware CLI
+    # bounds (a UTC row otherwise compared incorrectly on non-UTC workstations).
+    connection.execute("SET TimeZone = 'UTC'")
+    if allowed_paths is not None:
+        # INVARIANT: local-cache SQL can read only catalog-approved fragments and
+        # its private spill directory. Disabling autoload and external access
+        # prevents a local query from becoming an implicit network/file read.
+        approved = [str(path.resolve()) for path in allowed_paths]
+        approved.append(str(spill_directory.resolve()))
+        connection.execute("SET allowed_paths = ?", [approved])
+        connection.execute("SET autoinstall_known_extensions = false")
+        connection.execute("SET autoload_known_extensions = false")
+        connection.execute("SET enable_external_access = false")
     # Insertion-order preservation blocks spilling for the canonicalization
     # union+window pipeline, holding a whole project-day in memory (real days OOMed
     # a 2.0 GiB bound in-cluster). The archive never relies on implicit row order:
@@ -84,6 +101,7 @@ def archive_duckdb_connection(
     staging_directory: Path | None = None,
     *,
     database_path: Path | None = None,
+    allowed_paths: list[Path] | None = None,
 ) -> Iterator[DuckConnection]:
     """Open DuckDB with a unique spill directory and deterministic cleanup.
 
@@ -100,7 +118,11 @@ def archive_duckdb_connection(
             str(database_path) if database_path is not None else ":memory:"
         )
         try:
-            configure_duckdb_resources(connection, Path(connection_staging))
+            configure_duckdb_resources(
+                connection,
+                Path(connection_staging),
+                allowed_paths=allowed_paths,
+            )
             yield connection
         finally:
             connection.close()

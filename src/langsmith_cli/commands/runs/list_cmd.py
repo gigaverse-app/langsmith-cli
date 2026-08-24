@@ -4,7 +4,13 @@ import json
 
 import click
 
-from langsmith_cli.commands.runs._group import _make_fetch_runs, console, runs
+from langsmith_cli.commands.runs._group import (
+    _make_fetch_runs,
+    console,
+    resolve_trace_source_cli,
+    runs,
+    trace_source_options,
+)
 from langsmith_cli.utils import (
     add_grep_options,
     add_metadata_filter_options,
@@ -101,9 +107,10 @@ def _all_failures_are_query_rejection(
     return all(_is_query_rejection(exc) for exc in failed_exceptions.values())
 
 
-def _list_archived_runs(
+def _list_parquet_runs(
     *,
     ctx: click.Context,
+    source: str,
     project: str | None,
     project_id: str | None,
     project_name: str | None,
@@ -151,15 +158,14 @@ def _list_archived_runs(
     output: str | None,
     output_format: str | None,
 ) -> None:
-    """Archive logic layer adapter followed by the existing view contracts."""
+    """Shared archive/local logic adapter followed by existing view contracts."""
     from datetime import datetime, time, timedelta, timezone
 
-    from langsmith_cli.archive.query import (
-        ArchiveRunQuery,
-        count_archive_runs,
-        query_archive_runs,
-    )
+    from langsmith_cli.local_traces.models import TraceSource
     from langsmith_cli.time_parsing import parse_time_range
+    from langsmith_cli.trace_query import RunQuery
+
+    selected_source = TraceSource(source)
 
     unsupported: list[str] = []
     for enabled, flag in (
@@ -176,10 +182,13 @@ def _list_archived_runs(
             unsupported.append(flag)
     if unsupported:
         raise click.ClickException(
-            "Archive backend does not yet support: " + ", ".join(unsupported)
+            f"{selected_source.value.title()} backend does not yet support: "
+            + ", ".join(unsupported)
         )
     if query and grep:
-        raise click.ClickException("Use either --query or --grep with --archive")
+        raise click.ClickException(
+            f"Use either --query or --grep with --source {selected_source.value}"
+        )
 
     since_dt, before_dt = parse_time_range(since=since, last=last, before=before)
     now = datetime.now(timezone.utc)
@@ -210,7 +219,7 @@ def _list_archived_runs(
         query_limit = fetch
     elif needs_local_filtering and limit:
         query_limit = max(limit * 3, 100)
-    archive_query = ArchiveRunQuery(
+    parquet_query = RunQuery(
         project=project,
         project_id=project_id,
         project_name=project_name,
@@ -232,12 +241,26 @@ def _list_archived_runs(
         # semantics; literal `--grep` remains case-sensitive unless `-i` is set.
         text_ignore_case=bool(query or model or (grep and grep_ignore_case)),
     )
+    if selected_source is TraceSource.ARCHIVE:
+        from langsmith_cli.archive.query import (
+            count_archive_runs,
+            query_archive_runs,
+        )
+
+        query_backend = query_archive_runs
+        count_backend = count_archive_runs
+    else:
+        from langsmith_cli.local_traces.service import local_trace_repository
+
+        repository = local_trace_repository()
+        query_backend = repository.query
+        count_backend = repository.count
     if count and not needs_local_filtering:
-        click.echo(str(count_archive_runs(archive_query)))
+        click.echo(str(count_backend(parquet_query)))
         return
-    archived_runs = query_archive_runs(archive_query)
+    source_runs = query_backend(parquet_query)
     runs = get_matching_items(
-        archived_runs,
+        source_runs,
         name_pattern=name_pattern,
         name_regex=name_regex,
         name_getter=lambda run: run.name or "",
@@ -266,20 +289,18 @@ def _list_archived_runs(
     if format_type != "table":
         output_formatted_data(filter_fields(runs, fields), format_type)
         return
-    table = build_runs_table(runs, "Archived Runs", no_truncate)
+    table = build_runs_table(runs, f"{selected_source.value.title()} Runs", no_truncate)
     if not runs:
-        ctx.obj["logger"].warning("No archived runs found matching your criteria.")
+        ctx.obj["logger"].warning(
+            f"No {selected_source.value} runs found matching your criteria."
+        )
         return
     console.print(table)
 
 
 @runs.command("list")
 @add_project_filter_options
-@click.option(
-    "--archive",
-    is_flag=True,
-    help="Query canonical Parquet from the configured archive instead of LangSmith.",
-)
+@trace_source_options
 @click.option("--limit", default=20, help="Max runs to fetch (per project).")
 @click.option(
     "--status", type=click.Choice(["success", "error"]), help="Filter by status."
@@ -390,6 +411,7 @@ def _list_archived_runs(
 @click.pass_context
 def list_runs(
     ctx,
+    source,
     archive,
     project,
     project_id,
@@ -478,9 +500,12 @@ def list_runs(
         fields=fields,
     )
 
-    if archive:
-        return _list_archived_runs(
+    selected_source = resolve_trace_source_cli(source, archive)
+
+    if selected_source.value != "cloud":
+        return _list_parquet_runs(
             ctx=ctx,
+            source=selected_source.value,
             project=project,
             project_id=project_id,
             project_name=project_name,

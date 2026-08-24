@@ -861,24 +861,24 @@ langsmith-cli --json runs list \
 
 ---
 
-### Level 3: Python JSONL scan (for nested/structured fields)
+### Level 3: Export then scan JSONL (for nested/structured fields)
 
-`cache grep` and `--grep` search the full serialized JSON string — they find text anywhere, including in prompt templates, channel names, or metadata. When you need to match a specific nested field (e.g. `extracted_entities[].canonical_full_name`), scan the JSONL directly:
+`cache grep` and `--grep` search the full serialized JSON string — they find text anywhere, including in prompt templates, channel names, or metadata. When you need to match a specific nested field (e.g. `extracted_entities[].canonical_full_name`), export a stable query result and scan that JSONL. Do not open the cache's internal Parquet fragments directly.
+
+```bash
+langsmith-cli runs list --source local \
+  --project dev/namedrop_service --all-runs --limit 5000 \
+  --output /tmp/namedrop-runs.jsonl
+```
 
 ```python
 import json, re
 from pathlib import Path
-import subprocess
-
-# Get cache directory
-cache_dir = subprocess.check_output(
-    ["langsmith-cli", "runs", "cache", "dir"], text=True
-).strip()
 
 pattern = re.compile(r'Niklas|Jacob', re.IGNORECASE)
 results = []
 
-for jsonl_path in Path(cache_dir).glob("*namedrop*.jsonl"):
+for jsonl_path in [Path("/tmp/namedrop-runs.jsonl")]:
     with open(jsonl_path) as f:
         for line in f:
             try:
@@ -926,7 +926,7 @@ for start, rid, name, channel, matched in sorted(results):
 | Situation | Use |
 |-----------|-----|
 | Project is cached, any field search | Level 1: `cache grep` |
-| Project is cached, specific nested field | Level 3: Python JSONL scan |
+| Project is cached, specific nested field | Level 3: export then Python JSONL scan |
 | Project not cached, narrow subset (time/channel/tag) | Level 2: server filter + `--grep` |
 | Project not cached, broad search | Download cache → Level 1 |
 | Text may appear in prompt/metadata but you only want output payload | Level 3: Python JSONL scan |
@@ -936,7 +936,7 @@ for start, rid, name, channel, matched in sorted(results):
 Large chains (LangChain, LangGraph) create many sub-runs per trace: `ChatPromptTemplate`, `RunnableWithFallbacks`, `RunnableSequence`, `task-name-extraction-chain`, etc. The LLM prompt (including examples and instructions) often contains the same names you're searching for.
 
 - Use `--roots` to limit to root traces when using `runs list`
-- When scanning JSONL, deduplicate by `(start_time[:16], channel_id, matched_value)` since the same run data appears in multiple sub-run records
+- When scanning exported JSONL, deduplicate by `(start_time[:16], channel_id, matched_value)` since the same trace data can appear in multiple sub-run records
 
 ## Additional Resources
 

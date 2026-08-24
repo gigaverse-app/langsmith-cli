@@ -9,7 +9,9 @@ langsmith-cli --json runs list [OPTIONS]
 ```
 
 **Options:**
-- `--archive` - Query the configured canonical Parquet archive instead of LangSmith
+- `--source [cloud|archive|local]` - Query live LangSmith, canonical retained
+  Parquet, or the local Parquet working cache (default: `cloud`)
+- `--archive` - Compatibility alias for `--source archive`
 - `--project TEXT` - Project name (default: "default")
 - `--project-id TEXT` - Project UUID (bypasses name resolution, fastest lookup)
 - `--project-name TEXT` - Substring/contains match for project names
@@ -106,7 +108,8 @@ langsmith-cli --json runs get <run-id> [OPTIONS]
 - `run-id` (required) - Run UUID or trace ID
 
 **Options:**
-- `--archive` - Read the run and optional children from canonical Parquet
+- `--source [cloud|archive|local]` - Select the trace backend (default: `cloud`)
+- `--archive` - Compatibility alias for `--source archive`
 - `--project TEXT` - Exact project name hint; avoids scanning unrelated archive partitions
 - `--project-id TEXT` - Project UUID hint; avoids scanning unrelated archive partitions
 - `--since TEXT` - Archive partition lower bound (ISO or shorthand)
@@ -156,7 +159,7 @@ langsmith-cli --json runs get <id> --fields name,status,start_time,end_time
 langsmith-cli --json runs get <id>
 
 # Fast archived point read when project/day are known
-langsmith-cli --json runs get <id> --archive --project dev/agent \
+langsmith-cli --json runs get <id> --source archive --project dev/agent \
   --since 2026-08-18 --before 2026-08-19 --fields name,inputs,outputs
 ```
 
@@ -203,7 +206,8 @@ langsmith-cli --json runs get-latest [OPTIONS]
 ```
 
 **Options:**
-- `--archive` - Query the latest archived run instead of LangSmith
+- `--source [cloud|archive|local]` - Select the trace backend (default: `cloud`)
+- `--archive` - Compatibility alias for `--source archive`
 - `--project TEXT` - Project name (default: "default")
 - `--project-id TEXT` - Project UUID
 - `--project-name TEXT` - Substring match for project names
@@ -253,7 +257,8 @@ langsmith-cli --json runs search <query> [OPTIONS]
 - `query` (required) - Search query string
 
 **Options:**
-- `--archive` - Search complete archived inputs/outputs/errors through DuckDB
+- `--source [cloud|archive|local]` - Select live, retained, or local traces
+- `--archive` - Compatibility alias for `--source archive`
 - `--project TEXT` - Project name (default: "default")
 - `--project-id TEXT` - Project UUID
 - `--project-name TEXT` - Substring match for project names
@@ -290,6 +295,31 @@ langsmith-cli --json runs search "timeout" --in error
 # Search across production projects
 langsmith-cli --json runs search "user_123" --project-name-pattern "prod-*" --in inputs
 ```
+
+### `runs pull`
+
+Explicitly add complete traces from cloud or archive to the local working cache.
+Ordinary `list`, `get`, `get-latest`, and `search` reads never cache implicitly.
+
+```bash
+langsmith-cli --json runs pull --source cloud --to local \
+  --project myapp --last 7d
+langsmith-cli --json runs pull --source archive --to local \
+  --project myapp --last 90d
+```
+
+**Options:**
+- `--source [cloud|archive]` - Required source backend
+- `--to local` - Required destination
+- `--project TEXT` - Required exact project name
+- `--since`, `--before`, `--last` - Selection window
+- `--filter TEXT` - Source-native selection filter
+- `--limit INTEGER` - Maximum selected roots/runs before complete-trace expansion
+
+Pulls preserve existing cached traces and are content-idempotent. If a selected
+run belongs to a trace tree, the complete trace is materialized. Local storage
+uses immutable Parquet fragments plus an atomically published catalog; it is an
+intermediate working cache, not a durable replacement for cloud or archive.
 
 ### `runs open`
 
@@ -374,7 +404,8 @@ langsmith-cli runs pricing --project-name-pattern "prd/*" --from-cache --lookup
 
 ### `runs cache download`
 
-Download runs to local JSONL cache for fast offline analysis.
+Compatibility alias for explicit cloud-to-local Parquet materialization.
+New workflows should use `runs pull --source cloud --to local`.
 
 ```bash
 langsmith-cli runs cache download [OPTIONS]
@@ -383,20 +414,13 @@ langsmith-cli runs cache download [OPTIONS]
 **Options:**
 - `--last TEXT` - Time range (e.g., `7d`, `24h`)
 - `--since TEXT` - Start time (ISO format or shorthand: `7d`, `24h`, `30m`, `2w`)
-- `--full` - Force full re-download (clear existing cache)
 - `--run-type TEXT` - Filter by run type
-- `--workers INTEGER` - Parallel workers (default: min(8, num_projects))
 - `--filter TEXT` - Additional FQL filter
-
-Binary data (base64-encoded images/videos) is automatically stripped during download, replaced with size-preserving placeholders. This reduces cache size by up to 96% for services with inline media.
 
 **Examples:**
 ```bash
 # Cache all prd/* runs from last 7 days
 langsmith-cli runs cache download --project-name-pattern "prd/*" --last 7d
-
-# Full re-download with 4 workers
-langsmith-cli runs cache download --project prd/video_moderation_service --full --workers 4
 
 # Cache only LLM runs
 langsmith-cli runs cache download --project-name-pattern "prd/*" --run-type llm
@@ -408,12 +432,14 @@ List cached projects with run counts and file sizes.
 
 ```bash
 langsmith-cli runs cache list
-langsmith-cli --json runs cache list --fields project_name,run_count,path
+langsmith-cli --json runs cache list \
+  --fields project_name,run_count,fragment_count,origins
 langsmith-cli runs cache list --count
 ```
 
 **Options:**
-- `--fields TEXT` - Sparse output fields such as `project_name,run_count,path`
+- `--fields TEXT` - Sparse output fields such as
+  `project_name,run_count,fragment_count,origins`
 - `--count` - Print only the number of cached projects
 - `--format table|json|jsonl|csv|yaml` - Choose output format
 - `--output PATH` - Write results to a file

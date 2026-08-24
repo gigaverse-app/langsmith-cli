@@ -335,7 +335,7 @@ def test_non_root_filter_returns_only_children(
 
 
 def test_archive_text_fields_are_an_explicit_allowlist() -> None:
-    with pytest.raises(ValueError, match="Unsupported archive text field"):
+    with pytest.raises(ValueError, match="Unsupported run text field"):
         ArchiveRunQuery(text="x", text_fields=("inputs) OR true --",))
     with pytest.raises(ValueError, match="requires at least one field"):
         ArchiveRunQuery(text="x", text_fields=())
@@ -351,7 +351,7 @@ def test_literal_archive_search_respects_case_sensitivity(
     sensitive = ArchiveRunQuery(
         project="dev/agent", text="hello archive", text_ignore_case=False
     )
-    insensitive = replace(sensitive, text_ignore_case=True)
+    insensitive = sensitive.model_copy(update={"text_ignore_case": True})
     assert query_archive_runs(sensitive) == []
     assert len(query_archive_runs(insensitive)) == 1
 

@@ -51,32 +51,23 @@ EOF
 
 Use `python3 -c "..."` (no heredoc) if you must pipe inline.
 
-### 3. Cache-First Workflow — ALWAYS check cache before any API call
+### 3. Choose a trace source explicitly
 
-```
-Step 1: langsmith-cli runs cache list
-         ↓
-Step 2: Is the project listed with recent data?
-   YES → Use `runs cache grep` directly. Zero API calls. STOP.
-   NO  → Tell user: "Project X is not in cache. Downloading in background."
-         Run `langsmith-cli --json runs cache download ...` in background,
-         poll TaskOutput(block=false) for progress, use cache grep when done.
-```
+Use `--source cloud` for live data, `--source archive` for retained canonical
+history, and `--source local` for fast/offline intermediate work. Reads never
+populate local storage. Materialization is always a separate, explicit command:
 
-**Red flags — STOP if you're about to:**
-- Query the API (`runs list`, `--fetch N`) when the project is already cached
-- Run `runs cache download` without first checking `runs cache list`
-- Download a project already listed in `runs cache list`
-- Run `runs cache download` **without `--json`** — Rich output is swallowed when captured to a file, leaving you with zero progress visibility
-- Use `--fetch N` after a cache download — `--fetch` always hits the API, never the cache
-
-**Background download + progress tracking:**
 ```bash
-# ✅ CORRECT — --json emits {"event":"progress","project":"...","new_runs":N} to stderr per batch
-langsmith-cli --json runs cache download --project "dev/my-project" --last 30d
-# Run in background, poll TaskOutput(block=false), relay new_runs count to user
-# Final stdout: {"event":"download_complete","total_new_runs":N}
+langsmith-cli --json runs pull --source cloud --to local \
+  --project "dev/my-project" --last 30d
+langsmith-cli --json runs list --source local \
+  --project "dev/my-project" --fields id,name,status
 ```
+
+Pulls are additive and idempotent: existing cached traces remain reachable,
+and replaying identical content does not add another fragment. The local cache
+is a DuckDB-queryable Parquet working set, not a durable system of record.
+`runs cache download` remains a cloud-to-local compatibility alias.
 
 ### 4. Always use `--fields` to reduce token usage
 
@@ -98,15 +89,18 @@ langsmith-cli --json runs get <id> --fields inputs,outputs,error
 | Get latest error | `langsmith-cli --json runs get-latest --project <name> --failed --fields id,name,error` |
 | Server-side search | `langsmith-cli --json runs search "pattern" --fields id,name,status --limit 20` |
 | Scoped content search | `langsmith-cli --json runs search "pattern" --in outputs --fields id,name,outputs --limit 20` |
-| Search cached runs | `langsmith-cli --json runs cache grep "pattern" -E --grep-in outputs --project <name> --fields id,name,outputs` |
-| Search S3 archive | `langsmith-cli --json runs search "pattern" --archive --project <name> --fields id,name,status` |
-| Get archived run efficiently | `langsmith-cli --json runs get <id> --archive --project <name> --last 1d --fields inputs,outputs` |
+| Pull cloud traces locally | `langsmith-cli --json runs pull --source cloud --to local --project <name> --last 7d` |
+| Pull archived traces locally | `langsmith-cli --json runs pull --source archive --to local --project <name> --last 90d` |
+| Query local traces | `langsmith-cli --json runs list --source local --project <name> --fields id,name,status` |
+| Search local traces | `langsmith-cli --json runs search "pattern" --source local --project <name> --fields id,name,status` |
+| Search S3 archive | `langsmith-cli --json runs search "pattern" --source archive --project <name> --fields id,name,status` |
+| Get archived run efficiently | `langsmith-cli --json runs get <id> --source archive --project <name> --last 1d --fields inputs,outputs` |
 | Sync trace archive | `langsmith-cli --json archive sync --route <name>` |
 | Sync via Bulk Export | `langsmith-cli --json archive sync --route <name> --bulk-export-destination-id <uuid>` |
 | Backfill archive | `langsmith-cli --json archive backfill --route <name> --start-date <inclusive> --end-date <exclusive> --import-workers 8 --bulk-export-destination-id <uuid>` |
 | Check archive status | `langsmith-cli --json archive status --summary --all-routes` |
-| Download cache | `langsmith-cli --json runs cache download --project <name> --last 7d` |
-| List cache | `langsmith-cli --json runs cache list --fields project_name,run_count,path` |
+| Legacy cloud-to-local alias | `langsmith-cli --json runs cache download --project <name> --last 7d` |
+| List cache | `langsmith-cli --json runs cache list --fields project_name,run_count,fragment_count,origins` |
 | Discover cache schema | `langsmith-cli --json runs cache schema --project <name> --include outputs` |
 | Analyze token costs | `langsmith-cli --json runs usage --from-cache --breakdown model --active-only` |
 | List projects | `langsmith-cli --json projects list --name-pattern "dev/*" --fields name` |
@@ -146,7 +140,7 @@ When your task matches one of the sections below, **you MUST load that reference
 - You need to configure project-to-S3 routing such as `dev/**` and `stg/**`
 - You need to operate D+2 primary and D+12 reconciliation exports
 - You need a managed Bulk Export backfill for a large historical date range
-- You need to query retained Parquet with `--archive` and DuckDB
+- You need to query retained Parquet with `--source archive` and DuckDB
 
 ### → Read [references/search.md](references/search.md) when:
 - You need to choose between `--query` (server-side, fast, first 250 chars) vs `--grep` (client-side, all content, regex)
@@ -196,11 +190,11 @@ When your task matches one of the sections below, **you MUST load that reference
 ### → Read [docs/examples.md](docs/examples.md) when:
 - You want end-to-end workflow examples (debugging, dataset management, production monitoring)
 - You want common patterns without having to piece together flags yourself
-- You need to **search for recognized entities in extraction chain outputs** (e.g. find all runs where "Niklas" was recognized as a known entity in `extracted_entities`) — there's a complete recipe covering cache download, Python JSONL scanning, deduplication of sub-runs, and `llm_recognition` filtering
+- You need to **search for recognized entities in extraction chain outputs** (e.g. find all runs where "Niklas" was recognized as a known entity in `extracted_entities`) — use the local-cache recipes to materialize explicitly and query through `runs search --source local`
 
 ### → Read [references/cache-recipes.md](references/cache-recipes.md) when:
 - You need to discover the nested structure of cached run data (inputs/outputs schema)
-- You want to query cached JSONL data with Python one-liners or DuckDB SQL
+- You want to materialize and query the local Parquet working cache
 - You need to extract, sort, or aggregate structured outputs from cached runs
 - You need to find specific entities, values, or patterns in nested output fields
 
