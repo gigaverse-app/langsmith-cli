@@ -988,3 +988,142 @@ def test_unsealed_v1_text_raw_migrates_to_v2_on_the_bounded_streaming_path(
         ArchiveRunQuery(project="dev/migrate-v1", tags=("v1",), limit=0)
     )
     assert [run.id for run in only_v1] == [v1_run.id]
+
+
+def test_v1_dimension_converters_cover_every_stored_value_shape() -> None:
+    """
+    The streaming migration parses v1 values Python-side, so each converter must
+    accept every shape the v1 writer could store (JSON numbers, integral floats,
+    string-encoded Decimals, nulls) and reject shapes that would silently
+    corrupt a typed column instead of failing the sync.
+    """
+    from langsmith_cli.archive import sync as sync_module
+
+    assert sync_module._integer_map_value(None) is None
+    assert sync_module._integer_map_value(7) == 7
+    assert sync_module._integer_map_value(3.0) == 3
+    with pytest.raises(ValueError, match="not an integer"):
+        sync_module._integer_map_value(3.5)
+    with pytest.raises(ValueError, match="not an integer"):
+        sync_module._integer_map_value(True)
+
+    assert sync_module._decimal_map_value(None) is None
+    assert sync_module._decimal_map_value(Decimal("0.5")) == Decimal("0.5")
+    assert sync_module._decimal_map_value(2) == Decimal(2)
+    assert sync_module._decimal_map_value(0.25) == Decimal("0.25")
+    assert sync_module._decimal_map_value("0.125") == Decimal("0.125")
+    with pytest.raises(ValueError, match="not a number"):
+        sync_module._decimal_map_value("not-a-number")
+    with pytest.raises(ValueError, match="not a number"):
+        sync_module._decimal_map_value([1])
+
+    assert sync_module._parsed_dimension_values(
+        "tags", [None, "null", '["a", "b"]']
+    ) == [None, None, ["a", "b"]]
+    with pytest.raises(ValueError, match="invalid type"):
+        sync_module._parsed_dimension_values("tags", ["{}"])
+    parsed = sync_module._parsed_dimension_values(
+        "prompt_cost_details", [None, "null", '{"a": 0.5, "b": null}']
+    )
+    assert parsed[:2] == [None, None]
+    assert parsed[2] == [("a", Decimal("0.5")), ("b", None)]
+    with pytest.raises(ValueError, match="invalid type"):
+        sync_module._parsed_dimension_values("prompt_token_details", ["[1]"])
+
+
+def test_typed_dimensions_table_repairs_absent_null_and_castable_columns() -> None:
+    """
+    Row groups reach the migration transform with every shape unify tolerates:
+    dimension columns can be all-null, absent entirely, castable list variants,
+    or (for metadata) derivable only from a text/absent/scalar ``extra``.
+    """
+    import pyarrow
+
+    from langsmith_cli.archive import sync as sync_module
+
+    table = pyarrow.table(
+        {
+            "id": pyarrow.array(["a", "b", "c"], type=pyarrow.string()),
+            "extra": pyarrow.array(
+                ['{"metadata": {"k": "v"}}', "5", None], type=pyarrow.string()
+            ),
+            "tags": pyarrow.nulls(3, type=pyarrow.null()),
+            "parent_run_ids": pyarrow.array(
+                [["p"], None, None],
+                type=pyarrow.large_list(pyarrow.large_string()),
+            ),
+        }
+    )
+    typed = sync_module._typed_dimensions_table(table)
+    assert sync_module._query_dimensions_are_typed(typed.schema) is True
+    assert typed.column("tags").to_pylist() == [None, None, None]
+    assert typed.column("parent_run_ids").to_pylist() == [["p"], None, None]
+    # Absent map columns materialize as typed nulls, metadata derives from extra
+    # (empty map for scalar or null extra, matching the SQL writers' coalesce).
+    assert typed.column("prompt_token_details").to_pylist() == [None, None, None]
+    assert typed.column("metadata").to_pylist() == [[("k", "v")], [], []]
+
+    # Guard parity: absent columns stream (they are repairable), while typed
+    # dimensions inferred as scalars that neither parse nor cast do not.
+    assert sync_module._query_dimensions_are_typed(table.schema) is False
+    assert sync_module._query_dimensions_are_typed(pyarrow.schema([])) is False
+    assert sync_module._dimensions_are_streamable(table.schema) is True
+    assert (
+        sync_module._dimensions_are_streamable(
+            pyarrow.schema({"tags": pyarrow.int64()})
+        )
+        is False
+    )
+    assert (
+        sync_module._dimensions_are_streamable(
+            pyarrow.schema({"prompt_token_details": pyarrow.int64()})
+        )
+        is False
+    )
+
+
+def test_dimension_edges_without_extra_or_with_extension_types(
+    tmp_path: Path,
+) -> None:
+    """
+    Remaining migration edges: a row group with no ``extra`` column still gets
+    an empty metadata map; extension-typed dimension columns strip to their
+    storage type before the streamable check; and the SQL fallback synthesizes
+    an empty metadata map for sources carrying neither metadata nor extra.
+    """
+    import pyarrow
+    import pyarrow.parquet
+
+    from langsmith_cli.archive import sync as sync_module
+
+    bare = pyarrow.table({"id": pyarrow.array(["a"], type=pyarrow.string())})
+    assert sync_module._derived_metadata_values(bare) == [[]]
+
+    extension = getattr(pyarrow, "uuid", None)
+    if extension is not None:
+        # A uuid-extension tags column strips to fixed binary: not a list, so
+        # the source must fall off the streaming path instead of miscasting.
+        assert (
+            sync_module._dimensions_are_streamable(
+                pyarrow.schema({"tags": extension()})
+            )
+            is False
+        )
+
+    source_path = tmp_path / "no-extra.parquet"
+    pyarrow.parquet.write_table(
+        pyarrow.table(
+            {
+                "id": pyarrow.array(["a"], type=pyarrow.string()),
+                "inputs": pyarrow.array(
+                    [{"deep": 1}],
+                    type=pyarrow.struct([("deep", pyarrow.int64())]),
+                ),
+            }
+        ),
+        str(source_path),
+    )
+    target = tmp_path / "canonical.parquet"
+    assert sync_module._canonicalize_duckdb([(str(source_path), 1)], target) == 1
+    canonical = pyarrow.parquet.read_table(str(target))
+    assert canonical.column("metadata").to_pylist() == [[]]
