@@ -1133,15 +1133,29 @@ def test_dimension_edges_without_extra_column(
     assert canonical.column("metadata").to_pylist() == [[]]
 
 
-@pytest.mark.parametrize("timestamp_field", ["end_time", "first_token_time"])
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("end_time", datetime.fromisoformat("2024-07-03T12:28:17.123456+03:00")),
+        (
+            "first_token_time",
+            datetime.fromisoformat("2024-07-03T12:28:17.123456+03:00"),
+        ),
+        ("prompt_tokens", 7),
+        ("completion_tokens", 11),
+        ("total_tokens", 18),
+        ("in_dataset", True),
+    ],
+)
 @pytest.mark.parametrize("split_pieces", [False, True])
-def test_nullable_run_timestamps_survive_sync_and_reconciliation(
+def test_nullable_run_scalars_survive_sync_and_reconciliation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    timestamp_field: str,
+    field: str,
+    value: datetime | int | bool,
     split_pieces: bool,
 ) -> None:
-    """Null timestamps and completed runs must coexist across pieces and phases."""
+    """Null scalar fields must coexist with values across pieces and phases."""
     from langsmith_cli.archive import sync as sync_module
 
     if split_pieces:
@@ -1149,10 +1163,9 @@ def test_nullable_run_timestamps_survive_sync_and_reconciliation(
     archive_uri = str(tmp_path / "archive")
     monkeypatch.setenv("LANGSMITH_ARCHIVE_URI", archive_uri)
     store = create_store(archive_uri)
-    timestamp = datetime.fromisoformat("2024-07-03T12:28:17.123456+03:00")
     pending = create_run(id_str="12345678-1234-5678-1234-567812345670")
     completed = create_run(id_str="12345678-1234-5678-1234-567812345671")
-    completed = completed.model_copy(update={timestamp_field: timestamp})
+    completed = completed.model_copy(update={field: value})
     sync_project_day(
         FakeRunsClient([completed, pending] if split_pieces else [pending]),
         store,
@@ -1177,8 +1190,8 @@ def test_nullable_run_timestamps_survive_sync_and_reconciliation(
             ArchiveRunQuery(project="dev/timestamps", limit=0)
         )
     }
-    assert archived[str(pending.id)][timestamp_field] is None
-    assert archived[str(completed.id)][timestamp_field] == timestamp
+    assert archived[str(pending.id)][field] is None
+    assert archived[str(completed.id)][field] == value
 
 
 @pytest.mark.parametrize("column", ["start_time", "end_time", "first_token_time"])
@@ -1210,14 +1223,20 @@ def test_parquet_timestamp_interchange_preserves_utc_and_nulls(
     assert result.column(column).to_pylist() == [utc, utc, utc, None]
 
 
-def test_parquet_timestamp_interchange_rejects_invalid_text(tmp_path: Path) -> None:
-    """Malformed non-null timestamps must never silently become null."""
+@pytest.mark.parametrize(
+    "value",
+    ["invalid", "2024-07-03T09:28:17.123456789Z", "2024-07-03T09:28:17.123456789"],
+)
+def test_parquet_timestamp_interchange_rejects_invalid_or_lossy_text(
+    tmp_path: Path, value: str
+) -> None:
+    """Invalid or overprecise timestamps must never silently become null or truncate."""
     import pyarrow
     import pyarrow.parquet
 
     from langsmith_cli.archive.sync import _combine_parquet_parts
 
     source = tmp_path / "invalid.parquet"
-    pyarrow.parquet.write_table(pyarrow.table({"end_time": ["invalid"]}), source)
-    with pytest.raises(ValueError, match="Invalid isoformat"):
+    pyarrow.parquet.write_table(pyarrow.table({"end_time": [value]}), source)
+    with pytest.raises(ValueError):
         _combine_parquet_parts([source], tmp_path / "combined.parquet")
