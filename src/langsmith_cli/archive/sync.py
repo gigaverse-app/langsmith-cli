@@ -62,6 +62,7 @@ if TYPE_CHECKING:
 # local trace backend. Staging-only column names stay private to this writer.
 _STAGING_METADATA_KEYS = "_archive_metadata_keys"
 _STAGING_METADATA_VALUES = "_archive_metadata_values"
+_RUN_TIMESTAMP_COLUMNS = ("start_time", "end_time", "first_token_time")
 
 # Re-exported for tests and the public sync surface (the taxonomy predates the
 # shared parquet module and existing imports reference it from here).
@@ -308,8 +309,16 @@ def _storage_type(data_type: Any) -> Any:
 def _storage_schema(schema: Any) -> Any:
     import pyarrow
 
+    # INVARIANT: run timestamps use UTC microseconds regardless of per-piece
+    # inference (all-null JSON/text versus populated timestamps). Apply this to
+    # existing raw snapshots too, before either streaming merge unifies schemas.
     return pyarrow.schema(
-        field.with_type(_storage_type(field.type)) for field in schema
+        field.with_type(
+            pyarrow.timestamp("us", tz="UTC")
+            if field.name in _RUN_TIMESTAMP_COLUMNS
+            else _storage_type(field.type)
+        )
+        for field in schema
     )
 
 
@@ -332,6 +341,17 @@ def _storage_column(column: Any, target_type: Any) -> Any:
             [chunk.storage for chunk in column.chunks],
             type=column.type.storage_type,
         )
+    if pyarrow.types.is_timestamp(target_type) and (
+        pyarrow.types.is_string(column.type)
+        or pyarrow.types.is_large_string(column.type)
+    ):
+        # Old snapshots and provider files may contain ISO text, with or without
+        # offsets. Naive times mean UTC; invalid values must fail, never become null.
+        values = [
+            None if value is None else datetime.fromisoformat(value)
+            for value in column.to_pylist()
+        ]
+        return pyarrow.chunked_array([pyarrow.array(values, type=target_type)])
     return column.cast(target_type)
 
 

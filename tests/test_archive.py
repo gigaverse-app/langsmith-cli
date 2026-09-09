@@ -1131,3 +1131,93 @@ def test_dimension_edges_without_extra_column(
     assert sync_module._canonicalize_duckdb([(str(source_path), 1)], target) == 1
     canonical = pyarrow.parquet.read_table(str(target))
     assert canonical.column("metadata").to_pylist() == [[]]
+
+
+@pytest.mark.parametrize("timestamp_field", ["end_time", "first_token_time"])
+@pytest.mark.parametrize("split_pieces", [False, True])
+def test_nullable_run_timestamps_survive_sync_and_reconciliation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    timestamp_field: str,
+    split_pieces: bool,
+) -> None:
+    """Null timestamps and completed runs must coexist across pieces and phases."""
+    from langsmith_cli.archive import sync as sync_module
+
+    if split_pieces:
+        monkeypatch.setattr(sync_module, "STAGING_PIECE_MAX_BYTES", 1)
+    archive_uri = str(tmp_path / "archive")
+    monkeypatch.setenv("LANGSMITH_ARCHIVE_URI", archive_uri)
+    store = create_store(archive_uri)
+    timestamp = datetime.fromisoformat("2024-07-03T12:28:17.123456+03:00")
+    pending = create_run(id_str="12345678-1234-5678-1234-567812345670")
+    completed = create_run(id_str="12345678-1234-5678-1234-567812345671")
+    completed = completed.model_copy(update={timestamp_field: timestamp})
+    sync_project_day(
+        FakeRunsClient([completed, pending] if split_pieces else [pending]),
+        store,
+        project_id="f47ac10b-58cc-4372-a567-0e02b2c3d479",
+        project_name="dev/timestamps",
+        trace_date=date(2024, 7, 3),
+        phase=ArchivePhase.PRIMARY,
+    )
+    manifest = sync_project_day(
+        FakeRunsClient([completed]),
+        store,
+        project_id="f47ac10b-58cc-4372-a567-0e02b2c3d479",
+        project_name="dev/timestamps",
+        trace_date=date(2024, 7, 3),
+        phase=ArchivePhase.RECONCILIATION,
+    )
+    assert manifest.sealed
+    assert manifest.canonical_run_count == 2
+    archived = {
+        str(run.id): run.model_dump()
+        for run in query_archive_runs(
+            ArchiveRunQuery(project="dev/timestamps", limit=0)
+        )
+    }
+    assert archived[str(pending.id)][timestamp_field] is None
+    assert archived[str(completed.id)][timestamp_field] == timestamp
+
+
+@pytest.mark.parametrize("column", ["start_time", "end_time", "first_token_time"])
+def test_parquet_timestamp_interchange_preserves_utc_and_nulls(
+    tmp_path: Path, column: str
+) -> None:
+    """Existing timestamp, ISO-text, and null fragments share one UTC contract."""
+    import pyarrow
+    import pyarrow.parquet
+
+    from langsmith_cli.archive.sync import _combine_parquet_parts
+
+    utc = datetime(2024, 7, 3, 9, 28, 17, 123456, tzinfo=timezone.utc)
+    parts = []
+    for index, values in enumerate(
+        [
+            [utc.replace(tzinfo=None)],
+            ["2024-07-03T12:28:17.123456+03:00", "2024-07-03T09:28:17.123456"],
+            [None],
+        ]
+    ):
+        part = tmp_path / f"{index}.parquet"
+        pyarrow.parquet.write_table(pyarrow.table({column: values}), part)
+        parts.append(part)
+    target = tmp_path / "combined.parquet"
+    _combine_parquet_parts(parts, target)
+    result = pyarrow.parquet.read_table(target)
+    assert result.schema.field(column).type == pyarrow.timestamp("us", tz="UTC")
+    assert result.column(column).to_pylist() == [utc, utc, utc, None]
+
+
+def test_parquet_timestamp_interchange_rejects_invalid_text(tmp_path: Path) -> None:
+    """Malformed non-null timestamps must never silently become null."""
+    import pyarrow
+    import pyarrow.parquet
+
+    from langsmith_cli.archive.sync import _combine_parquet_parts
+
+    source = tmp_path / "invalid.parquet"
+    pyarrow.parquet.write_table(pyarrow.table({"end_time": ["invalid"]}), source)
+    with pytest.raises(ValueError, match="Invalid isoformat"):
+        _combine_parquet_parts([source], tmp_path / "combined.parquet")
