@@ -707,6 +707,58 @@ def test_archive_trace_expansion_uses_one_batched_query() -> None:
     assert query.trace_ids == (FIRST_RUN_ID, SECOND_RUN_ID)
 
 
+def test_archive_trace_expansion_is_bounded_by_the_earliest_trace_root() -> None:
+    """Expansion by trace id prunes fragments published before any selected root."""
+    from langsmith_cli.local_traces.models import TraceSelection
+    from langsmith_cli.local_traces.transfer import (
+        TRACE_COMPLETION_PAD,
+        complete_archive_traces,
+    )
+
+    root_start = datetime(2026, 8, 22, 11, 30, tzinfo=timezone.utc)
+    selected = [
+        _run(FIRST_RUN_ID, "first").model_copy(
+            update={"dotted_order": f"20260822T113000000000Z{FIRST_RUN_ID}"}
+        )
+    ]
+    selection = TraceSelection(
+        source=TraceSource.ARCHIVE,
+        project_name=PROJECT_NAME,
+        requested_at=OBSERVED_AT,
+    )
+    with patch(
+        "langsmith_cli.archive.query.query_archive_runs", return_value=selected
+    ) as query_archive_runs:
+        complete_archive_traces(selection, selected)
+
+    query = query_archive_runs.call_args.args[0]
+    assert query.since == root_start - TRACE_COMPLETION_PAD
+
+
+def test_archive_trace_expansion_stays_unbounded_without_dotted_order() -> None:
+    """INVARIANT: an underivable root bound never narrows the expansion scan."""
+    from langsmith_cli.local_traces.models import TraceSelection
+    from langsmith_cli.local_traces.transfer import complete_archive_traces
+
+    selected = [
+        _run(FIRST_RUN_ID, "first").model_copy(
+            update={"dotted_order": f"20260822T113000000000Z{FIRST_RUN_ID}"}
+        ),
+        _run(SECOND_RUN_ID, "second").model_copy(update={"dotted_order": None}),
+    ]
+    selection = TraceSelection(
+        source=TraceSource.ARCHIVE,
+        project_name=PROJECT_NAME,
+        requested_at=OBSERVED_AT,
+    )
+    with patch(
+        "langsmith_cli.archive.query.query_archive_runs", return_value=selected
+    ) as query_archive_runs:
+        complete_archive_traces(selection, selected)
+
+    assert query_archive_runs.call_args.args[0].since is None
+
+
 def test_cache_repair_rejects_tampered_fragment(
     runner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
