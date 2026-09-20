@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import datetime, timezone
 import json
 from typing import TYPE_CHECKING, Any
@@ -53,6 +54,29 @@ ARCHIVE_DIMENSION_SQL_TYPES: dict[str, str] = {
     **dict.fromkeys(ARCHIVE_DECIMAL_MAP_COLUMNS, "MAP(VARCHAR, DECIMAL(38,18))"),
     ARCHIVE_METADATA_COLUMN: "MAP(VARCHAR, VARCHAR)",
 }
+
+
+def json_text_projection(json_columns: Iterable[str]) -> tuple[list[str], list[str]]:
+    """SQL that returns provider JSON-annotated payload columns to canonical text.
+
+    Providers and older writers annotate payload columns with the Parquet JSON
+    logical type, which DuckDB resolves as JSON instead of VARCHAR. Free text is not
+    valid JSON, so a union that adopts JSON for such a column fails converting a
+    sibling fragment's plain text (``error`` holding ``RateLimitError('429')``).
+    Canonical contract: every column outside the promoted dimensions is VARCHAR text,
+    materialized per fragment before any cross-fragment union.
+
+    Returns ``(excluded_columns, expressions)`` for a
+    ``SELECT * EXCLUDE (...), <expressions> FROM ...``; both are empty when the
+    fragment annotates nothing, so callers keep their identity projection.
+    """
+    # Promoted dimensions carry their own typed cast, which already accepts a
+    # JSON-annotated source column.
+    columns = sorted(
+        column for column in json_columns if column not in ARCHIVE_DIMENSION_COLUMNS
+    )
+    expressions = [f"CAST({column} AS VARCHAR) AS {column}" for column in columns]
+    return columns, expressions
 
 
 def json_dimension_projection(

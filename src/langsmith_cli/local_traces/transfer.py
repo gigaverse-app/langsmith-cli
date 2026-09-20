@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Protocol
 
 from langsmith_cli.local_traces.models import (
@@ -15,6 +16,12 @@ from langsmith_cli.local_traces.models import (
 if TYPE_CHECKING:
     from langsmith.schemas import Run
     from langsmith_cli.local_traces.repository import LocalTraceRepository
+
+
+# A trace root and its children are timed by different processes, so a child may
+# report a start marginally before its root. One day absorbs that skew while still
+# pruning whole months of fragments from a trace-id expansion.
+TRACE_COMPLETION_PAD = timedelta(days=1)
 
 
 class RunsClient(Protocol):
@@ -121,6 +128,34 @@ def select_archive_runs(selection: TraceSelection) -> list[Run]:
     )
 
 
+def trace_completion_since(selected: list[Run]) -> datetime | None:
+    """Earliest start_time a member of the selected traces can carry.
+
+    Expansion is by trace id, which no Parquet statistic can prune, so an
+    unbounded completion opens every canonical fragment the project ever
+    published to recover a handful of members. A run cannot begin before its own
+    trace root, and ``dotted_order`` opens with that root's UTC start, so the
+    earliest root bounds the scan without narrowing the bundle. The pad absorbs
+    clock skew between the processes that time a root and its children.
+
+    Returns ``None`` when any selected run lacks a parsable ``dotted_order``,
+    keeping the unbounded scan rather than risking a truncated bundle.
+    """
+    roots: list[datetime] = []
+    for run in selected:
+        if not run.dotted_order:
+            return None
+        stamp = run.dotted_order.split(".", 1)[0].partition("Z")[0]
+        try:
+            root_start = datetime.strptime(stamp, "%Y%m%dT%H%M%S%f")
+        except ValueError:
+            return None
+        roots.append(root_start.replace(tzinfo=timezone.utc))
+    if not roots:
+        return None
+    return min(roots) - TRACE_COMPLETION_PAD
+
+
 def complete_archive_traces(
     selection: TraceSelection, selected: list[Run]
 ) -> list[Run]:
@@ -135,6 +170,7 @@ def complete_archive_traces(
         RunQuery(
             project=selection.project_name,
             trace_ids=trace_ids,
+            since=trace_completion_since(selected),
             limit=None,
         )
     ):

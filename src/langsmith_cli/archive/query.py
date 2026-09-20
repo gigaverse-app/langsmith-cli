@@ -12,12 +12,14 @@ from langsmith_cli.archive.config import load_archive_config
 from langsmith_cli.archive.duckdb import (
     archive_duckdb_connection,
     configure_duckdb_s3,
+    json_annotated_columns,
     source_column_names,
     sql_string,
 )
 from langsmith_cli.archive.models import ARCHIVE_SCHEMA_VERSION
 from langsmith_cli.archive.parquet import (
     json_dimension_projection,
+    json_text_projection,
     normalize_run_payload,
     parquet_where_clause as _where_clause,
     validated_parquet_run as _validated_archive_run,
@@ -183,14 +185,30 @@ def _create_normalized_runs_view(
         for source in sources
         if source.schema_version != ARCHIVE_SCHEMA_VERSION
     ]
-    if current_uris:
+    annotated = json_annotated_columns(connection, [source.uri for source in sources])
+    # One read_parquet list may itself span provider generations, and its internal
+    # union adopts JSON for a column any member annotates. Grouping by annotation
+    # keeps that batched scan (and its predicate pushdown) for every fragment that
+    # shares a physical shape, while fragments needing a text cast form their own.
+    current_groups: dict[frozenset[str], list[str]] = {}
+    for uri in current_uris:
+        current_groups.setdefault(annotated[uri], []).append(uri)
+    for json_columns, uris in current_groups.items():
         current = (
-            f"read_parquet([{', '.join(sql_string(uri) for uri in current_uris)}], "
+            f"read_parquet([{', '.join(sql_string(uri) for uri in uris)}], "
             "union_by_name=true, hive_partitioning=false)"
         )
-        # v2 is already the query contract. Keeping this projection as an identity
-        # lets DuckDB push tag/list predicates and column projection into Parquet.
-        selects.append(f"SELECT * FROM {current}")
+        excluded, projection = json_text_projection(json_columns)
+        if not excluded:
+            # v2 is already the query contract. Keeping this projection as an
+            # identity lets DuckDB push tag/list predicates and column projection
+            # into Parquet.
+            selects.append(f"SELECT * FROM {current}")
+            continue
+        selects.append(
+            f"SELECT * EXCLUDE ({', '.join(excluded)}), "
+            f"{', '.join(projection)} FROM {current}"
+        )
     for uri in legacy_uris:
         parquet = f"read_parquet({sql_string(uri)}, hive_partitioning=false)"
         excluded, projection = json_dimension_projection(
@@ -199,10 +217,14 @@ def _create_normalized_runs_view(
             # column is provider noise, so re-derive from authoritative extra.
             metadata_column_is_canonical=False,
         )
+        text_excluded, text_projection = json_text_projection(annotated[uri])
+        excluded = [*excluded, *text_excluded]
+        projection = [*projection, *text_projection]
         exclude_sql = f" EXCLUDE ({', '.join(excluded)})" if excluded else ""
         selects.append(f"SELECT *{exclude_sql}, {', '.join(projection)} FROM {parquet}")
     # INVARIANT: all cross-day unions happen only after each generation has been
-    # normalized independently, so a v1 VARCHAR can never dictate a v2 list/map.
+    # normalized independently, so neither a v1 VARCHAR nor a provider JSON
+    # annotation can dictate another generation's type.
     connection.execute(
         "CREATE TEMP VIEW canonical_archive_runs AS "
         + " UNION ALL BY NAME ".join(selects)

@@ -72,6 +72,62 @@ def source_column_names(connection: Any, source: str) -> set[str]:
     }
 
 
+def _skip_schema_subtree(entries: list[tuple[str, int, str | None]], index: int) -> int:
+    """Index just past the schema node at ``index``, nested children included."""
+    _, num_children, _ = entries[index]
+    index += 1
+    for _ in range(num_children):
+        index = _skip_schema_subtree(entries, index)
+    return index
+
+
+def _root_json_columns(entries: list[tuple[str, int, str | None]]) -> list[str]:
+    """Top-level column names one file annotates as JSON.
+
+    ``parquet_schema`` emits a depth-first preorder including nested LIST/MAP
+    leaves, and only a top-level column can be projected by name.
+    """
+    if not entries:
+        return []
+    columns: list[str] = []
+    index = 1
+    for _ in range(entries[0][1]):
+        name, _num_children, duckdb_type = entries[index]
+        if duckdb_type == "JSON":
+            columns.append(name)
+        index = _skip_schema_subtree(entries, index)
+    return columns
+
+
+def json_annotated_columns(
+    connection: Any, uris: list[str]
+) -> dict[str, frozenset[str]]:
+    """Per Parquet file, the top-level columns DuckDB resolves as JSON.
+
+    ``parquet_schema`` reads every listed footer in one batched call and reports
+    DuckDB's own resolved type, so this is the same mapping a scan would apply
+    without paying one round trip per fragment.
+    """
+    if not uris:
+        return {}
+    file_list = "[" + ", ".join(sql_string(uri) for uri in uris) + "]"
+    entries: dict[str, list[tuple[str, int, str | None]]] = {uri: [] for uri in uris}
+    rows = connection.execute(
+        f"SELECT file_name, name, num_children, duckdb_type "
+        f"FROM parquet_schema({file_list})"
+    ).fetchall()
+    for file_name, name, num_children, duckdb_type in rows:
+        # parquet_schema echoes the URI each file was listed under, in schema order.
+        entries[str(file_name)].append(
+            (
+                str(name),
+                int(num_children) if num_children is not None else 0,
+                None if duckdb_type is None else str(duckdb_type),
+            )
+        )
+    return {uri: frozenset(_root_json_columns(rows)) for uri, rows in entries.items()}
+
+
 def configure_duckdb_resources(
     connection: DuckConnection,
     staging_directory: Path,

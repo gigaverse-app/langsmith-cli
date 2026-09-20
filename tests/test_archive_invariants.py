@@ -7,6 +7,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from io import BytesIO
 import json
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from threading import Barrier, Event, Thread
 from typing import Any, Iterator
 
@@ -241,6 +242,78 @@ def test_queries_ignore_unpublished_raw_and_canonical_objects(
     runs = query_archive_runs(ArchiveRunQuery(project="dev/agent", limit=0))
 
     assert len(runs) == 1
+
+
+def _republish_canonical_with_json_logical_type(
+    store: Any, manifest: Any, columns: tuple[str, ...]
+) -> None:
+    """Rewrite a published canonical fragment so ``columns`` carry Parquet JSON.
+
+    Providers (and older writers) annotate payload columns with the Parquet JSON
+    logical type, which DuckDB surfaces as JSON rather than VARCHAR. The archive is
+    immutable, so readers must keep reading fragments that were published that way.
+    """
+    import duckdb
+
+    assert manifest.canonical_key is not None
+    with TemporaryDirectory() as workspace:
+        source = Path(workspace) / "source.parquet"
+        target = Path(workspace) / "target.parquet"
+        source.write_bytes(store.get_bytes(manifest.canonical_key))
+        excluded = ", ".join(columns)
+        expressions = ", ".join(
+            f"CAST({column} AS JSON) AS {column}" for column in columns
+        )
+        connection = duckdb.connect()
+        connection.execute(
+            f"COPY (SELECT * EXCLUDE ({excluded}), {expressions} "
+            f"FROM read_parquet('{source.as_posix()}')) "
+            f"TO '{target.as_posix()}' (FORMAT PARQUET)"
+        )
+        connection.close()
+        store.put_bytes(manifest.canonical_key, target.read_bytes())
+
+
+def test_cross_generation_union_reads_provider_json_annotated_columns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """INVARIANT: a provider JSON annotation never dictates another fragment's type.
+
+    ``error`` holds free text, so a fragment that annotates it as Parquet JSON must
+    not force a sibling fragment's plain text through a JSON conversion.
+    """
+    archive_uri = str(tmp_path / "archive")
+    monkeypatch.setenv("LANGSMITH_ARCHIVE_URI", archive_uri)
+    store = create_store(archive_uri)
+    plain_error = "RateLimitError('Error code: 429')"
+    annotated_date = TRACE_DATE + timedelta(days=1)
+    for trace_date, run, annotate in (
+        (
+            TRACE_DATE,
+            create_run(id_str="auto", error=plain_error),
+            False,
+        ),
+        (
+            annotated_date,
+            create_run(id_str="auto", error=None),
+            True,
+        ),
+    ):
+        manifest = sync_project_day(
+            FakeRunsClient([run]),
+            store,
+            project_id=PROJECT_ID,
+            project_name="dev/agent",
+            trace_date=trace_date,
+            phase=ArchivePhase.PRIMARY,
+        )
+        if annotate:
+            _republish_canonical_with_json_logical_type(store, manifest, ("error",))
+
+    runs = query_archive_runs(ArchiveRunQuery(project="dev/agent", limit=0))
+
+    assert len(runs) == 2
+    assert {run.error for run in runs} == {plain_error, None}
 
 
 def test_project_catalog_prunes_unrelated_manifest_reads(

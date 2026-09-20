@@ -7,7 +7,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from enum import Enum
 import base64
-from collections.abc import Iterator as IteratorABC
+from collections.abc import Iterable, Iterator as IteratorABC
 import json
 from pathlib import Path
 import tempfile
@@ -36,11 +36,13 @@ from langsmith_cli.archive.parquet import (
     ARCHIVE_TYPED_MAP_COLUMNS,
     BULK_EXPORT_JSON_COLUMNS,
     json_dimension_projection,
+    json_text_projection,
 )
 from langsmith_cli.archive.duckdb import (
     ARCHIVE_PARQUET_COPY_OPTIONS,
     archive_duckdb_connection,
     configure_duckdb_s3,
+    json_annotated_columns,
     source_column_names,
     sql_string,
 )
@@ -245,10 +247,18 @@ def _runs_api_snapshot_select(source: str) -> str:
     return f"(SELECT * EXCLUDE ({excluded}), {', '.join(expressions)} FROM {source})"
 
 
-def _bulk_snapshot_select(source: str, columns: set[str]) -> str:
+def _bulk_snapshot_select(
+    source: str, columns: set[str], json_columns: Iterable[str] = ()
+) -> str:
     excluded, expressions = json_dimension_projection(
         columns, metadata_column_is_canonical=False
     )
+    # Managed Bulk Export annotates payload columns with the Parquet JSON logical
+    # type. Canonical Parquet keeps them as text so no later union has to convert
+    # another generation's plain text through JSON.
+    text_excluded, text_expressions = json_text_projection(json_columns)
+    excluded = [*excluded, *text_excluded]
+    expressions = [*expressions, *text_expressions]
     exclude_sql = f" EXCLUDE ({', '.join(excluded)})" if excluded else ""
     return f"(SELECT *{exclude_sql}, {', '.join(expressions)} FROM {source})"
 
@@ -540,8 +550,11 @@ def _write_bulk_parquet(
                 raise ValueError("Bulk export row count does not match Parquet")
             if counts[0] != counts[1]:
                 raise ValueError("Bulk export contains duplicate run IDs")
+            annotated = json_annotated_columns(connection, list(snapshot.file_uris))
             source = _bulk_snapshot_select(
-                source, source_column_names(connection, source)
+                source,
+                source_column_names(connection, source),
+                frozenset().union(*annotated.values()) if annotated else frozenset(),
             )
             connection.execute(
                 f"COPY (SELECT * FROM {source}) TO {_sql_string(str(target))} "
@@ -953,7 +966,15 @@ def _canonicalize_duckdb(sources: list[tuple[str, int]], target: Path) -> int:
             dimension_excluded, dimension_expressions = json_dimension_projection(
                 columns, metadata_column_is_canonical=True
             )
-            excluded_columns = (*json_columns, *dimension_excluded)
+            # A provider JSON annotation on a payload column (notably free-text
+            # ``error``) would otherwise be copied into canonical Parquet and force
+            # every later cross-generation union to convert siblings' plain text.
+            text_excluded, text_expressions = json_text_projection(
+                column
+                for column in json_annotated_columns(connection, [uri])[uri]
+                if column not in json_columns
+            )
+            excluded_columns = (*json_columns, *dimension_excluded, *text_excluded)
             expressions = [
                 *(
                     f"CASE WHEN typeof({column}) = 'VARCHAR' "
@@ -962,6 +983,7 @@ def _canonicalize_duckdb(sources: list[tuple[str, int]], target: Path) -> int:
                     for column in json_columns
                 ),
                 *dimension_expressions,
+                *text_expressions,
             ]
             exclude_sql = (
                 f" EXCLUDE ({', '.join(excluded_columns)})" if excluded_columns else ""
