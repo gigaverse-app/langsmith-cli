@@ -11,12 +11,12 @@
 
 **Linux/macOS:**
 ```bash
-curl -sSL https://raw.githubusercontent.com/langchain-ai/langsmith-cli/main/scripts/install.sh | sh
+curl -sSL https://raw.githubusercontent.com/gigaverse-app/langsmith-cli/main/scripts/install.sh | sh
 ```
 
 **Windows:**
 ```powershell
-iwr -useb https://raw.githubusercontent.com/langchain-ai/langsmith-cli/main/scripts/install.ps1 | iex
+iwr -useb https://raw.githubusercontent.com/gigaverse-app/langsmith-cli/main/scripts/install.ps1 | iex
 ```
 
 The standalone installer:
@@ -51,7 +51,7 @@ pipx install langsmith-cli
 ### From Source (for contributors)
 
 ```bash
-git clone https://github.com/langchain-ai/langsmith-cli.git
+git clone https://github.com/gigaverse-app/langsmith-cli.git
 cd langsmith-cli
 uv sync
 uv run langsmith-cli --help
@@ -99,7 +99,7 @@ This gives Claude instant access to all LangSmith commands.
 
 ```bash
 # Download and run uninstaller
-curl -sSL https://raw.githubusercontent.com/langchain-ai/langsmith-cli/main/scripts/uninstall.py | python3 -
+curl -sSL https://raw.githubusercontent.com/gigaverse-app/langsmith-cli/main/scripts/uninstall.py | python3 -
 
 # Or manually
 python3 scripts/uninstall.py
@@ -210,7 +210,7 @@ pip install --user --force-reinstall langsmith-cli
 
 Reinstall with the install script (it removes the old version first):
 ```bash
-curl -sSL https://raw.githubusercontent.com/langchain-ai/langsmith-cli/main/scripts/install.sh | sh
+curl -sSL https://raw.githubusercontent.com/gigaverse-app/langsmith-cli/main/scripts/install.sh | sh
 ```
 
 ### uv
@@ -253,7 +253,7 @@ FROM python:3.12-slim
 RUN pip install langsmith-cli
 
 # Or use standalone installer
-RUN curl -sSL https://raw.githubusercontent.com/langchain-ai/langsmith-cli/main/scripts/install.sh | sh
+RUN curl -sSL https://raw.githubusercontent.com/gigaverse-app/langsmith-cli/main/scripts/install.sh | sh
 
 # Set API key
 ENV LANGSMITH_API_KEY="lsv2_pt_..."
@@ -311,6 +311,6 @@ test:
 
 ## Getting Help
 
-- **GitHub Issues:** [github.com/langchain-ai/langsmith-cli/issues](https://github.com/langchain-ai/langsmith-cli/issues)
-- **Documentation:** [github.com/langchain-ai/langsmith-cli](https://github.com/langchain-ai/langsmith-cli)
+- **GitHub Issues:** [github.com/gigaverse-app/langsmith-cli/issues](https://github.com/gigaverse-app/langsmith-cli/issues)
+- **Documentation:** [github.com/gigaverse-app/langsmith-cli](https://github.com/gigaverse-app/langsmith-cli)
 - **LangSmith Docs:** [docs.smith.langchain.com](https://docs.smith.langchain.com)
