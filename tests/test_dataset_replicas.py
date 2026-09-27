@@ -3,19 +3,21 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
 import io
 import json
 from pathlib import Path
 from threading import Barrier
+from typing import Literal
 from unittest.mock import MagicMock, patch
 from uuid import UUID
 
 import pytest
 from langsmith.schemas import Dataset, DatasetVersion, Example
 
-from langsmith_cli.archive.storage import create_store
+from langsmith_cli.archive.storage import LocalArchiveStore, create_store
 from langsmith_cli.dataset_replica.models import ReplicaDestination, ReplicaSource
 from langsmith_cli.dataset_replica.repository import (
     DatasetReplicaAmbiguousError,
@@ -609,6 +611,64 @@ def test_concurrent_identical_version_is_idempotent(tmp_path: Path) -> None:
     repository = DatasetReplicaRepository(create_store(str(tmp_path)))
     assert len(repository.list_versions(str(DATASET_ID))) == 1
     assert len(repository.read_examples(str(DATASET_ID))) == 1
+
+
+@dataclass(frozen=True)
+class _LosesReplaceRaceStore(LocalArchiveStore):
+    """Deterministic stand-in for the Windows race behind the test above.
+
+    Two writers publishing one content-addressed object both see it absent.
+    Windows then refuses the second ``os.replace`` onto the object with
+    ``PermissionError`` (WinError 5) while the first writer has it open.
+    ``competitor`` says what the winning writer published first, if anything.
+    """
+
+    competitor: Literal["same_bytes", "other_bytes"] | None = None
+
+    def put_file(self, key: str, source: Path) -> None:
+        if self.competitor == "same_bytes":
+            self.put_bytes(key, source.read_bytes())
+        elif self.competitor == "other_bytes":
+            self.put_bytes(key, b"not the object")
+        raise PermissionError(13, "Access is denied", key)
+
+
+def _publish_one_example(store: LocalArchiveStore) -> None:
+    DatasetReplicaRepository(store).write_snapshot(
+        replica_dataset(),
+        DatasetVersion(tags=["latest"], as_of=VERSION_ONE),
+        [replica_example(attachment=None)],
+    )
+
+
+def test_losing_an_identical_object_write_race_still_publishes(tmp_path: Path) -> None:
+    """INVARIANT: a concurrent writer that already published the same bytes wins."""
+    store = _LosesReplaceRaceStore(
+        root=tmp_path, base_uri=str(tmp_path), competitor="same_bytes"
+    )
+
+    _publish_one_example(store)
+
+    repository = DatasetReplicaRepository(create_store(str(tmp_path)))
+    assert len(repository.read_examples(str(DATASET_ID))) == 1
+
+
+def test_failed_object_write_without_a_competitor_still_raises(tmp_path: Path) -> None:
+    """Control: tolerating the race must not swallow a genuine write failure."""
+    store = _LosesReplaceRaceStore(root=tmp_path, base_uri=str(tmp_path))
+
+    with pytest.raises(PermissionError):
+        _publish_one_example(store)
+
+
+def test_losing_the_race_to_different_bytes_fails_verification(tmp_path: Path) -> None:
+    """Control: the loser verifies the winner's bytes instead of trusting them."""
+    store = _LosesReplaceRaceStore(
+        root=tmp_path, base_uri=str(tmp_path), competitor="other_bytes"
+    )
+
+    with pytest.raises(DatasetReplicaIntegrityError):
+        _publish_one_example(store)
 
 
 def test_concurrent_divergent_same_version_cannot_publish_mixed_data(

@@ -406,8 +406,15 @@ class DatasetReplicaRepository:
         verification_path: Path,
     ) -> None:
         if not self._store.exists(key):
-            self._store.put_file(key, source)
-            return
+            try:
+                self._store.put_file(key, source)
+                return
+            except PermissionError:
+                # Windows refuses to replace an object a concurrent writer has
+                # just published and still holds open. Keys are content
+                # addressed, so that writer's object stands if it verifies below.
+                if not self._store.exists(key):
+                    raise
         self._store.get_file(key, verification_path)
         if _file_sha256(verification_path) != expected_sha256:
             raise DatasetReplicaIntegrityError(f"Replica object digest mismatch: {key}")
