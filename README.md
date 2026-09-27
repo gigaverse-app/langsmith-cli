@@ -10,7 +10,7 @@
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-[Features](#-features) • [Installation](#-installation) • [Quick Start](#-quick-start) • [Examples](#-examples) • [Documentation](#-documentation)
+[Features](#-features) • [vs. official CLI](#-how-this-differs-from-langchains-official-langsmith-cli) • [Installation](#-installation) • [Quick Start](#-quick-start) • [Examples](#-examples) • [Documentation](#-documentation)
 
 </div>
 
@@ -22,7 +22,7 @@
 > **Step 1:** Install the CLI tool
 > ```bash
 > # Quick install (Linux/macOS)
-> curl -sSL https://raw.githubusercontent.com/langchain-ai/langsmith-cli/main/scripts/install.sh | sh
+> curl -sSL https://raw.githubusercontent.com/gigaverse-app/langsmith-cli/main/scripts/install.sh | sh
 >
 > # Or use uv
 > uv tool install langsmith-cli
@@ -43,7 +43,7 @@
 
 ---
 
-![context is all you need](https://media.licdn.com/dms/image/v2/D4D22AQFkt4EsgXsQVw/feedshare-shrink_800/B4DZu.8A41KQAg-/0/1768434962262?e=1770249600&v=beta&t=WhjBTpbVG-guRZWem5Qie3vMD6g1PqmhXB7SC4TRkMM)
+> **Context is all you need.** Agents do better when a tool returns 40 tokens instead of a 20KB trace. That is the idea behind this CLI.
 
 ## 🎯 Why LangSmith CLI?
 
@@ -64,6 +64,27 @@ Traditional tools are slow, verbose, and waste tokens. **LangSmith CLI** is diff
 | **Export Formats** | JSON, CSV, YAML | JSON only |
 
 **100% Feature Parity** + **10x Better QoL** 🚀
+
+---
+
+## 🆚 How this differs from LangChain's official `langsmith-cli`
+
+LangChain publishes its own CLI at [langchain-ai/langsmith-cli](https://github.com/langchain-ai/langsmith-cli). It has the same repo name but it is a separate project. The two install different binaries and can be installed side by side.
+
+| | **This project** (`gigaverse-app/langsmith-cli`) | **LangChain's** (`langchain-ai/langsmith-cli`) |
+|---|---|---|
+| Command | `langsmith-cli` | `langsmith` |
+| Implementation | Python 3.12+ (Click + Rich, LangSmith Python SDK) | Go single binary |
+| Install | `uv tool install langsmith-cli` / `pip install langsmith-cli` (PyPI), or the `gigaverse-app` install scripts below | `curl -fsSL https://cli.langsmith.com/install.sh \| sh`, GitHub Releases, Homebrew `langchain-ai/tap/langsmith-cli`, Scoop, `go install` |
+| Claude Code | Ships as a Claude Code plugin + skill (`claude plugin marketplace add gigaverse-app/langsmith-cli`) | `langsmith trace setup claude\|codex` configures Claude Code / Codex to *send traces* to LangSmith |
+
+**Only here:** `--fields` pruning for agent-sized JSON, the `runs watch` live dashboard, `runs sample` (stratified sampling), `runs analyze`, `runs tags` / `metadata-keys` / `fields` / `describe` for discovery, regex/wildcard name filters, `runs usage` / `runs pricing`, CSV/YAML export, prompt `list/get/push`, an S3 trace archive with Bulk Export backfill and DuckDB queries, and a local Parquet working cache (`--source local`).
+
+**Only in LangChain's CLI:** experiments, evaluators (including LLM-as-judge), threads, insight reports, LangSmith Hub agent/skill repos, `trace setup` for coding agents, `project delete`, trace hierarchy/export, named profiles with OAuth login, and in-terminal product feedback.
+
+**Both cover:** projects, runs/traces listing and lookup, datasets, examples, JSON output, auth login, and self-update.
+
+Watch the names: on **PyPI**, `langsmith-cli` is this project. On **Homebrew/Scoop**, and at `cli.langsmith.com`, `langsmith-cli` is LangChain's.
 
 ---
 
@@ -160,12 +181,12 @@ Every LangSmith resource at your fingertips:
 
 **Linux/macOS:**
 ```bash
-curl -sSL https://raw.githubusercontent.com/langchain-ai/langsmith-cli/main/scripts/install.sh | sh
+curl -sSL https://raw.githubusercontent.com/gigaverse-app/langsmith-cli/main/scripts/install.sh | sh
 ```
 
 **Windows:**
 ```powershell
-iwr -useb https://raw.githubusercontent.com/langchain-ai/langsmith-cli/main/scripts/install.ps1 | iex
+iwr -useb https://raw.githubusercontent.com/gigaverse-app/langsmith-cli/main/scripts/install.ps1 | iex
 ```
 
 This standalone installer:

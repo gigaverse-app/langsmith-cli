@@ -4,8 +4,8 @@
 # This script downloads and runs the Python installer.
 #
 # Usage:
-# curl -sSL https://raw.githubusercontent.com/langchain-ai/langsmith-cli/main/scripts/install.sh | sh
-# wget -qO- https://raw.githubusercontent.com/langchain-ai/langsmith-cli/main/scripts/install.sh | sh
+# curl -sSL https://raw.githubusercontent.com/gigaverse-app/langsmith-cli/main/scripts/install.sh | sh
+# wget -qO- https://raw.githubusercontent.com/gigaverse-app/langsmith-cli/main/scripts/install.sh | sh
 
 set -e
 
@@ -17,7 +17,7 @@ RED="\033[31m"
 RESET="\033[0m"
 
 # Configuration
-INSTALLER_URL="https://raw.githubusercontent.com/langchain-ai/langsmith-cli/main/scripts/install.py"
+INSTALLER_URL="https://raw.githubusercontent.com/gigaverse-app/langsmith-cli/main/scripts/install.py"
 TEMP_INSTALLER="/tmp/langsmith-cli-install.py"
 
 log_info() {

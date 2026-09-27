@@ -3,13 +3,13 @@
 # This script downloads and runs the Python installer.
 #
 # Usage:
-# irm https://raw.githubusercontent.com/langchain-ai/langsmith-cli/main/scripts/install.ps1 | iex
-# iwr -useb https://raw.githubusercontent.com/langchain-ai/langsmith-cli/main/scripts/install.ps1 | iex
+# irm https://raw.githubusercontent.com/gigaverse-app/langsmith-cli/main/scripts/install.ps1 | iex
+# iwr -useb https://raw.githubusercontent.com/gigaverse-app/langsmith-cli/main/scripts/install.ps1 | iex
 
 $ErrorActionPreference = "Stop"
 
 # Configuration
-$InstallerUrl = "https://raw.githubusercontent.com/langchain-ai/langsmith-cli/main/scripts/install.py"
+$InstallerUrl = "https://raw.githubusercontent.com/gigaverse-app/langsmith-cli/main/scripts/install.py"
 $TempInstaller = "$env:TEMP\langsmith-cli-install.py"
 
 function Write-Info {
