@@ -1,11 +1,12 @@
 import sys
 import json as json_lib
 import os
+from dataclasses import dataclass
+from importlib import import_module
 from typing import Any
 import click
 from dotenv import load_dotenv
 from langsmith_cli.commands.annotation_queues import annotation_queues
-from langsmith_cli.commands.archive import archive
 from langsmith_cli.commands.auth import login
 from langsmith_cli.commands.datasets import datasets
 from langsmith_cli.commands.examples import examples
@@ -91,22 +92,23 @@ def _command_path_for_ctx(ctx: click.Context) -> str:
 
 
 def _command_path_from_args(
-    root_name: str | None,
+    ctx: click.Context,
     root_command: click.Command,
     args: list[str],
 ) -> str:
     """Infer nested command path from argv tokens before invocation."""
-    parts = [root_name or "langsmith-cli"]
+    parts = [ctx.info_name or "langsmith-cli"]
     command = root_command
     for token in args:
         if token.startswith("-"):
             continue
         if not isinstance(command, click.Group):
             break
-        if token not in command.commands:
+        subcommand = command.get_command(ctx, token)
+        if subcommand is None:
             break
         parts.append(token)
-        command = command.commands[token]
+        command = subcommand
     return " ".join(parts)
 
 
@@ -147,8 +149,62 @@ def _ctx_depth(ctx: click.Context) -> int:
     return depth
 
 
+@dataclass(frozen=True)
+class LazySubcommand:
+    """A subcommand whose module is imported only when that command runs.
+
+    ``short_help`` lets ``--help`` list the command without importing it;
+    tests/test_startup_imports.py checks it matches the real command.
+    """
+
+    import_path: str  # "package.module:attribute"
+    short_help: str
+
+    def load(self) -> click.Command:
+        module_name, attribute = self.import_path.split(":")
+        command = getattr(import_module(module_name), attribute)
+        assert isinstance(command, click.Command), self.import_path
+        return command
+
+
+# Command modules too expensive to import on every invocation. The archive
+# package builds many Pydantic models and would add ~150ms to every command.
+LAZY_SUBCOMMANDS: dict[str, LazySubcommand] = {
+    "archive": LazySubcommand(
+        import_path="langsmith_cli.commands.archive:archive",
+        short_help="Export traces to organization-owned Parquet archives.",
+    ),
+}
+
+
 class LangSmithCLIGroup(click.Group):
     """Custom Click Group that handles LangSmith exceptions gracefully."""
+
+    def list_commands(self, ctx: click.Context) -> list[str]:
+        return sorted({*super().list_commands(ctx), *LAZY_SUBCOMMANDS})
+
+    def get_command(self, ctx: click.Context, cmd_name: str) -> click.Command | None:
+        if cmd_name in LAZY_SUBCOMMANDS and cmd_name not in self.commands:
+            self.add_command(LAZY_SUBCOMMANDS[cmd_name].load(), cmd_name)
+        return super().get_command(ctx, cmd_name)
+
+    def format_commands(
+        self, ctx: click.Context, formatter: click.HelpFormatter
+    ) -> None:
+        """List commands, taking lazy ones' help from LAZY_SUBCOMMANDS unloaded."""
+        names = self.list_commands(ctx)
+        limit = formatter.width - 6 - max(len(name) for name in names)
+        rows: list[tuple[str, str]] = []
+        for name in names:
+            if name in LAZY_SUBCOMMANDS and name not in self.commands:
+                rows.append((name, LAZY_SUBCOMMANDS[name].short_help))
+                continue
+            command = self.get_command(ctx, name)
+            assert command is not None, name
+            if not command.hidden:
+                rows.append((name, command.get_short_help_str(limit)))
+        with formatter.section("Commands"):
+            formatter.write_dl(rows)
 
     def parse_args(self, ctx, args):
         # Allow --json anywhere in the command, not just before the subcommand.
@@ -156,7 +212,7 @@ class LangSmithCLIGroup(click.Group):
         # hoist --json to the front before normal parsing begins.
         if "--json" in args:
             args = ["--json"] + [a for a in args if a != "--json"]
-        ctx.meta["command_path"] = _command_path_from_args(ctx.info_name, self, args)
+        ctx.meta["command_path"] = _command_path_from_args(ctx, self, args)
         return super().parse_args(ctx, args)
 
     def invoke(self, ctx):
@@ -427,7 +483,6 @@ def auth():
 
 auth.add_command(login)
 cli_main.add_command(auth)
-cli_main.add_command(archive)
 cli_main.add_command(annotation_queues)
 cli_main.add_command(datasets)
 cli_main.add_command(examples)

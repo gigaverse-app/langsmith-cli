@@ -117,18 +117,16 @@ def test_command_path_helpers_preserve_nested_subcommands():
     runs.add_command(get)
     root.add_command(runs)
 
+    root_ctx = click.Context(root, info_name="langsmith-cli")
     assert (
-        _command_path_from_args(
-            "langsmith-cli", root, ["--json", "runs", "get", "run-id"]
-        )
+        _command_path_from_args(root_ctx, root, ["--json", "runs", "get", "run-id"])
         == "langsmith-cli runs get"
     )
     assert (
-        _command_path_from_args("langsmith-cli", root, ["runs", "unknown"])
+        _command_path_from_args(root_ctx, root, ["runs", "unknown"])
         == "langsmith-cli runs"
     )
 
-    root_ctx = click.Context(root, info_name="langsmith-cli")
     runs_ctx = click.Context(runs, info_name="runs", parent=root_ctx)
     get_ctx = click.Context(get, info_name="get", parent=runs_ctx)
     assert _command_path_for_ctx(get_ctx) == "langsmith-cli runs get"

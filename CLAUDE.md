@@ -197,10 +197,10 @@ There are two competing forces:
 
 **The rule that resolves the conflict:**
 
-1. **Default to top-level imports** when the module is already on the hot path. `utils.py` imports `langsmith` and `rich` at module level, and almost every command imports `utils.py` — so the cost is already paid. Adding `from rich.table import Table` to `commands/datasets.py` is free.
+1. **Default to top-level imports** for light modules already on the startup path (`click`, `pydantic`, the CLI's own helpers). `utils.py` does *not* import `langsmith` or `rich`, so neither is paid for at startup; don't assume a heavy SDK is "already loaded".
 2. **Use lazy (function-scope) imports** in command modules that (a) are themselves only loaded by their specific command and (b) pull in deps that `utils.py` does *not* already drag in (e.g. `httpx`, `yaml`, large third-party SDKs). `runs/pricing_cmd.py` is the canonical example — it's only loaded when the user runs `runs pricing`, and `httpx`/`yaml` are not on the global hot path. Keep its `import httpx` / `import yaml` inside the function body.
 3. **For type annotations only**, prefer the real import over `TYPE_CHECKING` when feasible. Use `TYPE_CHECKING` (paired with `from __future__ import annotations`) *only* when the type comes from a module you are deliberately keeping out of import-time — and document why in a comment near the `if TYPE_CHECKING:` block (e.g. `# Lazy: pricing command is a cold path; keep langsmith.schemas off the startup graph here.`).
-4. **Never** put a hot-path SDK import like `langsmith.Client` behind `TYPE_CHECKING` — `utils.py` already loaded it.
+4. **`langsmith.Client` stays off the startup path.** Importing it costs most of a second, and `import langsmith` alone is lazy. Command modules annotate with it under `TYPE_CHECKING` (as `projects.py` and `datasets.py` do) and get the instance from `get_or_create_client`. A command module that is expensive to import as a whole is registered in `LAZY_SUBCOMMANDS` in `main.py` instead of with `add_command`. `tests/test_startup_imports.py` fails if startup or `--help` loads `langsmith.client`, `httpx`, `requests`, `duckdb`, `pyarrow`, `boto3` or the archive command.
 
 Concrete checklist when adding a new command:
 - Does the module need only types that `utils.py` already imports? → Top-level import them.

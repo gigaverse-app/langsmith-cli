@@ -5,10 +5,9 @@ from __future__ import annotations
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
-from typing import Literal, TypedDict
+from typing import TYPE_CHECKING, Literal, TypedDict
 
 import click
-from langsmith import Client
 from pydantic import BaseModel, ConfigDict
 
 from langsmith_cli.archive.config import (
@@ -39,6 +38,11 @@ from langsmith_cli.archive.storage import ConcurrentArchiveWriteError, create_st
 from langsmith_cli.archive.sync import due_trace_dates, sync_project_day
 from langsmith_cli.output import json_dumps
 from langsmith_cli.utils import get_or_create_client, is_json_context
+
+if TYPE_CHECKING:
+    # Type-only: importing the SDK client at module level costs every command
+    # most of a second of startup (guarded by tests/test_startup_imports.py).
+    from langsmith import Client
 
 
 class SyncResultDict(TypedDict):
