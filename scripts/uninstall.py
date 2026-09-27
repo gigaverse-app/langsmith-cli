@@ -6,7 +6,7 @@ This script removes langsmith-cli that was installed via the standalone installe
 
 Usage:
     python3 uninstall.py
-    curl -sSL https://raw.githubusercontent.com/langchain-ai/langsmith-cli/main/scripts/uninstall.py | python3 -
+    curl -sSL https://raw.githubusercontent.com/gigaverse-app/langsmith-cli/main/scripts/uninstall.py | python3 -
 """
 
 import json

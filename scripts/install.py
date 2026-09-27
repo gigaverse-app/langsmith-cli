@@ -9,7 +9,7 @@ Inspired by: uv, poetry, and ruff installation patterns.
 
 Usage:
     python3 install.py
-    curl -sSL https://raw.githubusercontent.com/langchain-ai/langsmith-cli/main/scripts/install.py | python3 -
+    curl -sSL https://raw.githubusercontent.com/gigaverse-app/langsmith-cli/main/scripts/install.py | python3 -
 """
 
 import json
@@ -24,7 +24,7 @@ from typing import Optional
 
 # Configuration
 PACKAGE_NAME = "langsmith-cli"
-GITHUB_REPO = "langchain-ai/langsmith-cli"
+GITHUB_REPO = "gigaverse-app/langsmith-cli"
 MIN_PYTHON_VERSION = (3, 12)
 
 # Colors for terminal output
