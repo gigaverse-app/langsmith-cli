@@ -2,108 +2,139 @@
 
 <div align="center">
 
-**The Modern CLI for LangSmith**
-*Lightning-fast • Context-efficient • Built for humans and AI agents*
+**Keep every LangSmith trace. Query it from your terminal. Hand your agent 100 bytes instead of 34 KB.**
 
-[![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
-[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+*Parquet trace archive • Offline DuckDB cache • Agent-sized JSON • Rich tables for humans*
+
+[![PyPI](https://img.shields.io/pypi/v/langsmith-cli.svg)](https://pypi.org/project/langsmith-cli/)
+[![CI](https://github.com/gigaverse-app/langsmith-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/gigaverse-app/langsmith-cli/actions/workflows/ci.yml)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
-[Features](#-features) • [vs. official CLI](#-how-this-differs-from-langchains-official-langsmith-cli) • [Installation](#-installation) • [Quick Start](#-quick-start) • [Examples](#-examples) • [Documentation](#-documentation)
+[Why](#-why-langsmith-cli) • [Parquet Storage](#-parquet-trace-storage) • [Features](#-features) • [vs. LangChain's CLI](#-which-langsmith-cli-is-this) • [Installation](#-installation) • [Quick Start](#-quick-start) • [Examples](#-examples) • [Documentation](#-documentation)
 
 </div>
 
 ---
 
+```bash
+uv tool install langsmith-cli    # or: pip install langsmith-cli
+```
+
 > [!TIP]
-> **Install as Claude Code Plugin**
+> **Give Claude Code LangSmith superpowers**
 >
-> **Step 1:** Install the CLI tool
-> ```bash
-> # Quick install (Linux/macOS)
-> curl -sSL https://raw.githubusercontent.com/gigaverse-app/langsmith-cli/main/scripts/install.sh | sh
->
-> # Or use uv
-> uv tool install langsmith-cli
-> ```
->
-> **Step 2:** Add the plugin to Claude Code
->
-> **Option A: Terminal Command**
 > ```bash
 > claude plugin marketplace add gigaverse-app/langsmith-cli
 > claude plugin install langsmith-cli@langsmith-cli
 > ```
 >
-> **Option B: Interactive UI**
-> Inside Claude Code, run `/plugin` (without arguments) and use the UI to add the marketplace
->
-> This gives Claude Code instant access to all LangSmith commands via skills.
+> Or run `/plugin` inside Claude Code and add the marketplace from the UI. The plugin is a
+> skill, not an MCP server: it costs your agent no context until the agent actually
+> needs LangSmith.
 
 ---
-
-> **Context is all you need.** Agents do better when a tool returns 40 tokens instead of a 20KB trace. That is the idea behind this CLI.
 
 ## 🎯 Why LangSmith CLI?
 
-Traditional tools are slow, verbose, and waste tokens. **LangSmith CLI** is different:
+**LangSmith's base retention deletes traces after 14 days. langsmith-cli keeps them.**
+Traces land in your own S3 bucket as Parquet. The `runs list`, `runs search` and
+`runs get` commands you use on live data then query a year of history, or a local
+DuckDB cache that works offline.
 
-| Feature | LangSmith CLI | Official MCP Server |
-|---------|---------------|---------------------|
-| **Startup Time** | < 100ms (lazy loading) | ~2s (heavy imports) |
-| **Context Usage** | 96% reduction with `--fields` | Full objects always |
-| **Human UX** | Rich tables with colors | JSON only |
-| **Agent UX** | Strict `--json` mode | Mixed output |
-| **Live Dashboard** | `runs watch` real-time monitoring | ❌ |
-| **Advanced Filters** | Regex, wildcards, time presets | Basic only |
-| **Stratified Sampling** | `runs sample` by tag/metadata | ❌ |
-| **Aggregate Analytics** | `runs analyze` group & metrics | ❌ |
-| **Tag Discovery** | `runs tags` auto-discover patterns | ❌ |
-| **File Operations** | View/analyze offline with globs | ❌ |
-| **Export Formats** | JSON, CSV, YAML | JSON only |
-
-**100% Feature Parity** + **10x Better QoL** 🚀
+- 🗄️ **Your traces, your bucket, no expiry.** A daily `archive sync` exports each day before
+  LangSmith drops it. `archive backfill` pulls in history through LangSmith Bulk Export.
+- 🦆 **Offline, repeatable analysis.** Pull traces into a local Parquet cache once. Every
+  query after that runs on your disk through DuckDB, with no API calls or rate limits.
+- 🧠 **Agent-sized answers.** `--fields` returns only what you ask for. On 12 real
+  production traces, full JSON was 2–34 KB. `--fields id,name,status,error` returned
+  108–128 bytes, **94.5–99.7% smaller**.
+- 🔌 **Zero context until it's needed.** The Claude Code plugin is an on-demand skill.
+  Sessions that never touch LangSmith spend no tokens on tool schemas.
+- 📊 **Answers, not dumps.** `runs watch`, `sample`, `analyze`, `usage` and `stats`
+  summarize thousands of runs. `fields`, `tags`, `metadata-keys` and `describe` show
+  what your traces contain before you query them.
+- 🎨 **Pleasant for humans too.** Rich tables, regex and wildcard filters, `--last 24h`,
+  plus CSV and YAML export.
 
 ---
 
-## 🆚 How this differs from LangChain's official `langsmith-cli`
+## 💾 Parquet Trace Storage
 
-LangChain publishes its own CLI at [langchain-ai/langsmith-cli](https://github.com/langchain-ai/langsmith-cli). It has the same repo name but it is a separate project. The two install different binaries and can be installed side by side.
+One set of commands, three places your traces can live:
 
-| | **This project** (`gigaverse-app/langsmith-cli`) | **LangChain's** (`langchain-ai/langsmith-cli`) |
+| `--source` | What answers | Reach for it when… |
 |---|---|---|
-| Command | `langsmith-cli` | `langsmith` |
-| Implementation | Python 3.12+ (Click + Rich, LangSmith Python SDK) | Go single binary |
-| Install | `uv tool install langsmith-cli` / `pip install langsmith-cli` (PyPI), or the `gigaverse-app` install scripts below | `curl -fsSL https://cli.langsmith.com/install.sh \| sh`, GitHub Releases, Homebrew `langchain-ai/tap/langsmith-cli`, Scoop, `go install` |
-| Claude Code | Ships as a Claude Code plugin + skill (`claude plugin marketplace add gigaverse-app/langsmith-cli`) | `langsmith trace setup claude\|codex` configures Claude Code / Codex to *send traces* to LangSmith |
+| `cloud` (default) | The LangSmith API | You need what is true right now |
+| `archive` | Parquet in your organization's S3 bucket | The traces are older than LangSmith retention, or you need org-wide history |
+| `local` | A Parquet cache on this machine, queried with DuckDB | You're iterating on the same traces, or you're offline |
 
-**Only here:** `--fields` pruning for agent-sized JSON, the `runs watch` live dashboard, `runs sample` (stratified sampling), `runs analyze`, `runs tags` / `metadata-keys` / `fields` / `describe` for discovery, regex/wildcard name filters, `runs usage` / `runs pricing`, CSV/YAML export, prompt `list/get/push`, an S3 trace archive with Bulk Export backfill and DuckDB queries, and a local Parquet working cache (`--source local`).
+`--source` works on `runs list`, `runs search`, `runs get`, `runs get-latest` and
+`examples list`, with the same filters and the same JSON, table, CSV and YAML output.
+The CLI never switches sources behind your back, and reading never copies data: you
+move traces only with explicit commands.
 
-**Only in LangChain's CLI:** experiments, evaluators (including LLM-as-judge), threads, insight reports, LangSmith Hub agent/skill repos, `trace setup` for coding agents, `project delete`, trace hierarchy/export, named profiles with OAuth login, and in-terminal product feedback.
+### Archive: keep every trace in S3
 
-**Both cover:** projects, runs/traces listing and lookup, datasets, examples, JSON output, auth login, and self-update.
+```bash
+# Daily job: export day D at D+2, then re-export it at D+12 to catch late runs,
+# before LangSmith's 14-day retention removes it.
+LANGSMITH_ARCHIVE_URI=s3://my-bucket/langsmith \
+  langsmith-cli --json archive sync --project prd/my-agent --retention-days 14
 
-Watch the names: on **PyPI**, `langsmith-cli` is this project. On **Homebrew/Scoop**, and at `cli.langsmith.com`, `langsmith-cli` is LangChain's.
+# One-time: backfill a year of history through LangSmith Bulk Export (resumable).
+langsmith-cli --json archive backfill --config archive.yaml --route production \
+  --start-date 2025-08-01 --end-date 2026-08-01 \
+  --bulk-export-destination-id <uuid> --import-workers 8
+
+# Query the archive exactly like live data.
+langsmith-cli --json runs search "timeout" --source archive \
+  --project prd/my-agent --last 365d --fields id,name,status,error
+```
+
+Your organization owns the bucket, credentials, encryption and retention policy. The
+CLI exports, verifies and publishes sealed daily manifests of canonical Parquet, which
+you can also read directly with DuckDB. Re-running is safe: sealed days are skipped and
+in-flight export jobs are resumed. See the
+[archive operator guide](skills/langsmith/references/archive.md) and the
+[archive design](docs/TRACE_ARCHIVE_DESIGN.md).
+
+### Local cache: offline and DuckDB-backed
+
+```bash
+# Materialize a week of traces once (from cloud, or --source archive)...
+langsmith-cli --json runs pull --source cloud --to local \
+  --project prd/my-agent --last 7d
+
+# ...then query them as often as you like, with no API calls.
+langsmith-cli --json runs list --source local \
+  --project prd/my-agent --fields id,name,status
+langsmith-cli --json runs search "timeout" --source local \
+  --project prd/my-agent --fields id,name,error
+langsmith-cli runs cache schema --project prd/my-agent    # what fields are in there?
+```
+
+Pulls are additive and idempotent, and `runs cache repair` validates every Parquet
+fragment. Datasets work the same way: `datasets pull my-dataset --to local` freezes an
+exact dataset version, then `examples list --dataset my-dataset --source local` reads
+it offline. See the [trace sources design](docs/TRACE_SOURCES_DESIGN.md).
 
 ---
 
 ## ✨ Features
 
-### 🏎️ **Performance First**
-- **<100ms startup** via lazy-loaded imports
-- Streams large datasets without memory bloat
-- Async-ready architecture
-
 ### 🧠 **Agent Optimized**
 ```bash
-# Traditional: Returns 20KB trace object (1000+ tokens)
-langsmith-cli runs get abc123
+# Everything: the full run object, often tens of KB
+langsmith-cli --json runs get-latest --project my-agent --failed
 
-# Agent Mode: Returns only what you need (40 tokens)
-langsmith-cli --json runs get abc123 --fields inputs,outputs,error
+# Just what the agent needs: ~110 bytes
+langsmith-cli --json runs get-latest --project my-agent --failed --fields id,name,status,error
 ```
-**96% context savings** on large traces!
+Strict `--json` output on stdout, diagnostics on stderr, and small default limits keep
+agent context clean.
 
 ### 🎨 **Human Friendly**
 - Beautiful Rich tables with syntax highlighting
@@ -126,52 +157,45 @@ langsmith-cli runs list --slow --failed --today
 langsmith-cli runs watch
 ```
 
-### 🗄️ **S3 Trace Archive**
-
-Retain traces in private S3, backfill long historical windows through LangSmith
-Bulk Export, and query the canonical Parquet directly with DuckDB:
-
-```bash
-# One-time historical export; dates are a half-open UTC range.
-langsmith-cli --json archive backfill --config archive.yaml --route production \
-  --start-date 2025-08-01 --end-date 2026-08-01 \
-  --bulk-export-destination-id <uuid> --import-workers 8
-
-# Scan the retained archive without paging through the live Runs API.
-langsmith-cli --json runs search "timeout" --source archive \
-  --project prd/my-agent --last 365d --fields id,name,status,error
-```
-
-The backfill is resumable: it adopts exact matching remote jobs and skips sealed
-project-days. See the [archive operator reference](skills/langsmith/references/archive.md)
-for setup, safe scaling, progress checks, and recovery, and the
-[archive design](docs/TRACE_ARCHIVE_DESIGN.md) for storage and invariants.
-
-### 🦆 **Local Parquet Working Cache**
-
-Materialize traces explicitly for fast or offline intermediate work, then use the
-same Runs facade against local DuckDB. Reads never cache automatically:
-
-```bash
-langsmith-cli --json runs pull --source cloud --to local \
-  --project prd/my-agent --last 7d
-langsmith-cli --json runs list --source local \
-  --project prd/my-agent --fields id,name,status
-langsmith-cli --json runs search "timeout" --source local \
-  --project prd/my-agent --fields id,name,error
-```
-
-Pulls are additive and idempotent. Local is a disposable working cache; cloud is
-the live authority and the S3 archive is the durable retained history.
-
 ### 📦 **Complete Coverage**
 Every LangSmith resource at your fingertips:
-- ✅ **Projects** - List, create, inspect
-- ✅ **Runs** - Search, stats, watch, sample, analyze, field discovery
-- ✅ **Datasets** - CRUD + bulk JSONL uploads
-- ✅ **Examples** - Full lifecycle management
-- ✅ **Prompts** - Version control your prompts
-- ✅ **Self** - Installation detection + auto-update
+- ✅ **Projects**: list, get, create, update, delete
+- ✅ **Runs**: search, stats, watch, sample, analyze, usage, pricing, export, field discovery
+- ✅ **Trace storage**: S3 Parquet archive, local Parquet cache
+- ✅ **Datasets**: CRUD, bulk JSONL uploads, exact-version pulls
+- ✅ **Examples**: full lifecycle, including creating one from a run
+- ✅ **Prompts**: list, get, push, pull, version history
+- ✅ **Experiments, feedback and annotation queues**
+- ✅ **Self**: installation detection and auto-update
+
+---
+
+## 🆚 Which `langsmith-cli` is this?
+
+LangChain also publishes a Go CLI, `langsmith`, from a repository that is likewise
+named [langchain-ai/langsmith-cli](https://github.com/langchain-ai/langsmith-cli). It
+is a separate project, and the two install side by side (`langsmith-cli` and
+`langsmith`). On **PyPI**, `langsmith-cli` is this project. On **Homebrew**, **Scoop**
+and `cli.langsmith.com`, it is LangChain's.
+
+What you get here that LangChain's CLI doesn't document (per its README as of September 2026):
+
+| | **langsmith-cli** (this project) | LangChain's `langsmith` |
+|---|---|---|
+| Traces older than LangSmith retention | ✅ S3 Parquet archive, same query commands | ❌ |
+| Offline trace cache | ✅ Local Parquet + DuckDB | ❌ |
+| Choose exactly which fields come back | ✅ `--fields id,name,error` | Preset tiers (`--include-io`, `--full`) |
+| Run name filters | ✅ Regex, wildcards, exact | Exact name, or raw filter DSL |
+| Human time filters | ✅ `--last 24h`, `--today`, `--recent` | `--last-n-minutes`, ISO `--since` |
+| Live dashboard | ✅ `runs watch` | ❌ |
+| Stratified sampling | ✅ `runs sample` | ❌ |
+| Group-by analytics and token usage | ✅ `runs analyze`, `runs usage`, `runs pricing` | ❌ |
+| Field and tag discovery | ✅ `runs fields`, `tags`, `metadata-keys`, `describe` | ❌ |
+| Output formats | ✅ Table, JSON, JSONL, CSV, YAML | Table, JSON, JSONL |
+| Claude Code | ✅ On-demand skill that teaches your agent this CLI | Plugin that sends Claude Code's own traces to LangSmith |
+
+Reach for LangChain's CLI when you need evaluator rules, insight reports, thread views
+or Hub repos. Plenty of teams will want both.
 
 ---
 
@@ -433,39 +457,58 @@ runs = json.loads(result.stdout)
 ```bash
 langsmith-cli --help
 
-# Core Commands
-auth login              # Authenticate with LangSmith
-projects list           # List all projects
-runs list              # Search and filter runs
-runs get <id>          # Inspect a specific run
-runs get-latest        # Get most recent run matching filters
-runs stats             # Aggregate statistics
-runs watch             # Live run dashboard
-runs open <id>         # Open trace in browser
-runs search            # Full-text search across runs
-runs pull              # Explicitly add cloud/archive traces to local Parquet
-runs sample            # Stratified sampling by tags/metadata
-runs analyze           # Group runs and compute metrics
-runs tags              # Discover tag patterns
-runs metadata-keys     # Discover metadata keys
-runs fields            # Discover field paths and types
-runs describe          # Detailed field statistics
-runs view-file         # View runs from JSONL files
-runs usage             # Token usage analysis with grouping
-runs pricing           # Model pricing coverage check
-runs cache download    # Legacy alias for cloud-to-local Parquet materialization
-runs cache list        # List cached projects
-runs cache clear       # Clear cached data
-datasets list          # List datasets
-datasets create        # Create new dataset
-datasets push          # Bulk upload from JSONL
-examples list          # List dataset examples
-examples create        # Add example to dataset
-prompts list           # List prompt repositories
-prompts get            # Pull a prompt template
-prompts push           # Push local prompt to LangSmith
-self detect            # Show installation details
-self update            # Update to latest version
+# Auth and projects
+auth login               # Authenticate with LangSmith
+projects list            # List projects
+projects get|create|update|delete
+
+# Runs: query (add --source cloud|archive|local to list/search/get/get-latest)
+runs list                # Search and filter runs
+runs search              # Full-text search across runs
+runs get <id>            # Inspect a specific run
+runs get-latest          # Most recent run matching filters
+runs open <id>           # Open trace in the LangSmith UI
+runs export              # Write runs as individual JSON files
+runs view-file           # View runs from JSONL files
+
+# Runs: analyze
+runs stats               # Aggregate statistics
+runs watch               # Live run dashboard
+runs sample              # Stratified sampling by tags/metadata
+runs analyze             # Group runs and compute metrics
+runs usage               # Token usage over time, with grouping
+runs pricing             # Model pricing coverage check
+runs tags                # Discover tag patterns
+runs metadata-keys       # Discover metadata keys
+runs fields              # Discover field paths and types
+runs describe            # Detailed field statistics
+
+# Parquet storage
+archive sync             # Daily export to your S3 archive (primary + reconciliation)
+archive backfill         # One-time historical export through Bulk Export
+archive status           # List published archive manifests
+runs pull                # Add cloud/archive traces to the local Parquet cache
+runs cache list|schema|repair|clear|dir
+
+# Datasets, examples and prompts
+datasets list|get|create|delete
+datasets push            # Bulk upload from JSONL
+datasets pull            # Replicate an exact dataset version (e.g. --to local)
+datasets versions|status
+examples list|get|create|update|delete
+examples from-run        # Create an example from a run's inputs/outputs
+prompts list|get|push|pull|create|delete
+prompts commits          # Prompt version history
+
+# Evaluation and review
+experiments results      # Run stats and feedback scores for an experiment
+feedback list|get|create|delete
+annotation-queues list|get|create|update|delete
+
+# Installation
+self detect              # Show installation details
+self skill               # Print the agent usage guide
+self update              # Update to latest version
 ```
 
 ### Global Flags
@@ -574,9 +617,8 @@ uv run pyright
 ```
 
 ### Project Stats
-- **92% Test Coverage** (589 tests)
-- **Zero Type Errors** (Pyright clean)
-- **100% MCP Parity** (13/13 tools)
+- **1,400+ tests**
+- **Zero Pyright errors**
 
 ---
 
